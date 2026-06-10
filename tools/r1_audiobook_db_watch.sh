@@ -1,0 +1,136 @@
+#!/bin/sh
+set -u
+
+BASE=${AUDIOBOOK_BASE_DIR:-/usr/data/audiobooks}
+HELPER=${AUDIOBOOK_DB_MAINT_HELPER:-$BASE/bin/r1_audiobook_db_maint}
+DB=${AUDIOBOOK_DB_PATH:-/usr/data/usrlocal_media.db}
+SD_ROOT=${AUDIOBOOK_SD_ROOT:-/usr/data/mnt/sd_0}
+AUDIOBOOKS_DIR=${AUDIOBOOK_DB_AUDIOBOOKS_DIR:-$SD_ROOT/Audiobooks}
+MUSIC_DIR=${AUDIOBOOK_DB_MUSIC_DIR:-$SD_ROOT/Music}
+CATALOG=${AUDIOBOOK_CATALOG:-$BASE/catalog.tsv}
+CATALOG_ALBUM_PATTERNS=${AUDIOBOOK_CATALOG_ALBUM_PATTERNS:-$BASE/catalog-albums.txt}
+SEED_DB=${AUDIOBOOK_DB_SEED:-$BASE/bin/r1_usrlocal_media_seed.db}
+LOG=${AUDIOBOOK_DB_MAINT_LOG:-$BASE/db-maint.log}
+PID_FILE=${AUDIOBOOK_DB_MAINT_PID:-$BASE/db-maint.pid}
+
+BOOT_DELAY_SECONDS=${AUDIOBOOK_DB_BOOT_DELAY_SECONDS:-20}
+INTERVAL_SECONDS=${AUDIOBOOK_DB_INTERVAL_SECONDS:-30}
+STABLE_SECONDS=${AUDIOBOOK_DB_STABLE_SECONDS:-15}
+FULL_REFRESH_INTERVAL_SECONDS=${AUDIOBOOK_DB_FULL_REFRESH_INTERVAL_SECONDS:-0}
+
+log() {
+  printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >>"$LOG"
+}
+
+now_seconds() {
+  date '+%s' 2>/dev/null || echo 0
+}
+
+db_signature() {
+  [ -s "$DB" ] || return 1
+  size=$(wc -c <"$DB" 2>/dev/null | awk '{ print $1 }')
+  mtime=$(date -r "$DB" '+%s' 2>/dev/null || ls --full-time "$DB" 2>/dev/null | awk '{ print $6 " " $7 " " $8 }')
+  [ -n "$size" ] && [ -n "$mtime" ] || return 1
+  printf '%s:%s\n' "$size" "$mtime"
+}
+
+ensure_db_seeded() {
+  reason=$1
+  if [ -s "$DB" ]; then
+    return 0
+  fi
+  if [ ! -f "$SEED_DB" ]; then
+    log "seed-skip reason=$reason db-missing seed-missing db=$DB seed=$SEED_DB"
+    return 1
+  fi
+  db_parent=${DB%/*}
+  if [ "$db_parent" != "$DB" ]; then
+    mkdir -p "$db_parent"
+  fi
+  if cp -f "$SEED_DB" "$DB"; then
+    chmod 666 "$DB" 2>/dev/null || true
+    sync
+    log "seeded-db reason=$reason db=$DB seed=$SEED_DB"
+    return 0
+  fi
+  log "seed-failed reason=$reason db=$DB seed=$SEED_DB"
+  return 1
+}
+
+run_maint() {
+  reason=$1
+  [ -x "$HELPER" ] || {
+    log "skip reason=$reason helper-not-executable helper=$HELPER"
+    return 1
+  }
+  [ -s "$DB" ] || {
+    log "skip reason=$reason db-missing db=$DB"
+    return 1
+  }
+  log "run reason=$reason db=$DB music=$MUSIC_DIR audiobooks=$AUDIOBOOKS_DIR"
+  "$HELPER" \
+    --db "$DB" \
+    --sd-root "$SD_ROOT" \
+    --music-dir "$MUSIC_DIR" \
+    --audiobooks-dir "$AUDIOBOOKS_DIR" \
+    --base-dir "$BASE" \
+    --catalog "$CATALOG" \
+    --album-patterns "$CATALOG_ALBUM_PATTERNS" \
+    --verbose >>"$LOG" 2>&1
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    log "done reason=$reason"
+  else
+    log "failed reason=$reason rc=$rc"
+  fi
+  return "$rc"
+}
+
+echo $$ >"$PID_FILE"
+mkdir -p "$BASE" "$BASE/bin" "$BASE/resume.d"
+log "start interval=${INTERVAL_SECONDS}s stable=${STABLE_SECONDS}s full_refresh=${FULL_REFRESH_INTERVAL_SECONDS}s helper=$HELPER seed=$SEED_DB"
+
+sleep "$BOOT_DELAY_SECONDS"
+
+last_sig=
+last_seen_sig=
+last_seen_at=0
+last_run_at=0
+
+ensure_db_seeded boot || true
+run_maint boot || true
+last_sig=$(db_signature 2>/dev/null || true)
+last_seen_sig=$last_sig
+last_seen_at=$(now_seconds)
+last_run_at=$last_seen_at
+
+while :; do
+  sleep "$INTERVAL_SECONDS"
+  ensure_db_seeded loop || true
+  sig=$(db_signature 2>/dev/null || true)
+  now=$(now_seconds)
+  if [ -z "$sig" ]; then
+    continue
+  fi
+  if [ "$sig" != "$last_seen_sig" ]; then
+    last_seen_sig=$sig
+    last_seen_at=$now
+    log "db-change sig=$sig"
+    continue
+  fi
+  age=$((now - last_seen_at))
+  since_run=$((now - last_run_at))
+  if [ "$sig" != "$last_sig" ] && [ "$age" -ge "$STABLE_SECONDS" ]; then
+    run_maint db-stable || true
+    last_sig=$(db_signature 2>/dev/null || echo "$sig")
+    last_run_at=$now
+    continue
+  fi
+  if [ "$FULL_REFRESH_INTERVAL_SECONDS" -gt 0 ] && [ "$since_run" -ge "$FULL_REFRESH_INTERVAL_SECONDS" ]; then
+    run_maint periodic || true
+    last_sig=$(db_signature 2>/dev/null || echo "$sig")
+    last_seen_sig=$last_sig
+    last_seen_at=$now
+    last_run_at=$now
+  fi
+done

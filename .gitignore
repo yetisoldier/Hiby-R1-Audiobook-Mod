@@ -1,0 +1,41 @@
+# Local build dependencies and generated firmware workspaces
+.deps/
+work/
+build/
+dist/
+artifacts/**
+!artifacts/.gitkeep
+
+# Device-specific dumps, backups, and recovery inputs
+device-dump/
+device-dump-test-script/
+stock/
+references/
+reverse/ghidra-projects/
+firmware/base/
+firmware/*.upt
+
+# Keep official release assets committed intentionally.
+!firmware/releases/
+!firmware/releases/**
+!firmware/seed/
+!firmware/seed/**
+
+# Generated Python/runtime files
+__pycache__/
+*.py[cod]
+
+# OS/editor noise
+.DS_Store
+._*
+*.swp
+*.tmp
+
+# Local assistant/runtime context
+.openclaw/
+AGENTS.md
+HEARTBEAT.md
+IDENTITY.md
+SOUL.md
+TOOLS.md
+USER.md
