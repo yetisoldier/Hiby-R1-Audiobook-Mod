@@ -15,6 +15,13 @@ Current shareable package:
 
 Before flashing, keep a known-good stock 1.6 `r1.upt` available for recovery. This mod has only been tested on one normal HiBy R1. Reinstalling stock firmware should reverse it, but it is still unofficial firmware, so use it at your own risk. Do not use it on the R1 MIDI or other HiBy players unless you are prepared to recover the device yourself.
 
+## Screenshots
+
+<p>
+  <img src="docs/images/main-menu-audiobooks.png" alt="HiBy R1 main menu showing Audiobooks" width="240">
+  <img src="docs/images/audiobook-title-list.png" alt="Audiobook title list on the HiBy R1" width="240">
+</p>
+
 ## Install The Build
 
 The R1 updater expects the firmware file at the SD-card root as `r1.upt`.
@@ -430,6 +437,7 @@ absent.
 - `docs/release_recovery_notes.md` - compact install, verification, and stock-recovery notes for the current audiobook release candidate.
 - `docs/production_release_checklist.md` - remaining checks before treating the current candidate as production instead of beta.
 - `docs/safe_prototype.md` - older non-flash ADB/database-filter prototype workflow, kept for developers and recovery-minded tinkerers.
+- `docs/images/` - README screenshots captured from the test R1.
 - `tools/extract_r1_firmware.ps1` - extracts `stock/r1.upt` and reconstructs `rootfs.squashfs` plus `xImage`.
 - `tools/filter_music_db.py` - removes `/Audiobooks/` style folders from a copied `usrlocal_media.db`.
 - `tools/add_audiobooks_to_media_db.py` - adds `/Audiobooks/` audio files to a copied `usrlocal_media.db` as stock media rows.
