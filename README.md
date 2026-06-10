@@ -453,6 +453,7 @@ The audiobook-specific behavior in this repository was developed and tested on a
 - `docs/investigation.md` - current findings about stock R1 firmware 1.6, databases, Books, resume settings, and patch ideas.
 - `docs/release_recovery_notes.md` - compact install, verification, and stock-recovery notes for the current audiobook release candidate.
 - `docs/production_release_checklist.md` - remaining checks before treating the current candidate as production instead of beta.
+- `docs/firmware_improvement_plan.md` - forward plan for post-1.6.4 improvements based on new hiby-modding references and local test strategy.
 - `docs/safe_prototype.md` - older non-flash ADB/database-filter prototype workflow, kept for developers and recovery-minded tinkerers.
 - `docs/images/` - README screenshots captured from the test R1.
 - `tools/extract_r1_firmware.ps1` - extracts `stock/r1.upt` and reconstructs `rootfs.squashfs` plus `xImage`.
@@ -464,6 +465,7 @@ The audiobook-specific behavior in this repository was developed and tested on a
 - `tools/adb_verify_installed_audiobook_release.ps1` - post-reboot installed-release verifier for version markers, daemon status, update-trigger hygiene, free space, DB/catalog invariants, and optional framebuffer capture.
 - `tools/adb_collect_r1_state.ps1` - read-only ADB collection script for device state and databases.
 - `tools/build_r1_db_maint_helper.ps1` - reproducibly builds the static MIPS audiobook DB maintenance helper from Zig and SQLite upstream sources.
+- `tools/test_r1_db_maint_local_fixture.py` - local disposable-fixture test for DB helper fallback scans, sidecar cover/LRC paths, `.m4b`, `.iso`, and release-state invariants.
 - `tools/patch_hiby_player.py` - guarded stock-1.6 binary patcher; experimental scanner-skip, Books playback, and Audiobooks launcher patches are opt-in.
 - `tools/patch_r1_resource_text.py` - patches English UI labels from Books/E-book to Audiobooks.
 - `tools/build_r1_upt.py` - rebuilds an R1-style OTA `.upt` from `xImage` and `rootfs.squashfs`.

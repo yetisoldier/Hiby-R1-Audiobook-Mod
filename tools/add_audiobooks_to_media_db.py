@@ -28,6 +28,7 @@ AUDIO_EXT = {
     ".dff",
     ".dsf",
     ".flac",
+    ".iso",
     ".m4a",
     ".m4b",
     ".mp2",
@@ -46,6 +47,7 @@ FORMAT_MAP = {
     ".dff": 54736,
     ".dsf": 54736,
     ".flac": 61868,
+    ".iso": 0,
     ".m4a": 255,
     ".m4b": 255,
     ".mp2": 80,
@@ -64,6 +66,7 @@ FORMAT_NAME = {
     ".dff": "DFF",
     ".dsf": "DSF",
     ".flac": "FLAC",
+    ".iso": "ISO",
     ".m4a": "M4A",
     ".m4b": "M4B",
     ".mp2": "MP2",
@@ -78,6 +81,20 @@ FORMAT_NAME = {
 LOSSY_EXT = {".aac", ".m4a", ".m4b", ".mp2", ".mp3", ".oga", ".ogg", ".opus", ".wma"}
 PREFIX = "a:\\Audiobooks\\"
 DEVICE_AUDIOBOOKS_ROOT = "/usr/data/mnt/sd_0/Audiobooks"
+COVER_NAMES = (
+    "cover.jpg",
+    "folder.jpg",
+    "front.jpg",
+    "albumart.jpg",
+    "cover.jpeg",
+    "folder.jpeg",
+    "front.jpeg",
+    "albumart.jpeg",
+    "cover.png",
+    "folder.png",
+    "front.png",
+    "albumart.png",
+)
 DEFAULT_FFPROBE_PATHS = (
     r"C:\Program Files\OpenAudible\bin\win_x86_64\ffprobe.exe",
     r"C:\Users\yetis\Downloads\ffmpeg-8.1.1-essentials_build\ffmpeg-8.1.1-essentials_build\bin\ffprobe.exe",
@@ -133,6 +150,8 @@ class MediaRow:
     quality: str
     ctime: int
     mtime: int
+    album_pic_path: str
+    lrc_path: str
     album_artist: str
 
 
@@ -306,6 +325,28 @@ def device_to_hiby_path(device_path: str, device_root: str) -> str:
     return "a:\\" + rel.replace("/", "\\")
 
 
+def hiby_sibling_path(hiby_path: str, filename: str) -> str:
+    directory = hiby_path.rsplit("\\", 1)[0]
+    return f"{directory}\\{filename}" if directory else filename
+
+
+def find_cover_path(local_path: str, hiby_path: str) -> str:
+    if not local_path:
+        return ""
+    directory = Path(local_path).parent
+    for name in COVER_NAMES:
+        if (directory / name).is_file():
+            return hiby_sibling_path(hiby_path, name)
+    return ""
+
+
+def find_lrc_path(local_path: str, hiby_path: str) -> str:
+    if not local_path:
+        return ""
+    lrc = Path(local_path).with_suffix(".lrc")
+    return hiby_sibling_path(hiby_path, lrc.name) if lrc.is_file() else ""
+
+
 def clean_book_folder(folder: str) -> tuple[str, int]:
     text = folder.strip()
     year = 0
@@ -359,6 +400,8 @@ def group_files(files: list[AudioFile]) -> dict[str, list[AudioFile]]:
 def metadata_defaults(ext: str) -> tuple[int, int, int, int, str]:
     if ext in {".flac", ".wav", ".aif"}:
         return (44100, 0, 16, 2, "2")
+    if ext in {".dff", ".dsf", ".iso"}:
+        return (0, 0, 16, 2, "3")
     if ext in LOSSY_EXT:
         return (44100, 64000, 16, 2, "1")
     return (0, 0, 16, 2, "0")
@@ -496,6 +539,8 @@ def build_rows(
             track_number = tags.track or index
             sample_rate, bit_rate, bit_depth, channels, quality = metadata_defaults(ext)
             timestamp = item.mtime or item.ctime or now
+            album_pic_path = find_cover_path(item.local_path, path)
+            lrc_path = find_lrc_path(item.local_path, path)
             rows.append(
                 MediaRow(
                     id=next_id,
@@ -516,6 +561,8 @@ def build_rows(
                     quality=quality,
                     ctime=timestamp,
                     mtime=timestamp,
+                    album_pic_path=album_pic_path,
+                    lrc_path=lrc_path,
                     album_artist=(tags.album_artist or author or "Unknown"),
                 )
             )
@@ -579,8 +626,8 @@ def row_tuple(row: MediaRow) -> tuple[object, ...]:
         row.channel,
         row.format_code,
         nul(row.quality),
-        nul(""),
-        nul(""),
+        nul(row.album_pic_path),
+        nul(row.lrc_path),
         0.0,
         0.0,
         row.ctime,

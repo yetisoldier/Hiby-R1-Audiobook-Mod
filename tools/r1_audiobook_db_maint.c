@@ -157,7 +157,7 @@ static int is_audio_ext(const char *path) {
     if (!dot) return 0;
     return ends_ci(dot, ".aac") || ends_ci(dot, ".aif") || ends_ci(dot, ".ape") ||
            ends_ci(dot, ".dff") || ends_ci(dot, ".dsf") || ends_ci(dot, ".flac") ||
-           ends_ci(dot, ".m4a") || ends_ci(dot, ".m4b") || ends_ci(dot, ".mp2") ||
+           ends_ci(dot, ".iso") || ends_ci(dot, ".m4a") || ends_ci(dot, ".m4b") || ends_ci(dot, ".mp2") ||
            ends_ci(dot, ".mp3") || ends_ci(dot, ".oga") || ends_ci(dot, ".ogg") ||
            ends_ci(dot, ".opus") || ends_ci(dot, ".wav") || ends_ci(dot, ".wma");
 }
@@ -169,6 +169,7 @@ static int format_code_for_path(const char *path) {
     if (ends_ci(dot, ".ape")) return 21574;
     if (ends_ci(dot, ".dff") || ends_ci(dot, ".dsf")) return 54736;
     if (ends_ci(dot, ".flac")) return 61868;
+    if (ends_ci(dot, ".iso")) return 0;
     if (ends_ci(dot, ".mp2")) return 80;
     if (ends_ci(dot, ".mp3")) return 85;
     if (ends_ci(dot, ".oga") || ends_ci(dot, ".ogg")) return 26447;
@@ -187,6 +188,7 @@ static const char *format_name_for_path(const char *path) {
     if (ends_ci(dot, ".dff")) return "DFF";
     if (ends_ci(dot, ".dsf")) return "DSF";
     if (ends_ci(dot, ".flac")) return "FLAC";
+    if (ends_ci(dot, ".iso")) return "ISO";
     if (ends_ci(dot, ".m4a")) return "M4A";
     if (ends_ci(dot, ".m4b")) return "M4B";
     if (ends_ci(dot, ".mp2")) return "MP2";
@@ -203,7 +205,8 @@ static const char *quality_for_path(const char *path) {
     const char *dot = strrchr(path, '.');
     if (!dot) return "";
     if (ends_ci(dot, ".flac") || ends_ci(dot, ".wav") || ends_ci(dot, ".aif") ||
-        ends_ci(dot, ".ape") || ends_ci(dot, ".dff") || ends_ci(dot, ".dsf")) {
+        ends_ci(dot, ".ape") || ends_ci(dot, ".dff") || ends_ci(dot, ".dsf") ||
+        ends_ci(dot, ".iso")) {
         return "Lossless";
     }
     return "Lossy";
@@ -389,6 +392,86 @@ static char *device_to_hiby_path(const char *device_path, const char *sd_root) {
     }
     out[j] = '\0';
     return out;
+}
+
+static const char *last_path_separator(const char *path) {
+    const char *slash = strrchr(path, '/');
+    const char *backslash = strrchr(path, '\\');
+    if (!slash) return backslash;
+    if (!backslash) return slash;
+    return slash > backslash ? slash : backslash;
+}
+
+static char *hiby_sibling_path(const char *hiby_path, const char *filename) {
+    const char *slash = strrchr(hiby_path, '\\');
+    if (!slash) return xstrdup(filename);
+    size_t dir_len = (size_t)(slash - hiby_path);
+    size_t name_len = strlen(filename);
+    char *out = (char *)malloc(dir_len + 1 + name_len + 1);
+    if (!out) die("out of memory");
+    memcpy(out, hiby_path, dir_len);
+    out[dir_len] = '\\';
+    memcpy(out + dir_len + 1, filename, name_len + 1);
+    return out;
+}
+
+static int device_sibling_exists(const char *device_path, const char *filename) {
+    const char *slash = last_path_separator(device_path);
+    if (!slash) return 0;
+    size_t dir_len = (size_t)(slash - device_path);
+    size_t name_len = strlen(filename);
+    if (dir_len + 1 + name_len >= PATH_MAX) return 0;
+    char candidate[PATH_MAX];
+    memcpy(candidate, device_path, dir_len);
+    candidate[dir_len] = '/';
+    memcpy(candidate + dir_len + 1, filename, name_len + 1);
+    struct stat st;
+    return stat(candidate, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+static char *find_cover_path(const char *device_path, const char *hiby_path) {
+    const char *names[] = {
+        "cover.jpg", "folder.jpg", "front.jpg", "albumart.jpg",
+        "cover.jpeg", "folder.jpeg", "front.jpeg", "albumart.jpeg",
+        "cover.png", "folder.png", "front.png", "albumart.png",
+    };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        if (device_sibling_exists(device_path, names[i])) {
+            return hiby_sibling_path(hiby_path, names[i]);
+        }
+    }
+    return xstrdup("");
+}
+
+static char *find_lrc_path(const char *device_path, const char *hiby_path) {
+    char *device_stem = file_stem(device_path);
+    char *hiby_stem = hiby_file_stem(hiby_path);
+    size_t device_len = strlen(device_stem);
+    size_t hiby_len = strlen(hiby_stem);
+    char *device_lrc = (char *)malloc(device_len + 5);
+    char *hiby_lrc_name = (char *)malloc(hiby_len + 5);
+    if (!device_lrc || !hiby_lrc_name) die("out of memory");
+    memcpy(device_lrc, device_stem, device_len);
+    memcpy(device_lrc + device_len, ".lrc", 5);
+    memcpy(hiby_lrc_name, hiby_stem, hiby_len);
+    memcpy(hiby_lrc_name + hiby_len, ".lrc", 5);
+    char *result = device_sibling_exists(device_path, device_lrc) ? hiby_sibling_path(hiby_path, hiby_lrc_name) : xstrdup("");
+    free(device_stem);
+    free(hiby_stem);
+    free(device_lrc);
+    free(hiby_lrc_name);
+    return result;
+}
+
+static void fill_sidecar_paths(MediaRow *row, const char *hiby_path, const char *device_path) {
+    if (!row->album_pic_path || !*row->album_pic_path) {
+        free(row->album_pic_path);
+        row->album_pic_path = find_cover_path(device_path, hiby_path);
+    }
+    if (!row->lrc_path || !*row->lrc_path) {
+        free(row->lrc_path);
+        row->lrc_path = find_lrc_path(device_path, hiby_path);
+    }
 }
 
 static void rowvec_push(RowVec *vec, MediaRow row) {
@@ -613,8 +696,7 @@ static void normalize_row_after_copy(MediaRow *row, const char *hiby_path, const
         free(row->quality);
         row->quality = xstrdup(quality_for_path(device_path));
     }
-    if (!row->album_pic_path) row->album_pic_path = xstrdup("");
-    if (!row->lrc_path) row->lrc_path = xstrdup("");
+    fill_sidecar_paths(row, hiby_path, device_path);
     free(row->character);
     row->character = character_for(row->name);
     free(row->pinyin_charater);
@@ -670,8 +752,7 @@ static void normalize_music_row(MediaRow *row, const char *hiby_path, const char
         free(row->quality);
         row->quality = xstrdup(quality_for_path(device_path));
     }
-    if (!row->album_pic_path) row->album_pic_path = xstrdup("");
-    if (!row->lrc_path) row->lrc_path = xstrdup("");
+    fill_sidecar_paths(row, hiby_path, device_path);
     free(row->character);
     row->character = character_for(row->name);
     free(row->pinyin_charater);
