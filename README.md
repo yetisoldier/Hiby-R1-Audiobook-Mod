@@ -2,37 +2,6 @@
 
 This workspace is for investigating and prototyping audiobook support on the HiBy R1 without taking unnecessary flashing risks.
 
-## What Is Here
-
-- `docs/investigation.md` - current findings about stock R1 firmware 1.6, databases, Books, resume settings, and patch ideas.
-- `docs/release_recovery_notes.md` - compact install, verification, and stock-recovery notes for the current audiobook release candidate.
-- `docs/production_release_checklist.md` - remaining checks before treating the current candidate as production instead of beta.
-- `tools/extract_r1_firmware.ps1` - extracts `stock/r1.upt` and reconstructs `rootfs.squashfs` plus `xImage`.
-- `tools/filter_music_db.py` - removes `/Audiobooks/` style folders from a copied `usrlocal_media.db`.
-- `tools/add_audiobooks_to_media_db.py` - adds `/Audiobooks/` audio files to a copied `usrlocal_media.db` as stock media rows.
-- `tools/check_audiobook_release_state.py` - verifies release DB/catalog invariants: audiobook rows in media tables, no Music album/genre/search leakage, and catalog consistency.
-- `tools/adb_build_release_audiobook_db.ps1` - pulls the live media DB, scans `/Audiobooks`, builds a release-clean DB/catalog pair, and runs the release checker.
-- `tools/adb_install_release_audiobook_db.ps1` - installs a checked release DB/catalog pair over ADB with local and on-device backups.
-- `tools/adb_verify_installed_audiobook_release.ps1` - post-reboot installed-release verifier for version markers, daemon status, update-trigger hygiene, free space, DB/catalog invariants, and optional framebuffer capture.
-- `tools/adb_collect_r1_state.ps1` - read-only ADB collection script for device state and databases.
-- `tools/build_r1_db_maint_helper.ps1` - reproducibly builds the static MIPS audiobook DB maintenance helper from Zig and SQLite upstream sources.
-- `tools/patch_hiby_player.py` - guarded stock-1.6 binary patcher; experimental scanner-skip, Books playback, and Audiobooks launcher patches are opt-in.
-- `tools/patch_r1_resource_text.py` - patches English UI labels from Books/E-book to Audiobooks.
-- `tools/build_r1_upt.py` - rebuilds an R1-style OTA `.upt` from `xImage` and `rootfs.squashfs`.
-- `tools/build_r1_audiobook_firmware.ps1` - offline build wrapper for the audiobook prototype firmware image.
-- `tools/verify_r1_audiobook_build.py` - local pre-flash sanity checker for the rebuilt full-dev package.
-- `tools/adb_live_test_patched_player.ps1` - opt-in ADB helper for a temporary, non-flash patched-player test.
-- `tools/adb_runtime_patch_hiby_player.py` - guarded dry-run/apply/revert helper for patching the running stock player in RAM.
-- `tools/adb_install_audiobook_resume_runtime.ps1` - installs and starts the live per-book resume daemon over ADB.
-- `tools/adb_test_audiobook_ui_seek_fallback.py` - guarded live test for the daemon's progress-bar seek fallback; it requires an explicit flag because it changes playback position.
-- `tools/adb_stage_verified_firmware.ps1` - stages a verified `.upt` to the SD card as `r1.upt`, running the local verifier first, refusing known-bad or suspiciously small packages, backing up an existing different target file, and verifying both the temp-copy and final byte count, MD5, and SHA-256 when the device provides `sha256sum`.
-- `tools/adb_test_audiobook_direct_filter_route.py` - RAM-only experiment for a direct filtered Audiobooks album route; it is useful for investigation but not part of the release route because live testing did not improve the back stack.
-- `tools/adb_archive_audiobook_dev_artifacts.ps1` - dry-run-first helper for moving known development leftovers under `/usr/data/audiobooks` into a timestamped archive directory.
-- `tools/r1_audiobook_resume_daemon.sh` - on-device shell daemon that saves/restores audiobook positions.
-- `tools/r1_audiobook_db_maint.c` - on-device native helper that scans `/Audiobooks`, updates the media DB, and writes the audiobook catalog.
-- `tools/r1_audiobook_db_watch.sh` - on-device watcher that seeds a missing media DB when needed and runs the DB helper after boot or media DB updates.
-- `tools/adb_inject_touch_event.py` - builds/replays verified R1 touchscreen and physical-button input events used by multipart track restore tests.
-
 ## Release Build Quick Guide
 
 Current shareable package:
@@ -475,3 +444,34 @@ Development firmware builds now also install `/etc/init.d/S90adb` as a copy of
 stock `/etc/init.d/T90adb`. Stock `rcS` only runs `S??*` scripts, which is why
 ADB does not survive a normal stock reboot even when `/usr/data/disableadb` is
 absent.
+
+## What Is Here
+
+- `docs/investigation.md` - current findings about stock R1 firmware 1.6, databases, Books, resume settings, and patch ideas.
+- `docs/release_recovery_notes.md` - compact install, verification, and stock-recovery notes for the current audiobook release candidate.
+- `docs/production_release_checklist.md` - remaining checks before treating the current candidate as production instead of beta.
+- `tools/extract_r1_firmware.ps1` - extracts `stock/r1.upt` and reconstructs `rootfs.squashfs` plus `xImage`.
+- `tools/filter_music_db.py` - removes `/Audiobooks/` style folders from a copied `usrlocal_media.db`.
+- `tools/add_audiobooks_to_media_db.py` - adds `/Audiobooks/` audio files to a copied `usrlocal_media.db` as stock media rows.
+- `tools/check_audiobook_release_state.py` - verifies release DB/catalog invariants: audiobook rows in media tables, no Music album/genre/search leakage, and catalog consistency.
+- `tools/adb_build_release_audiobook_db.ps1` - pulls the live media DB, scans `/Audiobooks`, builds a release-clean DB/catalog pair, and runs the release checker.
+- `tools/adb_install_release_audiobook_db.ps1` - installs a checked release DB/catalog pair over ADB with local and on-device backups.
+- `tools/adb_verify_installed_audiobook_release.ps1` - post-reboot installed-release verifier for version markers, daemon status, update-trigger hygiene, free space, DB/catalog invariants, and optional framebuffer capture.
+- `tools/adb_collect_r1_state.ps1` - read-only ADB collection script for device state and databases.
+- `tools/build_r1_db_maint_helper.ps1` - reproducibly builds the static MIPS audiobook DB maintenance helper from Zig and SQLite upstream sources.
+- `tools/patch_hiby_player.py` - guarded stock-1.6 binary patcher; experimental scanner-skip, Books playback, and Audiobooks launcher patches are opt-in.
+- `tools/patch_r1_resource_text.py` - patches English UI labels from Books/E-book to Audiobooks.
+- `tools/build_r1_upt.py` - rebuilds an R1-style OTA `.upt` from `xImage` and `rootfs.squashfs`.
+- `tools/build_r1_audiobook_firmware.ps1` - offline build wrapper for the audiobook prototype firmware image.
+- `tools/verify_r1_audiobook_build.py` - local pre-flash sanity checker for the rebuilt full-dev package.
+- `tools/adb_live_test_patched_player.ps1` - opt-in ADB helper for a temporary, non-flash patched-player test.
+- `tools/adb_runtime_patch_hiby_player.py` - guarded dry-run/apply/revert helper for patching the running stock player in RAM.
+- `tools/adb_install_audiobook_resume_runtime.ps1` - installs and starts the live per-book resume daemon over ADB.
+- `tools/adb_test_audiobook_ui_seek_fallback.py` - guarded live test for the daemon's progress-bar seek fallback; it requires an explicit flag because it changes playback position.
+- `tools/adb_stage_verified_firmware.ps1` - stages a verified `.upt` to the SD card as `r1.upt`, running the local verifier first, refusing known-bad or suspiciously small packages, backing up an existing different target file, and verifying both the temp-copy and final byte count, MD5, and SHA-256 when the device provides `sha256sum`.
+- `tools/adb_test_audiobook_direct_filter_route.py` - RAM-only experiment for a direct filtered Audiobooks album route; it is useful for investigation but not part of the release route because live testing did not improve the back stack.
+- `tools/adb_archive_audiobook_dev_artifacts.ps1` - dry-run-first helper for moving known development leftovers under `/usr/data/audiobooks` into a timestamped archive directory.
+- `tools/r1_audiobook_resume_daemon.sh` - on-device shell daemon that saves/restores audiobook positions.
+- `tools/r1_audiobook_db_maint.c` - on-device native helper that scans `/Audiobooks`, updates the media DB, and writes the audiobook catalog.
+- `tools/r1_audiobook_db_watch.sh` - on-device watcher that seeds a missing media DB when needed and runs the DB helper after boot or media DB updates.
+- `tools/adb_inject_touch_event.py` - builds/replays verified R1 touchscreen and physical-button input events used by multipart track restore tests.
