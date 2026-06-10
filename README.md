@@ -431,6 +431,22 @@ stock `/etc/init.d/T90adb`. Stock `rcS` only runs `S??*` scripts, which is why
 ADB does not survive a normal stock reboot even when `/usr/data/disableadb` is
 absent.
 
+## Attribution And Sources
+
+This project is unofficial and is not affiliated with or endorsed by HiBy. HiBy, HiBy R1, and the stock firmware remain HiBy's work.
+
+Information and techniques used while building this mod came from:
+
+- [HiBy R1 User Manual](https://guide.hiby.com/en/docs/products/audio_player/hiby_r1/guide) - official R1 behavior, menus, and user-facing device reference.
+- [HiBy R1 firmware 1.6 update page](https://store.hiby.com/apps/help-center#hc-r1-firmware-v16-update) - official stock firmware/recovery reference used as the base firmware target.
+- [Rockbox HiBy Port wiki](https://www.rockbox.org/wiki/HibyPort) - background on HiBy Linux players, hardware families, and porting context.
+- [bidhata/Hiby-R1-Mod](https://github.com/bidhata/Hiby-R1-Mod) - R1 custom firmware reference and proof that R1 firmware could be unpacked, patched, and repacked.
+- [SuperTaiyaki/hiby-firmware-tools](https://github.com/SuperTaiyaki/hiby-firmware-tools) - reference for HiBy firmware unpacking/repacking concepts.
+- [hiby-modding/hiby-mods](https://github.com/hiby-modding/hiby-mods) - broader HiBy custom firmware research, OTA format notes, database ideas, and recovery cautions.
+- [hiby-modding/hiby_os_crack](https://github.com/hiby-modding/hiby_os_crack) - additional HiBy OS firmware cracking and tooling reference.
+
+The audiobook-specific behavior in this repository was developed and tested on a personal normal HiBy R1 through local reverse engineering, live ADB testing, and repeated stock-firmware recovery tests. The audiobook metadata recommendations are based on common audiobook tagging practice and the user-supplied Audible/MP3Tag mapping used during development: album as the book title, album artist as the author, and numbered tracks/files for multipart books.
+
 ## What Is Here
 
 - `docs/investigation.md` - current findings about stock R1 firmware 1.6, databases, Books, resume settings, and patch ideas.
