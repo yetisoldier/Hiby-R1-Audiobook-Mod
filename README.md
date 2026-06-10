@@ -34,6 +34,7 @@ Manual install:
 4. On the R1, run the normal firmware update from the device UI.
 5. Wait for the update to report success and reboot.
 6. After a successful boot, delete or rename SD-root `r1.upt` so the updater does not keep offering the same update.
+7. On the R1, go into Music and run `Update Database`, then wait for the scan to complete.
 
 ADB-assisted install from this workspace:
 
