@@ -126,31 +126,6 @@ If the media database is missing or empty, the firmware can seed a valid empty D
 - Existing per-book resume records are stored internally under `/usr/data/audiobooks/resume.d`. They are small and survive SD-card replacement, but a resume record may not match a different card's renamed or reorganized audiobook files.
 - If an update ever boots to a black screen, use the normal R1 flash/recovery flow with a stock 1.6 `r1.upt`.
 
-## Safe Prototype
-
-Once ADB is enabled and the R1 is connected:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\adb_collect_r1_state.ps1
-```
-
-Then filter a copied media database:
-
-```powershell
-& "C:\Users\yetis\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" `
-  tools\filter_music_db.py `
-  device-dump\<timestamp>\usrlocal_media.db `
-  -o work\usrlocal_media.no-audiobooks.db
-```
-
-The default excluded prefixes are:
-
-- `a:\Audiobooks\`
-- `a:\Audiobook\`
-- `a:\Audio Books\`
-
-Custom prefixes can be added with repeated `--prefix` arguments.
-
 ## Current Status
 
 The current shareable candidate is `1.6.4-audiobook`. It is still based on stock HiBy R1 firmware 1.6 for the normal R1, not the R1 MIDI, but it no longer requires a PC/ADB database install for normal use.
@@ -450,6 +425,7 @@ absent.
 - `docs/investigation.md` - current findings about stock R1 firmware 1.6, databases, Books, resume settings, and patch ideas.
 - `docs/release_recovery_notes.md` - compact install, verification, and stock-recovery notes for the current audiobook release candidate.
 - `docs/production_release_checklist.md` - remaining checks before treating the current candidate as production instead of beta.
+- `docs/safe_prototype.md` - older non-flash ADB/database-filter prototype workflow, kept for developers and recovery-minded tinkerers.
 - `tools/extract_r1_firmware.ps1` - extracts `stock/r1.upt` and reconstructs `rootfs.squashfs` plus `xImage`.
 - `tools/filter_music_db.py` - removes `/Audiobooks/` style folders from a copied `usrlocal_media.db`.
 - `tools/add_audiobooks_to_media_db.py` - adds `/Audiobooks/` audio files to a copied `usrlocal_media.db` as stock media rows.
