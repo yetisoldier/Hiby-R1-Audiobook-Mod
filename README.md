@@ -7,12 +7,13 @@ This workspace is for investigating and prototyping audiobook support on the HiB
 Current shareable package:
 
 - Version marker: `1.6.4-audiobook`
-- Package: `work\audiobook-firmware-1.6.4\r1-audiobooks-1.6.4-audiobook.upt`
+- Download page: <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v1.0.0>
+- Package: `r1-audiobooks-1.6.4-audiobook.upt`
 - UPT MD5: `71c8d0d94bf50529a06aa9a31350f595`
 - UPT SHA256: `02b286676d93ec683307820e1ef40288f34ef21a42a24f5cbda361f2d3733b7b`
 - Base firmware: stock HiBy R1 1.6 for the normal R1, not the R1 MIDI
 
-Before flashing, keep a known-good stock 1.6 `r1.upt` available for recovery. The package should be installed only on the normal HiBy R1. Do not use it on the R1 MIDI.
+Before flashing, keep a known-good stock 1.6 `r1.upt` available for recovery. This mod has only been tested on one normal HiBy R1. Reinstalling stock firmware should reverse it, but it is still unofficial firmware, so use it at your own risk. Do not use it on the R1 MIDI or other HiBy players unless you are prepared to recover the device yourself.
 
 ## Install The Build
 
@@ -20,8 +21,8 @@ The R1 updater expects the firmware file at the SD-card root as `r1.upt`.
 
 Manual install:
 
-1. Copy `work\audiobook-firmware-1.6.4\r1-audiobooks-1.6.4-audiobook.upt` to the root of the SD card.
-2. Rename the copied file to `r1.upt`.
+1. Download `r1-audiobooks-1.6.4-audiobook.upt` from the release page.
+2. Rename the copied file to exactly `r1.upt`. This is important; the R1 will not recognize the update otherwise.
 3. Safely eject/remount the SD card if you copied it outside the player.
 4. On the R1, run the normal firmware update from the device UI.
 5. Wait for the update to report success and reboot.
@@ -51,6 +52,7 @@ From a UI and day-to-day use perspective:
 - If playback reaches within 45 seconds of the end of the whole book, the book is treated as completed; the next title tap starts it from the beginning.
 - Audiobook files are kept out of normal Music Albums, Genres, and Search catalog tables.
 - Folder browsing still works, so files under `/Audiobooks` can still be found through file/explorer style views.
+- The old text-file Books/TXT reader launcher flow is replaced by Audiobooks.
 - The About/version strings show the custom build, although the R1 UI may truncate the visible suffix to something like `1.6.4-a`.
 
 The stock Music player behavior is otherwise intentionally preserved: normal music playback, Now Playing, progress bar, physical controls, and the file explorer remain stock-style.
@@ -92,7 +94,7 @@ Metadata expectations:
 - `TCOM` / Composer may be narrator.
 - Track numbers or numbered filenames are strongly recommended for multipart books.
 
-The firmware does not require perfect audiobook tags. If metadata is missing, the on-device helper derives basic author, book title, chapter/title, and order from folder and filename structure. Better tags and numbered files make the book list and multipart resume more reliable.
+The firmware does not require perfect audiobook tags. If metadata is missing, the on-device helper derives basic author, book title, chapter/title, and order from folder and filename structure. Better tags and numbered files make the book list and multipart resume more reliable. MP3Tag works well for this; Plex-style audiobook tagging, with album as the book title and album artist as the author, is a good fit.
 
 ## After Installing
 
@@ -119,6 +121,8 @@ If the media database is missing or empty, the firmware can seed a valid empty D
 
 - Back navigation from the Audiobooks title list is not perfectly custom: pressing Back once lands on the stock Genres page, and pressing Back again returns to the launcher.
 - Title selection can take a second or two. Multipart resume may briefly show the track list or advance through tracks while it lands on the saved file and position.
+- There is currently no audiobook search UI; browse by scrolling through the title list.
+- The old TXT reader is no longer available from the launcher because the Books section is repurposed as Audiobooks.
 - The visible About screen version is truncated by the stock UI, even though `/etc/r1_audiobook_version` and `/usr/resource/config.json` contain the full `1.6.4-audiobook` marker.
 - ADB does not persist in practice on the test R1; it must be manually re-enabled after reboot or update.
 - The DB helper provides practical fallback metadata but is not a full audiobook tag parser. Clean folder structure and numbered multipart files matter.
