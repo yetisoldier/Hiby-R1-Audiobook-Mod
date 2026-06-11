@@ -78,6 +78,12 @@ python tools\adb_test_audiobook_launcher_route_variant.py `
 If the R1 glitches, crashes, or shows the wrong list, reboot to return to the
 flashed route.
 
+`tools\adb_test_audiobook_direct_filter_route.py` tested a more direct filtered
+album route in RAM on 2026-06-11. The patch applied and reverted cleanly, but
+opening Audiobooks showed `No music found` instead of the title list. That route
+is not a usable fix for the Back-stack quirk unless the underlying route/query
+arguments are discovered more precisely.
+
 ## Likely Path Forward
 
 The safest route is to keep the current title view for release builds and test
