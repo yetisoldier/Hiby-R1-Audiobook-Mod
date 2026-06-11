@@ -56,8 +56,17 @@ echo '--- version ---'
 cat /etc/r1_audiobook_version 2>/dev/null || true
 echo '--- df ---'
 df -h /usr/data /usr/data/mnt/sd_0 2>/dev/null || true
+echo '--- uptime/load ---'
+cat /proc/uptime 2>/dev/null || true
+cat /proc/loadavg 2>/dev/null || true
+echo '--- memory ---'
+cat /proc/meminfo 2>/dev/null | head -40 || true
 echo '--- processes ---'
 ps | grep -E 'hiby_player|r1_audiobook|db_watch' | grep -v grep || true
+echo '--- top ---'
+top -n 1 2>/dev/null | head -30 || true
+echo '--- kernel messages tail ---'
+dmesg 2>/dev/null | tail -120 || true
 echo '--- current user.ini path slot hex ---'
 dd if=/usr/data/user.ini bs=1 skip=40 count=512 2>/dev/null | xxd -p -c 64 || true
 echo '--- resume records ---'

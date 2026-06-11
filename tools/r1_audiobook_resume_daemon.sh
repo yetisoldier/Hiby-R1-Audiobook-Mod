@@ -12,6 +12,7 @@ PID_FILE=${AUDIOBOOK_RESUME_PID:-$BASE_DIR/resume-daemon.pid}
 CLOSED_INHERITED_SOCKET_FDS=0
 
 INTERVAL_SECONDS=${AUDIOBOOK_INTERVAL_SECONDS:-5}
+IDLE_INTERVAL_SECONDS=${AUDIOBOOK_IDLE_INTERVAL_SECONDS:-3}
 MIN_SAVE_MS=${AUDIOBOOK_MIN_SAVE_MS:-3000}
 RESTORE_ONLY_BEFORE_MS=${AUDIOBOOK_RESTORE_ONLY_BEFORE_MS:-15000}
 RESTORE_MIN_MS=${AUDIOBOOK_RESTORE_MIN_MS:-10000}
@@ -1351,10 +1352,12 @@ maybe_autostart_book_title() {
 
 main() {
   mkdir -p "$BASE_DIR" "$STORE_DIR"
+  case "$INTERVAL_SECONDS" in ''|*[!0-9]*|0) INTERVAL_SECONDS=1 ;; esac
+  case "$IDLE_INTERVAL_SECONDS" in ''|*[!0-9]*|0) IDLE_INTERVAL_SECONDS=3 ;; esac
   close_inherited_socket_fds
   refresh_catalog_album_patterns
   echo "$$" >"$PID_FILE"
-  log "start interval=${INTERVAL_SECONDS}s new_track_commit_ms=$NEW_TRACK_COMMIT_MS backward_save_guard_ms=$BACKWARD_SAVE_GUARD_MS closed_inherited_socket_fds=$CLOSED_INHERITED_SOCKET_FDS position_source=$POSITION_SOURCE duration_addr=$PLAYER_DURATION_ADDR restore_enabled=$RESTORE_ENABLED track_restore_enabled=$TRACK_RESTORE_ENABLED ui_seek_fallback=$UI_SEEK_FALLBACK_ENABLED ui_seek_screen_guard=$UI_SEEK_SCREEN_GUARD_ENABLED ui_seek_touch_frames=$UI_SEEK_TOUCH_FRAMES book_title_autostart=$BOOK_TITLE_AUTOSTART_ENABLED book_title_direct_track_select=$BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED book_title_direct_track_preplay=$BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED book_title_require_path=$BOOK_TITLE_AUTOSTART_REQUIRE_PATH book_title_context_seconds=$BOOK_TITLE_CONTEXT_SECONDS catalog_albums=$CATALOG_ALBUM_PATTERNS"
+  log "start interval=${INTERVAL_SECONDS}s idle_interval=${IDLE_INTERVAL_SECONDS}s new_track_commit_ms=$NEW_TRACK_COMMIT_MS backward_save_guard_ms=$BACKWARD_SAVE_GUARD_MS closed_inherited_socket_fds=$CLOSED_INHERITED_SOCKET_FDS position_source=$POSITION_SOURCE duration_addr=$PLAYER_DURATION_ADDR restore_enabled=$RESTORE_ENABLED track_restore_enabled=$TRACK_RESTORE_ENABLED ui_seek_fallback=$UI_SEEK_FALLBACK_ENABLED ui_seek_screen_guard=$UI_SEEK_SCREEN_GUARD_ENABLED ui_seek_touch_frames=$UI_SEEK_TOUCH_FRAMES book_title_autostart=$BOOK_TITLE_AUTOSTART_ENABLED book_title_direct_track_select=$BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED book_title_direct_track_preplay=$BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED book_title_require_path=$BOOK_TITLE_AUTOSTART_REQUIRE_PATH book_title_context_seconds=$BOOK_TITLE_CONTEXT_SECONDS catalog_albums=$CATALOG_ALBUM_PATTERNS"
 
   last_path=
   last_saved_bucket=
@@ -1373,8 +1376,10 @@ main() {
   book_title_pre_restore_log_key=
 
   while :; do
+    loop_sleep=$IDLE_INTERVAL_SECONDS
     book_title_seq=$(book_title_marker_seq 2>/dev/null || true)
     if [ -n "$book_title_seq" ] && [ "$book_title_seq" != "$last_book_title_seq" ]; then
+      loop_sleep=$INTERVAL_SECONDS
       maybe_autostart_book_title "$book_title_seq" || log "book-title autostart failed seq=$book_title_seq"
       last_book_title_seq=$book_title_seq
     fi
@@ -1382,6 +1387,7 @@ main() {
     path=$(current_path)
     case "$path" in
       [aA]:\\Audiobooks\\*)
+        loop_sleep=$INTERVAL_SECONDS
         now=$(date +%s 2>/dev/null || echo 0)
         if [ "$BOOK_TITLE_CONTEXT_SECONDS" -gt 0 ] 2>/dev/null; then
           book_title_context_until=$((now + BOOK_TITLE_CONTEXT_SECONDS))
@@ -1550,7 +1556,7 @@ main() {
     esac
 
     last_path=$path
-    sleep "$INTERVAL_SECONDS"
+    sleep "$loop_sleep"
   done
 }
 

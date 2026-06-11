@@ -59,6 +59,9 @@ incremental changes that can be tested off-device before a new firmware build.
 - The catalog also carries optional `series` and `series_part` columns derived
   from Seanap/Plex-style folders. Books without a series folder keep those
   fields blank.
+- The resume daemon now uses a slower idle polling interval when playback is not
+  on an audiobook path. Active audiobook resume still uses the tuned fast
+  interval, but normal music playback does less background work.
 - Multipart title-tap resume now has a pre-play direct-start path. When the
   daemon can identify the selected book from the stock track-list memory, it
   reads the saved resume record and taps the saved track row before playback
@@ -148,6 +151,9 @@ When the R1 is available again, the most useful tests are:
    powershell -NoProfile -ExecutionPolicy Bypass `
      -File tools\adb_collect_audiobook_resume_debug.ps1
    ```
+
+   The same collector is also useful after normal-music lag, freezes, or random
+   reboots once ADB is available again.
 
 4. Repeat once with pre-play direct start disabled to compare fallback behavior:
 

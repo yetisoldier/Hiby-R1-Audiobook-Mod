@@ -385,6 +385,7 @@ def verify(
         require("count=320" in resume_init_text, "resume init clears stock last-file slot and adjacent fragments", failures)
         require("00003a005c0041007500640069006f0062006f006f006b007300" in resume_init_text, "resume init also clears partially nulled audiobook path", failures)
         require("AUDIOBOOK_INTERVAL_SECONDS=1" in resume_init_text, "resume init script uses tuned 1s polling", failures)
+        require("AUDIOBOOK_IDLE_INTERVAL_SECONDS=3" in resume_init_text, "resume init script uses lower-power idle polling", failures)
         require("AUDIOBOOK_BOOK_TITLE_AUTOSTART_DELAY_SECONDS=1" in resume_init_text, "resume init script uses tuned title autostart delay", failures)
         require("AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED=1" in resume_init_text, "resume init enables pre-play direct track selection", failures)
         require("AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_ROWS_PER_SWIPE=4" in resume_init_text, "resume init sets direct track list geometry", failures)

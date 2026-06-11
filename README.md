@@ -147,6 +147,7 @@ If the media database is missing or empty, the firmware can seed a valid empty D
 - The DB helper provides practical fallback metadata but is not a full audiobook tag parser. Clean folder structure and numbered multipart files matter.
 - If the SD card is replaced, the player should still boot and Music should still work. Run the on-device Music scan/update and wait or reboot so the watcher can rebuild catalogs for the new card.
 - Existing per-book resume records are stored internally under `/usr/data/audiobooks/resume.d`. They are small and survive SD-card replacement, but a resume record may not match a different card's renamed or reorganized audiobook files.
+- Development builds after `1.6.4-audiobook` use lower-power idle polling for the resume daemon while normal music or non-audiobook content is active. The stable `1.6.4-audiobook` release polls more aggressively, which can have a small battery and responsiveness cost during normal music playback.
 - If an update ever boots to a black screen, use the normal R1 flash/recovery flow with a stock 1.6 `r1.upt`.
 
 ## Current Status
@@ -196,8 +197,9 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 ```
 
 For live resume testing, `tools\adb_collect_audiobook_resume_debug.ps1` collects
-the daemon logs, catalog, resume records, process state, and `user.ini` snapshot
-into `work\resume-debug\...` before a reboot clears useful clues.
+the daemon logs, catalog, resume records, process/memory/kernel state, and
+`user.ini` snapshot into `work\resume-debug\...` before a reboot clears useful
+clues.
 
 Author/Title/Series audiobook subviews are being researched in
 `docs\audiobook_views_research.md`. The current release opens the Title view;
