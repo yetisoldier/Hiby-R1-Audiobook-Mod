@@ -36,6 +36,7 @@ $psFiles = @(
     "tools\adb_build_release_audiobook_db.ps1",
     "tools\adb_collect_audiobook_resume_debug.ps1",
     "tools\adb_collect_r1_state.ps1",
+    "tools\adb_probe_usb_mode_toggle.ps1",
     "tools\compare_r1_settings_snapshots.ps1",
     "tools\adb_install_audiobook_resume_runtime.ps1",
     "tools\adb_install_release_audiobook_db.ps1",

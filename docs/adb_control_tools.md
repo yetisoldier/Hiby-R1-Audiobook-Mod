@@ -76,6 +76,14 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -CompareTo work\settings-snapshots\YYYYMMDD-HHMMSS-before-usb-mode
 ```
 
+Or use the guided wrapper, which captures before, waits while the R1 setting is
+changed, then captures and compares after:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File tools\adb_probe_usb_mode_toggle.ps1
+```
+
 The comparison report is written into the second snapshot folder as
 `settings-snapshot-comparison.txt`. You can also compare two existing snapshots
 without touching the device:
