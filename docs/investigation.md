@@ -135,7 +135,9 @@ Collected from the connected R1 over ADB on 2026-06-09.
 - Device is running the stock 1.6 `/usr/bin/hiby_player` and `config.json` from the downloaded firmware.
 - Root filesystem is read-only SquashFS; `/usr/data` is writable UBIFS; SD card is mounted at `/usr/data/mnt/sd_0`.
 - Stock ADB boot support exists but is not run automatically: `/etc/init.d/T90adb` starts ADB, while `/etc/init.d/rcS` only runs `/etc/init.d/S??*`.
-- The writable `/usr/data/disableadb` marker blocks ADB startup when present, but on this device it was already absent. For development firmware builds, `tools/build_r1_audiobook_firmware.ps1` copies `T90adb` to `S90adb`; despite that, the user still has to manually enable ADB after reboot/update, so release verification must not assume persistent ADB.
+- The writable `/usr/data/disableadb` marker blocks ADB startup when present, but on this device it was already absent. Both stock ADB backends, `/etc/init.d/adb/S310adb` and `/etc/init.d/adb/S440adb`, check that marker before starting.
+- For development firmware builds, `tools/build_r1_audiobook_firmware.ps1 -EnableBootAdb` can copy `T90adb` to `S90adb`; release verification must not assume persistent ADB unless that opt-in marker is present.
+- Static strings in `hiby_player` point the stock USB/Dock UI toward `/data/user.ini`, `usb_mode`, `usb_working_mode`, `/usr/bin/adbon`, and `/usr/bin/adboff`. A before/after snapshot around `System -> USB device mode` should confirm whether the existing Dock setting can become a user-facing boot-ADB toggle.
 - Current SD card has `/Audiobooks`, `/Books`, and `/Music`.
 - Current media DB has 114 normal music tracks in `MEDIA_TABLE`/`MEDIA2_TABLE`, all under `a:\Music\`.
 - Current audiobook records are not in `MEDIA_TABLE`; they are in `BOOK_TABLE`, `BOOK_RECENT_TABLE`, `BOOKMARK_TABLE`, and a few `HISTORY_TABLE` rows.

@@ -93,6 +93,24 @@ A brand-new settings menu item is possible in theory, but it would require
 deeper `hiby_player` UI binary patching and carries more black-screen risk than
 reusing the stock setting.
 
+Static firmware notes that narrow the live test:
+
+- `hiby_player` embeds `/data/user.ini`, `usb_mode`, `usb_working_mode`,
+  `VG_LISTVIEW_USB_MODE`, `/usr/bin/adbon`, and `/usr/bin/adboff`.
+- The resource route for `USB device mode` is `hl_usb_mode_d` from
+  `usr/resource/hl_json/hl_sys_set_a.json`.
+- `set_functions.json` enables `usb_working_mode` and lists `usb_mode`, so both
+  should be watched in settings snapshots.
+- `/usr/bin/adbon` stops mass storage and starts `/etc/init.d/adb/S440adb`;
+  `/usr/bin/adboff` stops ADB and restarts mass storage.
+- Both stock ADB backends, `S310adb` and `S440adb`, refuse to start when
+  `/usr/data/disableadb` exists.
+
+For binary settings files such as `/data/user.ini`, the snapshot comparison
+report includes byte-level detail from `tools\compare_binary_settings.py`.
+That detail is often more useful than a whole-file hash because it shows nearby
+UTF-16LE strings and changed offsets.
+
 ## Basic Checks
 
 ```powershell

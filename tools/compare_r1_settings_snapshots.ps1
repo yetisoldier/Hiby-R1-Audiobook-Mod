@@ -146,6 +146,7 @@ foreach ($path in $allPaths) {
 $beforePulled = Read-PulledFileManifest $beforePath
 $afterPulled = Read-PulledFileManifest $afterPath
 $pulledChanges = New-Object System.Collections.Generic.List[string]
+$changedPulledNames = New-Object System.Collections.Generic.List[string]
 $allPulledNames = @($beforePulled.Keys) + @($afterPulled.Keys) | Sort-Object -Unique
 foreach ($name in $allPulledNames) {
     $beforeEntry = $beforePulled[$name]
@@ -158,6 +159,7 @@ foreach ($name in $allPulledNames) {
     }
     elseif (($beforeEntry.Size -ne $afterEntry.Size) -or ($beforeEntry.Hash -ne $afterEntry.Hash)) {
         $pulledChanges.Add("CHANGED $($beforeEntry.Size)->$($afterEntry.Size) $($beforeEntry.Hash)->$($afterEntry.Hash) $name") | Out-Null
+        $changedPulledNames.Add($name) | Out-Null
     }
 }
 
@@ -167,6 +169,30 @@ Add-Line $lines "Before: $beforePath"
 Add-Line $lines "After : $afterPath"
 Add-ChangeSection $lines "Writable State Manifest Changes" $manifestChanges.ToArray()
 Add-ChangeSection $lines "Pulled Candidate File Changes" $pulledChanges.ToArray()
+if ($changedPulledNames.Count -gt 0) {
+    Add-Line $lines ""
+    Add-Line $lines "Binary Detail For Changed Pulled Files"
+    Add-Line $lines "--------------------------------------"
+    $binaryCompare = Join-Path $PSScriptRoot "compare_binary_settings.py"
+    if (Test-Path -LiteralPath $binaryCompare) {
+        foreach ($name in $changedPulledNames | Select-Object -First 5) {
+            Add-Line $lines ""
+            Add-Line $lines "## $name"
+            $beforeFile = $beforePulled[$name].Path
+            $afterFile = $afterPulled[$name].Path
+            $detail = & python $binaryCompare $beforeFile $afterFile --context 48 --limit 4 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Add-Line $lines "WARN binary comparison failed for $name"
+            }
+            foreach ($line in $detail) {
+                Add-Line $lines $line
+            }
+        }
+    }
+    else {
+        Add-Line $lines "WARN missing $binaryCompare"
+    }
+}
 if ($ignoredChanges.Count -gt 0) {
     Add-ChangeSection $lines "Ignored Volatile Manifest Changes" $ignoredChanges.ToArray()
 }

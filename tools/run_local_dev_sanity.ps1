@@ -71,6 +71,7 @@ Invoke-Checked {
         tools\verify_r1_audiobook_build.py `
         tools\write_audiobook_resume_catalog.py `
         tools\check_audiobook_release_state.py `
+        tools\compare_binary_settings.py `
         tools\test_r1_db_maint_local_fixture.py `
         tools\adb_test_audiobook_launcher_route_variant.py `
         tools\adb_test_audiobook_ui_seek_fallback.py `
