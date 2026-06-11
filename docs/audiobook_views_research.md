@@ -56,6 +56,12 @@ python tools\audiobook_catalog_report.py path\to\catalog-books.tsv
 The report groups the same book-level catalog by author, series, and title and
 keeps standalone books separate from series entries.
 
+Live catalog report on 2026-06-11 from
+`work\installed-release-verification\20260611-081553\catalog-books.tsv` showed
+6 books, 2 authors, 2 series, 4 standalone books, and 3 multipart books. The
+series view would be sparse but valid: `Snow Like Ashes` has `Ice Like Fire`
+as part `2`, and `These Rebel Waves` has `These Rebel Waves` as part `1`.
+
 ## Safe Test Tool
 
 `tools\adb_test_audiobook_launcher_route_variant.py` can temporarily change the
