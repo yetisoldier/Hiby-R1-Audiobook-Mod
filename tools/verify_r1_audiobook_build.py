@@ -105,7 +105,6 @@ PACKET_SIZES = {
 }
 
 NEW_FILE_MODE_CHECKS = {
-    "squashfs-root/etc/init.d/S90adb": "-rwxr-xr-x",
     "squashfs-root/etc/init.d/S91audiobook_resume.sh": "-rwxr-xr-x",
     "squashfs-root/etc/r1_audiobook_version": "-rw-r--r--",
     "squashfs-root/usr/bin/r1_audiobook_resume_helper": "-rwxr-xr-x",
@@ -132,6 +131,10 @@ NEW_FILE_MODE_CHECKS = {
     "squashfs-root/usr/bin/r1_key_next_event0.bin": "-rw-r--r--",
     "squashfs-root/usr/bin/r1_key_prev_event2.bin": "-rw-r--r--",
     "squashfs-root/usr/bin/r1_audiobook_catalog.tsv": "-rw-r--r--",
+}
+
+BOOT_ADB_FILE_MODE_CHECKS = {
+    "squashfs-root/etc/init.d/S90adb": "-rwxr-xr-x",
 }
 
 DB_MAINT_FILE_MODE_CHECKS = {
@@ -293,6 +296,7 @@ def verify(
     expected_version: str,
     expected_label: str,
     require_db_maintenance: bool,
+    require_boot_adb: bool,
     stock_rootfs: Path,
     unsquashfs: Path,
     upt_name: str,
@@ -303,7 +307,9 @@ def verify(
     upt = find_upt(out_dir, upt_name)
     rootfs = out_dir / "rootfs.squashfs"
 
-    required_paths = [upt, rootfs, player, root / "etc/init.d/S90adb", root / "etc/init.d/S91audiobook_resume.sh"]
+    required_paths = [upt, rootfs, player, root / "etc/init.d/S91audiobook_resume.sh"]
+    if require_boot_adb:
+        required_paths.append(root / "etc/init.d/S90adb")
     if require_db_maintenance:
         required_paths.extend(
             [
@@ -336,6 +342,17 @@ def verify(
     for relative, expected_mode in NEW_FILE_MODE_CHECKS.items():
         actual_mode = entries.get(relative, SquashfsEntry("", "")).mode
         require(actual_mode == expected_mode, f"{relative} mode {actual_mode}", failures)
+    if require_boot_adb:
+        for relative, expected_mode in BOOT_ADB_FILE_MODE_CHECKS.items():
+            actual_mode = entries.get(relative, SquashfsEntry("", "")).mode
+            require(actual_mode == expected_mode, f"{relative} mode {actual_mode}", failures)
+    else:
+        for relative in BOOT_ADB_FILE_MODE_CHECKS:
+            actual_mode = entries.get(relative, SquashfsEntry("", "")).mode
+            if actual_mode:
+                print(f"OK   optional boot ADB present: {relative} mode {actual_mode}")
+            else:
+                print(f"OK   optional boot ADB absent: {relative}")
     if require_db_maintenance:
         for relative, expected_mode in DB_MAINT_FILE_MODE_CHECKS.items():
             actual_mode = entries.get(relative, SquashfsEntry("", "")).mode
@@ -347,6 +364,10 @@ def verify(
         require(f"version={expected_version}" in version_text, f"custom version marker has version={expected_version}", failures)
         require(f"label={expected_label}" in version_text, "custom version marker has visible label", failures)
         require("base_firmware=1.6" in version_text, "custom version marker records stock base firmware", failures)
+        if require_boot_adb:
+            require("boot_adb=enabled" in version_text, "custom version marker records boot ADB enabled", failures)
+        elif "boot_adb=" in version_text:
+            print("OK   custom version marker records boot ADB state")
     else:
         require(False, "custom version marker exists", failures)
 
@@ -529,6 +550,11 @@ def main() -> int:
         action="store_true",
         help="Require the on-device audiobook DB maintenance helper and watcher.",
     )
+    parser.add_argument(
+        "--require-boot-adb",
+        action="store_true",
+        help="Require the optional development boot-ADB init script and marker.",
+    )
     args = parser.parse_args()
     return verify(
         args.out_dir,
@@ -536,6 +562,7 @@ def main() -> int:
         expected_version=args.expected_version,
         expected_label=args.expected_label,
         require_db_maintenance=args.require_db_maintenance,
+        require_boot_adb=args.require_boot_adb,
         stock_rootfs=args.stock_rootfs,
         unsquashfs=args.unsquashfs,
         upt_name=args.upt_name,

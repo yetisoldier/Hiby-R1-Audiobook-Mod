@@ -12,6 +12,76 @@ development:
 
 ADB still has to be enabled manually after a reboot.
 
+## Boot ADB For Development
+
+Persistent ADB should stay a developer option, not a normal release default.
+Always-on ADB changes the device's debug/security posture and may have a small
+power cost while plugged into USB.
+
+Stock firmware includes `/etc/init.d/T90adb`, but the boot script only runs
+`/etc/init.d/S??*`. Development firmware can opt into boot ADB by building with
+`-EnableBootAdb`, which copies the stock helper to `/etc/init.d/S90adb` and adds
+`boot_adb=enabled` to `/etc/r1_audiobook_version`.
+
+Check the currently connected device:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File tools\adb_manage_boot_adb.ps1
+```
+
+Allow boot ADB on the next reboot, if the installed firmware has `S90adb`:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File tools\adb_manage_boot_adb.ps1 `
+  -Action enable
+```
+
+Block boot ADB on the next reboot:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File tools\adb_manage_boot_adb.ps1 `
+  -Action disable
+```
+
+The live helper only toggles `/usr/data/disableadb`; it does not modify the
+read-only rootfs and does not restart the current ADB session. If the installed
+firmware lacks `/etc/init.d/S90adb`, a new development firmware must be built
+with `-EnableBootAdb`.
+
+## Finding A UI Toggle
+
+The stock resources already expose `System -> USB device mode`, with a `Dock`
+choice that appears to be the UI side of ADB/dock mode. That is the preferred
+place for a user-facing toggle if live testing confirms where the selection is
+persisted.
+
+Capture a before snapshot:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File tools\adb_snapshot_r1_settings.ps1 `
+  -Label before-usb-mode
+```
+
+Change `System -> USB device mode` on the R1, then capture the after snapshot
+and compare it with the folder printed by the first command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File tools\adb_snapshot_r1_settings.ps1 `
+  -Label after-usb-mode `
+  -CompareTo work\settings-snapshots\YYYYMMDD-HHMMSS-before-usb-mode
+```
+
+If the diff identifies the saved USB/Dock setting, a development boot script can
+honor that same value so the existing UI setting becomes the boot-ADB toggle.
+A brand-new settings menu item is possible in theory, but it would require
+deeper `hiby_player` UI binary patching and carries more black-screen risk than
+reusing the stock setting.
+
 ## Basic Checks
 
 ```powershell

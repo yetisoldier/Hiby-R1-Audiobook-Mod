@@ -24,6 +24,8 @@ param(
 
     [switch]$IncludeSelectDispatchBranch,
 
+    [switch]$EnableBootAdb,
+
     [switch]$IncludeAudiobookResumeRuntime,
 
     [Parameter(Mandatory=$false)]
@@ -119,19 +121,22 @@ Copy-Item -Force -LiteralPath $patchedPlayer -Destination $playerPath
 python tools\patch_r1_resource_text.py $rootTree --about-model $CustomVersionLabel --product-version $CustomVersionId
 
 $customVersionMarker = Join-Path $rootTree "etc\r1_audiobook_version"
+$bootAdbMarker = if ($EnableBootAdb) { "enabled" } else { "disabled" }
 @"
 version=$CustomVersionId
 label=$CustomVersionLabel
 base_firmware=1.6
+boot_adb=$bootAdbMarker
 "@ | Set-Content -LiteralPath $customVersionMarker -Encoding ASCII
 
 # Stock firmware ships the ADB startup helper as T90adb, but rcS only runs
-# /etc/init.d/S??* scripts. Install the helper under an S-name for development
-# builds, though the test device still requires manual ADB enabling after
-# reboot/update, so release workflows must not rely on persistent ADB.
-$adbBootScript = Join-Path $rootTree "etc\init.d\T90adb"
-$persistentAdbBootScript = Join-Path $rootTree "etc\init.d\S90adb"
-Copy-Item -Force -LiteralPath $adbBootScript -Destination $persistentAdbBootScript
+# /etc/init.d/S??* scripts. Keep boot ADB opt-in so shareable release builds do
+# not silently expose a debug bridge after reboot.
+if ($EnableBootAdb) {
+    $adbBootScript = Join-Path $rootTree "etc\init.d\T90adb"
+    $persistentAdbBootScript = Join-Path $rootTree "etc\init.d\S90adb"
+    Copy-Item -Force -LiteralPath $adbBootScript -Destination $persistentAdbBootScript
+}
 
 if ($IncludeAudiobookResumeRuntime) {
     $resumeHelperPath = Resolve-PathStrict $AudiobookResumeHelper
@@ -427,8 +432,11 @@ if ($LASTEXITCODE -ne 0) {
     throw "failed to generate stock SquashFS pseudo modes"
 }
 
-$newFileModeOverrides = @(
-    @{ Path = "etc\init.d\S90adb"; Mode = "0755" },
+$newFileModeOverrides = @()
+if ($EnableBootAdb) {
+    $newFileModeOverrides += @{ Path = "etc\init.d\S90adb"; Mode = "0755" }
+}
+$newFileModeOverrides += @(
     @{ Path = "etc\init.d\S91audiobook_resume.sh"; Mode = "0755" },
     @{ Path = "etc\init.d\S92audiobook_db_maint.sh"; Mode = "0755" },
     @{ Path = "etc\r1_audiobook_version"; Mode = "0644" },
