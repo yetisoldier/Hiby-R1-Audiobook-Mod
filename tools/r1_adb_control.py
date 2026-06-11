@@ -47,7 +47,7 @@ TOUCH_PRESETS: dict[str, TouchPreset] = {
     "main-music": TouchPreset(120, 145, "launcher Music tile"),
     "main-stream": TouchPreset(360, 145, "launcher Stream media tile"),
     "main-wireless": TouchPreset(120, 390, "launcher Wireless tile"),
-    "main-audiobooks": TouchPreset(360, 390, "launcher Audiobooks tile"),
+    "main-audiobooks": TouchPreset(360, 490, "launcher Audiobooks tile"),
     "main-system": TouchPreset(120, 640, "launcher System tile"),
     "main-about": TouchPreset(360, 640, "launcher About tile"),
     "soft-back": TouchPreset(34, 88, "top-left back arrow"),
