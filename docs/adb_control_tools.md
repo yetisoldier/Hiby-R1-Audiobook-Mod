@@ -109,6 +109,8 @@ Static firmware notes that narrow the live test:
   `usr/resource/hl_json/hl_sys_set_a.json`.
 - `set_functions.json` enables `usb_working_mode` and lists `usb_mode`, so both
   should be watched in settings snapshots.
+- The stock settings table stores `usb_working_mode` as ID `8` and `usb_mode`
+  as ID `9`, which may help interpret byte-level `/data/user.ini` diffs.
 - `/usr/bin/adbon` stops mass storage and starts `/etc/init.d/adb/S440adb`;
   `/usr/bin/adboff` stops ADB and restarts mass storage.
 - Both stock ADB backends, `S310adb` and `S440adb`, refuse to start when

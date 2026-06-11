@@ -139,6 +139,10 @@ Collected from the connected R1 over ADB on 2026-06-09.
 - For development firmware builds, `tools/build_r1_audiobook_firmware.ps1 -EnableBootAdb` can copy `T90adb` to `S90adb`; release verification must not assume persistent ADB unless that opt-in marker is present.
 - Static strings in `hiby_player` point the stock USB/Dock UI toward `/data/user.ini`, `usb_mode`, `usb_working_mode`, `/usr/bin/adbon`, and `/usr/bin/adboff`. A before/after snapshot around `System -> USB device mode` should confirm whether the existing Dock setting can become a user-facing boot-ADB toggle.
 - The default WSL `objdump` can read the ELF sections but cannot disassemble MIPS. `tools/install_mips_binutils_wsl.ps1` downloads `binutils-mipsel-linux-gnu` into `.deps`, and `tools/mips_objdump_wsl.ps1` runs the extracted `mipsel-linux-gnu-objdump` with the required local library path.
+- MIPS data inspection shows a stock settings table with adjacent numeric IDs:
+  `usb_working_mode` is ID `8` and `usb_mode` is ID `9`. The live USB-mode
+  snapshot should therefore watch for small binary changes near those setting
+  slots in `/data/user.ini`, not only whole-file hash changes.
 - Current SD card has `/Audiobooks`, `/Books`, and `/Music`.
 - Current media DB has 114 normal music tracks in `MEDIA_TABLE`/`MEDIA2_TABLE`, all under `a:\Music\`.
 - Current audiobook records are not in `MEDIA_TABLE`; they are in `BOOK_TABLE`, `BOOK_RECENT_TABLE`, `BOOKMARK_TABLE`, and a few `HISTORY_TABLE` rows.
