@@ -53,6 +53,24 @@ log() {
   :
 }
 
+audio_hex='61003a005c0041007500640069006f0062006f006f006b0073005c0042006f006f006b005c00300031002e006d00700033000000'
+audio_upper_hex='41003a005c0041007500640069006f0062006f006f006b0073005c0042006f006f006b005c00300031002e006d00700033000000'
+audio_rootless_hex='5c0041007500640069006f0062006f006f006b0073005c0042006f006f006b005c00300031002e006d00700033000000'
+music_hex='61003a005c004d0075007300690063005c004100720074006900730074005c00300031002e006d00700033000000'
+
+assert_true "path slot recognizes audiobook lowercase drive" path_slot_hex_is_audiobook "$audio_hex"
+assert_true "path slot recognizes audiobook uppercase drive" path_slot_hex_is_audiobook "$audio_upper_hex"
+assert_true "path slot recognizes rootless audiobook path" path_slot_hex_is_audiobook "$audio_rootless_hex"
+assert_false "path slot ignores music path" path_slot_hex_is_audiobook "$music_hex"
+assert_true "path preview recognizes audiobook path" path_preview_is_audiobook 'a:\Audiobooks\Book\01.mp3'
+assert_true "path preview recognizes rootless audiobook path" path_preview_is_audiobook '\Audiobooks\Book\01.mp3'
+assert_false "path preview ignores music path" path_preview_is_audiobook 'a:\Music\Artist\01.mp3'
+
+CURRENT_PATH_HEX_CACHE=
+CURRENT_PATH_VALUE_CACHE=
+assert_eq "path slot decodes audiobook path" 'a:\Audiobooks\Book\01.mp3' "$(current_path_from_hex "$audio_hex")"
+assert_eq "path slot normalizes rootless audiobook path" 'a:\Audiobooks\Book\01.mp3' "$(current_path_from_hex "$audio_rootless_hex")"
+
 sleep_track_switch_poll() {
   :
 }

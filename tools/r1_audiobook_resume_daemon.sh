@@ -10,6 +10,9 @@ USER_INI=${AUDIOBOOK_USER_INI:-/usr/data/user.ini}
 LOG=${AUDIOBOOK_RESUME_LOG:-$BASE_DIR/resume-daemon.log}
 PID_FILE=${AUDIOBOOK_RESUME_PID:-$BASE_DIR/resume-daemon.pid}
 CLOSED_INHERITED_SOCKET_FDS=0
+PLAYER_PID_CACHE=
+CURRENT_PATH_HEX_CACHE=
+CURRENT_PATH_VALUE_CACHE=
 
 INTERVAL_SECONDS=${AUDIOBOOK_INTERVAL_SECONDS:-5}
 IDLE_INTERVAL_SECONDS=${AUDIOBOOK_IDLE_INTERVAL_SECONDS:-3}
@@ -289,6 +292,16 @@ player_pid() {
   ps | sed -n '/\/usr\/bin\/hiby_player$/ { /grep/d; s/^ *\([0-9][0-9]*\).*/\1/p; q; }'
 }
 
+player_pid_cached() {
+  if [ -n "${PLAYER_PID_CACHE:-}" ] && [ -d "/proc/$PLAYER_PID_CACHE" ]; then
+    printf '%s\n' "$PLAYER_PID_CACHE"
+    return 0
+  fi
+  PLAYER_PID_CACHE=$(player_pid)
+  [ -n "$PLAYER_PID_CACHE" ] || return 1
+  printf '%s\n' "$PLAYER_PID_CACHE"
+}
+
 u32le_from_hex() {
   awk '
     function h2d(h, i, c, n) {
@@ -308,7 +321,7 @@ u32le_from_hex() {
 }
 
 position_ms_memory() {
-  pid=$(player_pid)
+  pid=$(player_pid_cached)
   [ -n "$pid" ] || return 1
   hex=$(dd if="/proc/$pid/mem" bs=1 skip="$PLAYER_POSITION_ADDR" count=4 2>/dev/null | xxd -p -c 4)
   [ -n "$hex" ] || return 1
@@ -318,7 +331,7 @@ position_ms_memory() {
 }
 
 duration_ms_memory() {
-  pid=$(player_pid)
+  pid=$(player_pid_cached)
   [ -n "$pid" ] || return 1
   hex=$(dd if="/proc/$pid/mem" bs=1 skip="$PLAYER_DURATION_ADDR" count=4 2>/dev/null | xxd -p -c 4)
   [ -n "$hex" ] || return 1
@@ -393,41 +406,83 @@ pid_mem_first_catalog_path() {
   rm -f "$tmp"
 }
 
-current_path() {
-  path=$(
-    dd if="$USER_INI" bs=1 skip=40 count=512 2>/dev/null |
-      xxd -p -c 512 |
-      awk '
-      function h2d(h, i, c, n) {
-        n = 0
-        h = tolower(h)
-        for (i = 1; i <= length(h); i++) {
-          c = index("0123456789abcdef", substr(h, i, 1)) - 1
-          if (c < 0) return 63
-          n = n * 16 + c
-        }
-        return n
+current_path_slot_hex() {
+  dd if="$USER_INI" bs=1 skip=40 count=512 2>/dev/null | xxd -p -c 512
+}
+
+current_path_slot_preview() {
+  dd if="$USER_INI" bs=1 skip=40 count=128 2>/dev/null | tr -d '\000'
+}
+
+path_preview_is_audiobook() {
+  case "$1" in
+    [aA]:\\Audiobooks\\*|:\\Audiobooks\\*|\\Audiobooks\\*)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+path_slot_hex_is_audiobook() {
+  case "$1" in
+    61003a005c0041007500640069006f0062006f006f006b007300*|\
+    41003a005c0041007500640069006f0062006f006f006b007300*|\
+    3a005c0041007500640069006f0062006f006f006b007300*|\
+    5c0041007500640069006f0062006f006f006b007300*)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+decode_path_slot_hex() {
+  awk '
+    function h2d(h, i, c, n) {
+      n = 0
+      h = tolower(h)
+      for (i = 1; i <= length(h); i++) {
+        c = index("0123456789abcdef", substr(h, i, 1)) - 1
+        if (c < 0) return 63
+        n = n * 16 + c
       }
-      {
-        out = ""
-        for (i = 1; i <= length($0) - 3; i += 4) {
-          lo = substr($0, i, 2)
-          hi = substr($0, i + 2, 2)
-          if (lo == "00" && hi == "00") {
-            if (out == "") continue
-            break
-          }
-          if (hi == "00") out = out sprintf("%c", h2d(lo))
-          else out = out "?"
+      return n
+    }
+    {
+      out = ""
+      for (i = 1; i <= length($0) - 3; i += 4) {
+        lo = substr($0, i, 2)
+        hi = substr($0, i + 2, 2)
+        if (lo == "00" && hi == "00") {
+          if (out == "") continue
+          break
         }
-        print out
-      }'
+        if (hi == "00") out = out sprintf("%c", h2d(lo))
+        else out = out "?"
+      }
+      print out
+    }'
+}
+
+current_path_from_hex() {
+  hex=$1
+  if [ "$hex" = "${CURRENT_PATH_HEX_CACHE:-}" ]; then
+    printf '%s\n' "$CURRENT_PATH_VALUE_CACHE"
+    return 0
+  fi
+  path=$(
+    printf '%s\n' "$hex" | decode_path_slot_hex
   )
   case "$path" in
     :\\*) path="a$path" ;;
     \\Audiobooks\\*) path="a:$path" ;;
   esac
+  CURRENT_PATH_HEX_CACHE=$hex
+  CURRENT_PATH_VALUE_CACHE=$path
   printf '%s\n' "$path"
+}
+
+current_path() {
+  current_path_from_hex "$(current_path_slot_hex)"
 }
 
 position_ms() {
@@ -1538,7 +1593,7 @@ book_title_direct_start_saved_track() {
 
 book_title_marker_seq() {
   [ "$BOOK_TITLE_AUTOSTART_ENABLED" = 1 ] || return 1
-  pid=$(player_pid)
+  pid=$(player_pid_cached)
   [ -n "$pid" ] || return 1
   magic=$(u32le_at_pid_mem "$pid" "$BOOK_TITLE_MARKER_ADDR") || return 1
   [ "$magic" = 3235793431 ] || return 1
@@ -1658,7 +1713,12 @@ main() {
       last_book_title_seq=$book_title_seq
     fi
 
-    path=$(current_path)
+    path_preview=$(current_path_slot_preview)
+    if path_preview_is_audiobook "$path_preview"; then
+      path=$(current_path)
+    else
+      path=
+    fi
     case "$path" in
       [aA]:\\Audiobooks\\*)
         loop_sleep=$INTERVAL_SECONDS
@@ -1818,7 +1878,7 @@ main() {
         ;;
       *)
         if [ -n "$last_path" ]; then
-          log "leave audiobook current=$path"
+          log "leave audiobook current=non-audiobook"
         fi
         restored_path=
         completed_saved_path=
@@ -1827,6 +1887,9 @@ main() {
         last_saved_bucket=
         deferred_overwrite_path=
         completed_start_over_path=
+        last_path=
+        sleep "$loop_sleep"
+        continue
         ;;
     esac
 
