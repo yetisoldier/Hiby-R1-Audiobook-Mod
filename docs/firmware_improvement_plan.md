@@ -62,6 +62,9 @@ incremental changes that can be tested off-device before a new firmware build.
   starts. This should avoid briefly playing each earlier file; if the memory
   scan fails, the daemon falls back to the current first-track-plus-correction
   behavior.
+- `tools/test_r1_resume_daemon_logic_wsl.ps1` runs shell-level logic tests for
+  the resume daemon's direct-track geometry, disable switches, and saved-track
+  title selection without launching the daemon loop.
 - `tools/test_r1_db_maint_qemu_wsl.ps1` runs the same DB helper fixture through
   WSL and `qemu-mipsel-static`, executing the real MIPS helper binary instead
   of the Windows test executable.
@@ -103,12 +106,19 @@ incremental changes that can be tested off-device before a new firmware build.
      -Helper work\native-db-maint\r1_audiobook_db_maint_enhanced
    ```
 
-5. Runtime-only device test, no flashing:
+5. Run the resume daemon logic test:
+
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass `
+     -File tools\test_r1_resume_daemon_logic_wsl.ps1
+   ```
+
+6. Runtime-only device test, no flashing:
    copy the enhanced helper to `/usr/data/audiobooks/bin/`, run the stock
    Music -> Update Database scan, wait for the watcher, then verify that any
    test book with `cover.jpg` and matching `.lrc` gets those paths in the DB.
 
-6. If runtime-only testing passes, build a new `1.6.5-audiobook` candidate and
+7. If runtime-only testing passes, build a new `1.6.5-audiobook` candidate and
    run the full pre-flash verifier before staging.
 
 ## Next Live Tests
@@ -151,6 +161,10 @@ When the R1 is available again, the most useful tests are:
 - Real `hiby_player` UI work: a native Audiobooks page would be cleaner than the
   current genre-route and daemon workaround, but it requires deeper binary/UI
   reverse engineering.
+- Author/Title/Series audiobook subviews are tracked in
+  `docs\audiobook_views_research.md`. Title is the current stable route;
+  Author may be testable through stock artist routes but needs catalog isolation;
+  Series needs a reliable metadata source and probably custom UI/query work.
 - Better metadata parsing inside the on-device helper: possible for simple ID3
   tags, but higher risk and more code size. The current safer path is still to
   let the stock scanner provide metadata when possible and use folder/file

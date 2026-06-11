@@ -832,22 +832,22 @@ direct_track_geometry() {
 }
 
 tap_track_list_index() {
-  target_index=$1
-  label=$2
-  geometry=$(direct_track_geometry "$target_index") || return 1
-  set -- $geometry
-  swipes=$1
-  row=$2
+  tap_track_target_index=$1
+  tap_track_log_label=$2
+  tap_track_geometry=$(direct_track_geometry "$tap_track_target_index") || return 1
+  set -- $tap_track_geometry
+  tap_track_swipes=$1
+  tap_track_row=$2
 
-  count=0
-  while [ "$count" -lt "$swipes" ]; do
-    count=$((count + 1))
+  tap_track_count=0
+  while [ "$tap_track_count" -lt "$tap_track_swipes" ]; do
+    tap_track_count=$((tap_track_count + 1))
     touch_track_swipe_up || return 1
     sleep "$BOOK_TITLE_DIRECT_TRACK_SWIPE_SETTLE_SECONDS"
-    log "$label swipe=$count/$swipes"
+    log "$tap_track_log_label swipe=$tap_track_count/$tap_track_swipes"
   done
-  touch_track_row "$row" || return 1
-  log "$label tapped index=$target_index swipes=$swipes row=$row"
+  touch_track_row "$tap_track_row" || return 1
+  log "$tap_track_log_label tapped index=$tap_track_target_index swipes=$tap_track_swipes row=$tap_track_row"
 }
 
 book_title_direct_track_select() {
@@ -1554,4 +1554,6 @@ main() {
   done
 }
 
-main "$@"
+if [ "${AUDIOBOOK_RESUME_DAEMON_SOURCE_ONLY:-0}" != 1 ]; then
+  main "$@"
+fi

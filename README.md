@@ -177,9 +177,20 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -Helper work\native-db-maint\r1_audiobook_db_maint_enhanced
 ```
 
+The resume daemon's multipart title-selection logic can also be tested locally:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File tools\test_r1_resume_daemon_logic_wsl.ps1
+```
+
 For live resume testing, `tools\adb_collect_audiobook_resume_debug.ps1` collects
 the daemon logs, catalog, resume records, process state, and `user.ini` snapshot
 into `work\resume-debug\...` before a reboot clears useful clues.
+
+Author/Title/Series audiobook subviews are being researched in
+`docs\audiobook_views_research.md`. The current release opens the Title view;
+the route research tool can test alternate stock routes in RAM without flashing.
 
 Live self-contained rebuild testing on 2026-06-10 passed before flashing `1.6.4`: after deleting the active DB/catalog, the updated watcher copied the embedded seed DB and the helper rebuilt 114 `/Music` rows plus 135 `/Audiobooks` rows entirely on-device. The pulled DB under `work\watcher-seed-rebuild-test-20260610-152923` had integrity `ok`, 249 rows in both playback tables, six audiobook books, zero audiobook rows in `SEARCH_TABLE`, zero album leaks, and no `Audiobook` genre. The `1.6.4` package was staged to `/usr/data/mnt/sd_0/r1.upt` with matching byte count, MD5, and SHA-256.
 

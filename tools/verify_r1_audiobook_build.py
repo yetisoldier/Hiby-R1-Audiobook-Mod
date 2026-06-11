@@ -450,6 +450,7 @@ def verify(
         require("book_title_direct_track_select" in daemon_text, "daemon includes title-list direct track selection", failures)
         require("book_title_direct_start_saved_track" in daemon_text, "daemon includes pre-play saved-track direct start", failures)
         require("pid_mem_first_catalog_path" in daemon_text, "daemon can identify selected track list from catalog paths", failures)
+        require("AUDIOBOOK_RESUME_DAEMON_SOURCE_ONLY" in daemon_text, "daemon includes source-only guard for local logic tests", failures)
         require("TOUCH_TRACK_SWIPE_MOVE6_EVENT_FILE" in daemon_text, "daemon includes timed track-list swipe packets", failures)
         require("RESTORE_RETRY_MAX_AFTER_FAILURE_SECONDS" in daemon_text, "daemon backs off repeated failed seek restores", failures)
         require("FAILED_RESTORE_SKIP_LOG_BUCKET_MS" in daemon_text, "daemon throttles failed-restore save guard logging", failures)
