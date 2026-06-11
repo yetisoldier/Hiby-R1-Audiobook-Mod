@@ -168,6 +168,15 @@ Verified locally on 2026-06-10 with:
 python tools\verify_r1_audiobook_build.py --require-db-maintenance --expect-current-hashes
 ```
 
+For development builds after the WSL/QEMU setup, the real MIPS DB helper can
+also be tested locally without flashing:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File tools\test_r1_db_maint_qemu_wsl.ps1 `
+  -Helper work\native-db-maint\r1_audiobook_db_maint_enhanced
+```
+
 Live self-contained rebuild testing on 2026-06-10 passed before flashing `1.6.4`: after deleting the active DB/catalog, the updated watcher copied the embedded seed DB and the helper rebuilt 114 `/Music` rows plus 135 `/Audiobooks` rows entirely on-device. The pulled DB under `work\watcher-seed-rebuild-test-20260610-152923` had integrity `ok`, 249 rows in both playback tables, six audiobook books, zero audiobook rows in `SEARCH_TABLE`, zero album leaks, and no `Audiobook` genre. The `1.6.4` package was staged to `/usr/data/mnt/sd_0/r1.upt` with matching byte count, MD5, and SHA-256.
 
 Post-flash verification on 2026-06-10 passed for `1.6.4-audiobook` with artifacts under `work\installed-release-verification\20260610-153805`: the installed device reports `1.6.4-audiobook`, the main launcher shows `Audiobooks`, the resume daemon and DB watcher are running, SD-root `r1.upt` was renamed to `/usr/data/mnt/sd_0/r1-audiobooks-1.6.4-audiobook-installed-20260610-1531.upt`, `user.ini` has no saved-last audiobook references, `/usr/data` has about 18.3 MB free, and the live DB/catalog release-state check passed with 135 audiobook rows in both playback tables and no Music album/genre/search leakage. The pulled installed DB also has 114 `/Music` rows and 135 `/Audiobooks` rows in both `MEDIA_TABLE` and `MEDIA2_TABLE`.

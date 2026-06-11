@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -42,7 +43,7 @@ def assert_true(condition: bool, label: str) -> None:
     print(f"OK   {label}")
 
 
-def run_helper(helper: Path, work_dir: Path) -> tuple[Path, Path]:
+def run_helper(helper: Path, work_dir: Path, runner: list[str] | None = None) -> tuple[Path, Path]:
     sd_root = work_dir / "sdroot"
     db = work_dir / "usrlocal_media.db"
     base_dir = work_dir / "state"
@@ -60,6 +61,7 @@ def run_helper(helper: Path, work_dir: Path) -> tuple[Path, Path]:
     write_text(book_dir / "01 - Opening.lrc", "[00:00.00]Opening")
 
     cmd = [
+        *(runner or []),
         str(helper),
         "--db",
         str(db),
@@ -128,6 +130,8 @@ def verify_db(db: Path, catalog: Path) -> None:
     assert_equal(rows[music_iso]["album_pic_path"], music_cover, "music cover sidecar")
     assert_equal(rows[music_iso]["quality"], "Lossless", "iso quality fallback")
     assert_true(catalog.exists() and catalog.stat().st_size > 0, "catalog written")
+    header = catalog.read_text(encoding="utf-8").splitlines()[0].split("\t")
+    assert_true("book_key" in header, "catalog book_key column")
 
     check = subprocess.run(
         [
@@ -167,6 +171,10 @@ def parse_args() -> argparse.Namespace:
         / f"enhanced-fixture-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
         help="Disposable output directory",
     )
+    parser.add_argument(
+        "--runner",
+        help="Optional command prefix, for example qemu-mipsel-static",
+    )
     return parser.parse_args()
 
 
@@ -179,9 +187,10 @@ def main() -> int:
     if not SEED_DB.exists():
         print(f"seed DB not found: {SEED_DB}", file=sys.stderr)
         return 2
+    runner = shlex.split(args.runner) if args.runner else None
     work_dir = args.work_dir.resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
-    db, catalog = run_helper(helper, work_dir)
+    db, catalog = run_helper(helper, work_dir, runner)
     verify_db(db, catalog)
     print(f"fixture: {work_dir}")
     return 0

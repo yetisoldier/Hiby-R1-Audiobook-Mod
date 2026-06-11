@@ -337,6 +337,56 @@ static char *pinyin_for(const char *text) {
     return out;
 }
 
+static char *stable_slug(const char *text) {
+    char *trimmed = trim_copy(text);
+    size_t len = strlen(trimmed);
+    char *out = (char *)malloc(len + 1);
+    if (!out) die("out of memory");
+    size_t j = 0;
+    int previous_sep = 1;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char ch = (unsigned char)trimmed[i];
+        if (isalnum(ch)) {
+            out[j++] = (char)tolower(ch);
+            previous_sep = 0;
+        } else if (!previous_sep) {
+            out[j++] = '_';
+            previous_sep = 1;
+        }
+    }
+    if (j > 0 && out[j - 1] == '_') j--;
+    out[j] = '\0';
+    free(trimmed);
+    return out;
+}
+
+static char *book_key_for_catalog(const MediaRow *row, const char *root) {
+    const char *author_src = (row->album_artist && *row->album_artist) ? row->album_artist : row->artist;
+    char *author = stable_slug(author_src);
+    char *album = stable_slug(row->album);
+    char *fallback = stable_slug(root);
+    char *key;
+
+    if (*author && *album) {
+        size_t len = strlen(author) + strlen(album) + 5;
+        key = (char *)malloc(len);
+        if (!key) die("out of memory");
+        snprintf(key, len, "v1_%s_%s", author, album);
+    } else if (*fallback) {
+        size_t len = strlen(fallback) + 6;
+        key = (char *)malloc(len);
+        if (!key) die("out of memory");
+        snprintf(key, len, "root_%s", fallback);
+    } else {
+        key = xstrdup("root_unknown");
+    }
+
+    free(author);
+    free(album);
+    free(fallback);
+    return key;
+}
+
 static int make_dir(const char *path) {
 #ifdef _WIN32
     return mkdir(path);
@@ -1249,7 +1299,7 @@ static void write_catalog_files(const Options *opts, RowVec *rows) {
     }
 
     qsort(rows->items, rows->len, sizeof(MediaRow), cmp_catalog);
-    fprintf(catalog, "root_hiby_path\ttrack_index\ttrack_count\tmedia_id\tpath\ttitle\talbum\tauthor\n");
+    fprintf(catalog, "root_hiby_path\ttrack_index\ttrack_count\tmedia_id\tpath\ttitle\talbum\tauthor\tbook_key\n");
     char *current_root = NULL;
     char *last_album = NULL;
     size_t group_start = 0;
@@ -1275,6 +1325,10 @@ static void write_catalog_files(const Options *opts, RowVec *rows) {
             write_field(catalog, rows->items[i].album);
             fputc('\t', catalog);
             write_field(catalog, rows->items[i].album_artist);
+            fputc('\t', catalog);
+            char *book_key = book_key_for_catalog(&rows->items[i], current_root);
+            write_field(catalog, book_key);
+            free(book_key);
             fputc('\n', catalog);
             if (rows->items[i].album && *rows->items[i].album &&
                 (!last_album || !equals_ci(last_album, rows->items[i].album))) {

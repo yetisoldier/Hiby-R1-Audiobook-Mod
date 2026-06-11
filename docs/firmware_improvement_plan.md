@@ -52,6 +52,13 @@ incremental changes that can be tested off-device before a new firmware build.
 - `tools/test_r1_db_maint_local_fixture.py` creates a disposable fake SD card
   and seed DB, runs a Windows build of the C helper, and verifies `.mp3`,
   `.m4b`, `.iso`, cover, LRC, catalog, and release-state invariants.
+- The resume catalog now includes a backward-compatible `book_key` column based
+  on author plus book title when available. New resume records include the same
+  key so future builds can survive simple audiobook folder renames or rebuilds
+  more gracefully while still reading existing root-path records.
+- `tools/test_r1_db_maint_qemu_wsl.ps1` runs the same DB helper fixture through
+  WSL and `qemu-mipsel-static`, executing the real MIPS helper binary instead
+  of the Windows test executable.
 
 ## Test Path Before Any Firmware Build
 
@@ -82,12 +89,20 @@ incremental changes that can be tested off-device before a new firmware build.
      -OutFile work\native-db-maint\r1_audiobook_db_maint_enhanced
    ```
 
-4. Runtime-only device test, no flashing:
+4. Run the MIPS helper under WSL/QEMU:
+
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass `
+     -File tools\test_r1_db_maint_qemu_wsl.ps1 `
+     -Helper work\native-db-maint\r1_audiobook_db_maint_enhanced
+   ```
+
+5. Runtime-only device test, no flashing:
    copy the enhanced helper to `/usr/data/audiobooks/bin/`, run the stock
    Music -> Update Database scan, wait for the watcher, then verify that any
    test book with `cover.jpg` and matching `.lrc` gets those paths in the DB.
 
-5. If runtime-only testing passes, build a new `1.6.5-audiobook` candidate and
+6. If runtime-only testing passes, build a new `1.6.5-audiobook` candidate and
    run the full pre-flash verifier before staging.
 
 ## Longer-Term Research

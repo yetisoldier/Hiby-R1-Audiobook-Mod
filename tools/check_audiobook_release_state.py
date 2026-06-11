@@ -94,8 +94,9 @@ def catalog_values(conn: sqlite3.Connection, table: str, column: str, failures: 
     return {denul(row[0]) for row in conn.execute(f"SELECT {column} FROM {table}")}
 
 
-def load_catalog(path: Path) -> dict[str, list[tuple[int, int, str]]]:
+def load_catalog(path: Path) -> tuple[dict[str, list[tuple[int, int, str]]], dict[str, set[str]]]:
     by_root: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
+    keys_by_root: dict[str, set[str]] = defaultdict(set)
     with path.open("r", encoding="utf-8", errors="replace") as handle:
         header = handle.readline().rstrip("\n").split("\t")
         expected = [
@@ -108,18 +109,24 @@ def load_catalog(path: Path) -> dict[str, list[tuple[int, int, str]]]:
             "album",
             "author",
         ]
-        if header != expected:
+        expected_with_key = expected + ["book_key"]
+        if header not in (expected, expected_with_key):
             raise ValueError(f"unexpected catalog header: {header}")
+        has_book_key = header == expected_with_key
         for line_number, raw in enumerate(handle, 2):
             line = raw.rstrip("\n")
             if not line:
                 continue
             fields = line.split("\t")
-            if len(fields) != len(expected):
-                raise ValueError(f"catalog line {line_number}: expected 8 fields, got {len(fields)}")
+            if len(fields) != len(header):
+                raise ValueError(f"catalog line {line_number}: expected {len(header)} fields, got {len(fields)}")
             root, track_index, track_count, _media_id, media_path, *_rest = fields
             by_root[root].append((int(track_index), int(track_count), media_path))
-    return by_root
+            if has_book_key:
+                book_key = fields[8]
+                if book_key:
+                    keys_by_root[root].add(book_key)
+    return by_root, keys_by_root
 
 
 def check_catalog(catalog: Path, media_rows: list[MediaRow], failures: list[str]) -> None:
@@ -127,7 +134,7 @@ def check_catalog(catalog: Path, media_rows: list[MediaRow], failures: list[str]
         failures.append(f"catalog not found: {catalog}")
         return
     try:
-        catalog_roots = load_catalog(catalog)
+        catalog_roots, keys_by_root = load_catalog(catalog)
     except Exception as exc:
         failures.append(f"catalog parse failed: {exc}")
         return
@@ -156,6 +163,12 @@ def check_catalog(catalog: Path, media_rows: list[MediaRow], failures: list[str]
         indices = sorted(entry[0] for entry in entries)
         if indices != list(range(1, len(entries) + 1)):
             failures.append(f"catalog track_index sequence mismatch for root: {root}")
+
+    for root, book_keys in keys_by_root.items():
+        if not book_keys:
+            failures.append(f"catalog missing book_key for root: {root}")
+        elif len(book_keys) != 1:
+            failures.append(f"catalog inconsistent book_key for root: {root}")
 
 
 def check_database(db: Path, catalog: Path | None, *, expect_audiobooks: bool) -> int:

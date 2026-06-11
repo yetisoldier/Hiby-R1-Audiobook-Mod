@@ -390,8 +390,12 @@ book_root_for_path() {
   printf '%s' "${1%\\*}"
 }
 
-record_for_root() {
+legacy_record_for_root() {
   printf '%s/%s.json' "$STORE_DIR" "$(safe_id "$1")"
+}
+
+record_for_root() {
+  legacy_record_for_root "$1"
 }
 
 json_value() {
@@ -438,6 +442,39 @@ catalog_field_for_root_index() {
   ' "$CATALOG"
 }
 
+book_key_for_path() {
+  catalog_field_for_path 9 "$1" || true
+}
+
+record_for_book_key() {
+  printf '%s/bookkey_%s.json' "$STORE_DIR" "$(safe_id "$1")"
+}
+
+record_for_path() {
+  record_path=$1
+  record_key=$(book_key_for_path "$record_path")
+  if [ -n "$record_key" ]; then
+    record_for_book_key "$record_key"
+    return
+  fi
+  legacy_record_for_root "$(book_root_for_path "$record_path")"
+}
+
+existing_record_for_path() {
+  record_path=$1
+  primary=$(record_for_path "$record_path")
+  if [ -f "$primary" ]; then
+    printf '%s\n' "$primary"
+    return
+  fi
+  legacy=$(legacy_record_for_root "$(book_root_for_path "$record_path")")
+  if [ -f "$legacy" ]; then
+    printf '%s\n' "$legacy"
+    return
+  fi
+  printf '%s\n' "$primary"
+}
+
 same_book_root() {
   same_book_path=$1
   same_book_root_value=$2
@@ -445,6 +482,36 @@ same_book_root() {
     "$same_book_root_value"\\*) return 0 ;;
   esac
   return 1
+}
+
+record_saved_path_for_current() {
+  record=$1
+  current_path=$2
+  current_root=$3
+  saved_path=$(json_value current_path "$record")
+  [ -n "$saved_path" ] || return 1
+  if same_book_root "$saved_path" "$current_root"; then
+    printf '%s\n' "$saved_path"
+    return 0
+  fi
+
+  current_book_key=$(book_key_for_path "$current_path")
+  record_book_key=$(json_value book_key "$record")
+  if [ -n "$current_book_key" ] && [ "$current_book_key" = "$record_book_key" ]; then
+    saved_index=$(json_number track_index "$record")
+    case "$saved_index" in
+      ''|*[!0-9]*) ;;
+      *)
+        mapped_path=$(catalog_field_for_root_index 5 "$current_root" "$saved_index" || true)
+        if [ -n "$mapped_path" ]; then
+          printf '%s\n' "$mapped_path"
+          return 0
+        fi
+        ;;
+    esac
+  fi
+
+  printf '%s\n' "$saved_path"
 }
 
 completion_state_for_path_position() {
@@ -776,8 +843,9 @@ save_position() {
   path=$1
   pos=$2
   root=$(book_root_for_path "$path")
-  record=$(record_for_root "$root")
+  record=$(record_for_path "$path")
   tmp="$record.tmp.$$"
+  book_key=$(book_key_for_path "$path")
   track_index=$(catalog_field_for_path 2 "$path" || true)
   track_count=$(catalog_field_for_path 3 "$path" || true)
   media_id=$(catalog_field_for_path 4 "$path" || true)
@@ -793,8 +861,9 @@ save_position() {
   mkdir -p "$STORE_DIR"
   {
     echo "{"
-    echo '  "schema_version": 2,'
+    echo '  "schema_version": 3,'
     printf '  "book_id": "%s",\n' "$(json_escape "$(safe_id "$root")")"
+    printf '  "book_key": "%s",\n' "$(json_escape "$book_key")"
     printf '  "root_hiby_path": "%s",\n' "$(json_escape "$root")"
     printf '  "current_path": "%s",\n' "$(json_escape "$path")"
     printf '  "media_id": %s,\n' "$(json_number_or_null "$media_id")"
@@ -874,10 +943,10 @@ maybe_restore() {
   path=$1
   pos=$2
   root=$(book_root_for_path "$path")
-  record=$(record_for_root "$root")
+  record=$(existing_record_for_path "$path")
   [ -f "$record" ] || return 0
   [ "$(json_bool completed "$record")" = true ] && return 0
-  saved_path=$(json_value current_path "$record")
+  saved_path=$(record_saved_path_for_current "$record" "$path" "$root" || true)
   saved_pos=$(json_number position_ms "$record")
   [ "$saved_path" = "$path" ] || return 0
   case "$saved_pos" in ''|*[!0-9]*) return 0 ;; esac
@@ -909,10 +978,10 @@ maybe_restore_track() {
   path=$1
   pos=$2
   root=$(book_root_for_path "$path")
-  record=$(record_for_root "$root")
+  record=$(existing_record_for_path "$path")
   [ -f "$record" ] || return 0
   [ "$(json_bool completed "$record")" = true ] && return 0
-  saved_path=$(json_value current_path "$record")
+  saved_path=$(record_saved_path_for_current "$record" "$path" "$root" || true)
   saved_pos=$(json_number position_ms "$record")
   [ -n "$saved_path" ] || return 0
   [ "$saved_path" != "$path" ] || return 0
@@ -1022,9 +1091,9 @@ should_defer_new_track_save() {
   path=$1
   pos=$2
   root=$(book_root_for_path "$path")
-  record=$(record_for_root "$root")
+  record=$(existing_record_for_path "$path")
   [ -f "$record" ] || return 1
-  saved_path=$(json_value current_path "$record")
+  saved_path=$(record_saved_path_for_current "$record" "$path" "$root" || true)
   [ -n "$saved_path" ] || return 1
   [ "$saved_path" != "$path" ] || return 1
   [ "$pos" -lt "$NEW_TRACK_COMMIT_MS" ] || return 1
@@ -1037,9 +1106,9 @@ should_skip_after_completed_restore() {
   completed_saved_path=$3
   [ -n "$completed_saved_path" ] || return 1
   root=$(book_root_for_path "$path")
-  record=$(record_for_root "$root")
+  record=$(existing_record_for_path "$path")
   [ -f "$record" ] || return 1
-  saved_path=$(json_value current_path "$record")
+  saved_path=$(record_saved_path_for_current "$record" "$path" "$root" || true)
   [ "$saved_path" = "$completed_saved_path" ] || return 1
   [ "$saved_path" != "$path" ] || return 1
   same_book_root "$saved_path" "$root" || return 1
@@ -1060,9 +1129,9 @@ should_skip_failed_restore_save() {
   pos=$2
   [ "$restore_failed_path" = "$path" ] || return 1
   root=$(book_root_for_path "$path")
-  record=$(record_for_root "$root")
+  record=$(existing_record_for_path "$path")
   [ -f "$record" ] || return 1
-  saved_path=$(json_value current_path "$record")
+  saved_path=$(record_saved_path_for_current "$record" "$path" "$root" || true)
   saved_pos=$(json_number position_ms "$record")
   [ "$saved_path" = "$path" ] || return 1
   case "$saved_pos:$pos" in
@@ -1255,7 +1324,7 @@ main() {
         fi
 
         root=$(book_root_for_path "$path")
-        record=$(record_for_root "$root")
+        record=$(existing_record_for_path "$path")
         if [ -f "$record" ] && [ "$(json_bool completed "$record")" = true ]; then
           if [ "$restored_path" != "$path" ]; then
             log "completed book start-over root=$root path=$path pos_ms=$pos"

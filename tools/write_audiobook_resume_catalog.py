@@ -54,6 +54,20 @@ def natural_key(text: str) -> tuple[object, ...]:
     return tuple(parts)
 
 
+def stable_slug(text: str) -> str:
+    value = re.sub(r"[^0-9a-z]+", "_", text.strip().lower()).strip("_")
+    return value
+
+
+def book_key_for_row(row: CatalogRow) -> str:
+    author = stable_slug(row.author)
+    album = stable_slug(row.album)
+    if author and album:
+        return f"v1_{author}_{album}"
+    fallback = stable_slug(row.root) or "unknown"
+    return f"root_{fallback}"
+
+
 def load_rows(db: Path) -> list[CatalogRow]:
     conn = sqlite3.connect(db)
     try:
@@ -93,7 +107,7 @@ def write_catalog(rows: list[CatalogRow], output: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(
-            "root_hiby_path\ttrack_index\ttrack_count\tmedia_id\tpath\ttitle\talbum\tauthor\n"
+            "root_hiby_path\ttrack_index\ttrack_count\tmedia_id\tpath\ttitle\talbum\tauthor\tbook_key\n"
         )
         for root in sorted(groups, key=natural_key):
             group = sorted(
@@ -118,6 +132,7 @@ def write_catalog(rows: list[CatalogRow], output: Path) -> None:
                             row.title,
                             row.album,
                             row.author,
+                            book_key_for_row(row),
                         ]
                     )
                     + "\n"
