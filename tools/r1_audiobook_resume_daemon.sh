@@ -31,6 +31,7 @@ PLAYER_DURATION_ADDR=${AUDIOBOOK_PLAYER_DURATION_ADDR:-9115252}
 RESTORE_ENABLED=${AUDIOBOOK_RESTORE_ENABLED:-0}
 TRACK_RESTORE_ENABLED=${AUDIOBOOK_TRACK_RESTORE_ENABLED:-1}
 TRACK_RESTORE_MAX_STEPS=${AUDIOBOOK_TRACK_RESTORE_MAX_STEPS:-50}
+TRACK_RESTORE_KEY_FALLBACK_ENABLED=${AUDIOBOOK_TRACK_RESTORE_KEY_FALLBACK_ENABLED:-0}
 TRACK_SWITCH_SETTLE_SECONDS=${AUDIOBOOK_TRACK_SWITCH_SETTLE_SECONDS:-3}
 TRACK_SWITCH_POLL_US=${AUDIOBOOK_TRACK_SWITCH_POLL_US:-200000}
 TOUCH_NEXT_EVENT_FILE=${AUDIOBOOK_TOUCH_NEXT_EVENT_FILE:-$BASE_DIR/input/touch_next_event1.bin}
@@ -892,7 +893,39 @@ book_title_direct_track_select() {
       if [ "$selected_root" = "$saved_root" ]; then
         selected_index=$(catalog_field_for_path 2 "$path_now" || true)
         log "direct-track-select selected nearby path=$path_now index=${selected_index:-?} saved=$saved_index"
-        return 1
+        case "$selected_index:$saved_index:$row" in
+          *[!0-9:]* | :* | *:) return 2 ;;
+        esac
+        delta=$((saved_index - selected_index))
+        retry_row=$((row + delta))
+        if [ "$retry_row" -ge 1 ] && [ "$retry_row" -le 5 ]; then
+          log "direct-track-select retry nearby selected=$selected_index saved=$saved_index row=$retry_row"
+          touch_back_to_track_list || return 2
+          sleep "$BOOK_TITLE_DIRECT_TRACK_RETURN_DELAY_SECONDS"
+          path_before_retry=$(current_path)
+          touch_track_row "$retry_row" || return 2
+          ticks=$(track_switch_settle_ticks)
+          while [ "$ticks" -gt 0 ]; do
+            sleep_track_switch_poll
+            path_retry=$(current_path)
+            [ "$path_retry" = "$saved_path" ] && {
+              log "direct-track-select retry reached path=$path_retry saved=$saved_index row=$retry_row"
+              return 0
+            }
+            if [ -n "$path_retry" ] && [ "$path_retry" != "$path_before_retry" ]; then
+              retry_root=$(book_root_for_path "$path_retry")
+              if [ "$retry_root" = "$saved_root" ]; then
+                retry_index=$(catalog_field_for_path 2 "$path_retry" || true)
+                log "direct-track-select retry selected path=$path_retry index=${retry_index:-?} saved=$saved_index"
+                return 2
+              fi
+            fi
+            ticks=$((ticks - 1))
+          done
+          path_retry=$(current_path)
+          log "direct-track-select retry did not reach saved path final_path=$path_retry saved_path=$saved_path"
+        fi
+        return 2
       fi
     fi
     ticks=$((ticks - 1))
@@ -901,6 +934,63 @@ book_title_direct_track_select() {
   path_now=$(current_path)
   log "direct-track-select did not reach saved path final_path=$path_now saved_path=$saved_path"
   [ "$path_now" = "$saved_path" ]
+}
+
+book_title_visible_track_select() {
+  [ "$BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED" = 1 ] || return 1
+  book_title_autostart_active_now || return 1
+
+  current_index=$1
+  saved_index=$2
+  saved_path=$3
+  case "$current_index:$saved_index" in
+    *[!0-9:]* | :* | *:) return 1 ;;
+  esac
+  [ "$current_index" != "$saved_index" ] || return 0
+
+  visible_rows=$BOOK_TITLE_DIRECT_TRACK_VISIBLE_ROWS
+  case "$visible_rows" in ''|*[!0-9]*|0) visible_rows=5 ;; esac
+  [ "$visible_rows" -gt 5 ] && visible_rows=5
+
+  delta=$((saved_index - current_index))
+  if [ "$delta" -ge 0 ] && [ "$delta" -lt "$visible_rows" ]; then
+    row=$((delta + 1))
+  elif [ "$delta" -lt 0 ] && [ $((-delta)) -lt "$visible_rows" ]; then
+    row=$((visible_rows + delta))
+  else
+    return 1
+  fi
+  [ "$row" -ge 1 ] && [ "$row" -le 5 ] || return 1
+
+  log "visible-track-select start current=$current_index saved=$saved_index row=$row saved_path=$saved_path"
+  touch_back_to_track_list || return 2
+  sleep "$BOOK_TITLE_DIRECT_TRACK_RETURN_DELAY_SECONDS"
+
+  path_before_select=$(current_path)
+  touch_track_row "$row" || return 2
+  ticks=$(track_switch_settle_ticks)
+  while [ "$ticks" -gt 0 ]; do
+    sleep_track_switch_poll
+    path_now=$(current_path)
+    [ "$path_now" = "$saved_path" ] && {
+      log "visible-track-select reached path=$path_now saved=$saved_index row=$row"
+      return 0
+    }
+    if [ -n "$path_now" ] && [ "$path_now" != "$path_before_select" ]; then
+      selected_root=$(book_root_for_path "$path_now")
+      saved_root=$(book_root_for_path "$saved_path")
+      if [ "$selected_root" = "$saved_root" ]; then
+        selected_index=$(catalog_field_for_path 2 "$path_now" || true)
+        log "visible-track-select selected nearby path=$path_now index=${selected_index:-?} saved=$saved_index"
+        return 2
+      fi
+    fi
+    ticks=$((ticks - 1))
+  done
+
+  path_now=$(current_path)
+  log "visible-track-select did not reach saved path final_path=$path_now saved_path=$saved_path"
+  return 2
 }
 
 save_position() {
@@ -1077,8 +1167,27 @@ maybe_restore_track() {
     return 1
   }
 
-  if book_title_direct_track_select "$current_index" "$saved_index" "$saved_path"; then
+  book_title_direct_track_select "$current_index" "$saved_index" "$saved_path"
+  direct_status=$?
+  if [ "$direct_status" -eq 0 ]; then
     return 0
+  fi
+  if [ "$direct_status" -eq 2 ]; then
+    log "direct-track-select stopped key fallback after near miss saved=$saved_index saved_path=$saved_path"
+    return 1
+  fi
+  book_title_visible_track_select "$current_index" "$saved_index" "$saved_path"
+  visible_status=$?
+  if [ "$visible_status" -eq 0 ]; then
+    return 0
+  fi
+  if [ "$visible_status" -eq 2 ]; then
+    log "visible-track-select stopped key fallback after near miss saved=$saved_index saved_path=$saved_path"
+    return 1
+  fi
+  if [ "$TRACK_RESTORE_KEY_FALLBACK_ENABLED" != 1 ]; then
+    log "track-restore key fallback disabled current=$current_index saved=$saved_index saved_path=$saved_path"
+    return 1
   fi
   path_after_direct=$(current_path)
   if [ "$path_after_direct" != "$path" ]; then
@@ -1357,7 +1466,7 @@ main() {
   close_inherited_socket_fds
   refresh_catalog_album_patterns
   echo "$$" >"$PID_FILE"
-  log "start interval=${INTERVAL_SECONDS}s idle_interval=${IDLE_INTERVAL_SECONDS}s new_track_commit_ms=$NEW_TRACK_COMMIT_MS backward_save_guard_ms=$BACKWARD_SAVE_GUARD_MS closed_inherited_socket_fds=$CLOSED_INHERITED_SOCKET_FDS position_source=$POSITION_SOURCE duration_addr=$PLAYER_DURATION_ADDR restore_enabled=$RESTORE_ENABLED track_restore_enabled=$TRACK_RESTORE_ENABLED ui_seek_fallback=$UI_SEEK_FALLBACK_ENABLED ui_seek_screen_guard=$UI_SEEK_SCREEN_GUARD_ENABLED ui_seek_touch_frames=$UI_SEEK_TOUCH_FRAMES book_title_autostart=$BOOK_TITLE_AUTOSTART_ENABLED book_title_direct_track_select=$BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED book_title_direct_track_preplay=$BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED book_title_require_path=$BOOK_TITLE_AUTOSTART_REQUIRE_PATH book_title_context_seconds=$BOOK_TITLE_CONTEXT_SECONDS catalog_albums=$CATALOG_ALBUM_PATTERNS"
+  log "start interval=${INTERVAL_SECONDS}s idle_interval=${IDLE_INTERVAL_SECONDS}s new_track_commit_ms=$NEW_TRACK_COMMIT_MS backward_save_guard_ms=$BACKWARD_SAVE_GUARD_MS closed_inherited_socket_fds=$CLOSED_INHERITED_SOCKET_FDS position_source=$POSITION_SOURCE duration_addr=$PLAYER_DURATION_ADDR restore_enabled=$RESTORE_ENABLED track_restore_enabled=$TRACK_RESTORE_ENABLED track_key_fallback=$TRACK_RESTORE_KEY_FALLBACK_ENABLED ui_seek_fallback=$UI_SEEK_FALLBACK_ENABLED ui_seek_screen_guard=$UI_SEEK_SCREEN_GUARD_ENABLED ui_seek_touch_frames=$UI_SEEK_TOUCH_FRAMES book_title_autostart=$BOOK_TITLE_AUTOSTART_ENABLED book_title_direct_track_select=$BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED book_title_direct_track_preplay=$BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED book_title_require_path=$BOOK_TITLE_AUTOSTART_REQUIRE_PATH book_title_context_seconds=$BOOK_TITLE_CONTEXT_SECONDS catalog_albums=$CATALOG_ALBUM_PATTERNS"
 
   last_path=
   last_saved_bucket=

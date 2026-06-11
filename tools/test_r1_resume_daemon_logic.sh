@@ -130,6 +130,149 @@ assert_eq "direct track select returns to list once" "1" "$back_taps"
 assert_eq "direct track select swipes once" "1" "$swipe_taps"
 assert_eq "direct track select taps row five" "5" "$row_tapped"
 
+saved_path='a:\Audiobooks\Author\Book\15.mp3'
+near_path='a:\Audiobooks\Author\Book\14.mp3'
+selected_path='a:\Audiobooks\Author\Book\01.mp3'
+selected=0
+retry_phase=0
+swipe_taps=0
+row_taps=
+back_taps=0
+
+touch_back_to_track_list() {
+  back_taps=$((back_taps + 1))
+  return 0
+}
+
+touch_track_swipe_up() {
+  swipe_taps=$((swipe_taps + 1))
+  return 0
+}
+
+touch_track_row() {
+  row_taps="${row_taps}${1},"
+  if [ "$retry_phase" = 0 ]; then
+    selected_path=$near_path
+    retry_phase=1
+  else
+    case "$1" in
+      4) selected_path=$saved_path ;;
+      *) selected_path=$near_path ;;
+    esac
+  fi
+  selected=1
+  return 0
+}
+
+current_path() {
+  if [ "$selected" = 1 ]; then
+    printf '%s\n' "$selected_path"
+  else
+    printf '%s\n' 'a:\Audiobooks\Author\Book\01.mp3'
+  fi
+}
+
+book_root_for_path() {
+  printf '%s\n' 'a:\Audiobooks\Author\Book'
+}
+
+catalog_field_for_path() {
+  case "$2" in
+    "$saved_path") printf '%s\n' 15 ;;
+    "$near_path") printf '%s\n' 14 ;;
+    *) printf '%s\n' 1 ;;
+  esac
+}
+
+assert_true "direct track select retries adjacent row after near miss" book_title_direct_track_select 1 15 "$saved_path"
+assert_eq "direct track select near miss backs to list twice" "2" "$back_taps"
+assert_eq "direct track select near miss taps original and retry rows" "3,4," "$row_taps"
+
+saved_path='a:\Audiobooks\Author\Book\15.mp3'
+near_path='a:\Audiobooks\Author\Book\14.mp3'
+selected_path='a:\Audiobooks\Author\Book\01.mp3'
+selected=0
+retry_phase=0
+swipe_taps=0
+row_taps=
+back_taps=0
+
+touch_track_row() {
+  row_taps="${row_taps}${1},"
+  selected_path=$near_path
+  selected=1
+  return 0
+}
+
+set +e
+book_title_direct_track_select 1 15 "$saved_path"
+status=$?
+set -e
+assert_eq "direct track select blocks key fallback after unresolved near miss" "2" "$status"
+assert_eq "unresolved near miss still avoids extra key fallback rows only" "3,4," "$row_taps"
+
+saved_path='a:\Audiobooks\Author\Book\15.mp3'
+selected_path='a:\Audiobooks\Author\Book\12.mp3'
+selected=0
+row_tapped=0
+back_taps=0
+
+touch_back_to_track_list() {
+  back_taps=$((back_taps + 1))
+  return 0
+}
+
+touch_track_row() {
+  row_tapped=$1
+  selected_path=$saved_path
+  selected=1
+  return 0
+}
+
+current_path() {
+  if [ "$selected" = 1 ]; then
+    printf '%s\n' "$selected_path"
+  else
+    printf '%s\n' 'a:\Audiobooks\Author\Book\12.mp3'
+  fi
+}
+
+book_root_for_path() {
+  printf '%s\n' 'a:\Audiobooks\Author\Book'
+}
+
+catalog_field_for_path() {
+  case "$2" in
+    "$saved_path") printf '%s\n' 15 ;;
+    *) printf '%s\n' 12 ;;
+  esac
+}
+
+assert_true "visible track select reaches saved forward row" book_title_visible_track_select 12 15 "$saved_path"
+assert_eq "visible track select backs to list once" "1" "$back_taps"
+assert_eq "visible track select taps saved visible row" "4" "$row_tapped"
+
+saved_path='a:\Audiobooks\Author\Book\15.mp3'
+near_path='a:\Audiobooks\Author\Book\14.mp3'
+selected_path='a:\Audiobooks\Author\Book\12.mp3'
+selected=0
+row_tapped=0
+back_taps=0
+
+touch_track_row() {
+  row_tapped=$1
+  selected_path=$near_path
+  selected=1
+  return 0
+}
+
+set +e
+book_title_visible_track_select 12 15 "$saved_path"
+status=$?
+set -e
+assert_eq "visible track select blocks key fallback after near miss" "2" "$status"
+assert_eq "visible track select near miss still taps expected row" "4" "$row_tapped"
+
 BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED=0
 selected=0
 swipe_taps=0
