@@ -379,6 +379,27 @@ def command_seek(args: argparse.Namespace) -> int:
 
 
 def command_macro(args: argparse.Namespace) -> int:
+    if args.name == "edge-back":
+        start_x, start_y, end_x, end_y = 30, 400, 360, 400
+        if args.dry_run:
+            print("macro: edge-back")
+            print(f"would_drag: {start_x},{start_y} -> {end_x},{end_y}")
+            print(f"would_sleep: {args.settle}s")
+            return 0
+        inject_stream(
+            args.adb,
+            DEFAULT_TOUCH_EVENT,
+            drag_stream(start_x, start_y, end_x, end_y, args.frames),
+            label="macro-edge-back",
+            dry_run=args.dry_run,
+        )
+        time.sleep(args.settle)
+        if getattr(args, "after_screenshot", False):
+            after = default_screenshot_path("after-edge-back")
+            capture_screenshot(args.adb, after)
+            print(f"after_screenshot: {after}")
+        return 0
+
     if args.name == "open-audiobooks":
         if args.dry_run:
             preset = TOUCH_PRESETS["main-audiobooks"]
@@ -505,11 +526,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     macro = sub.add_parser("macro", help="run a screenshot-assisted common flow")
     macro.add_argument("--adb", default=DEFAULT_ADB)
-    macro.add_argument("name", choices=["open-audiobooks", "tap-title-row"])
+    macro.add_argument("name", choices=["edge-back", "open-audiobooks", "tap-title-row"])
     macro.add_argument("--row", type=int)
     macro.add_argument("--settle", type=float, default=2.0)
     macro.add_argument("--frames", type=int, default=DEFAULT_TOUCH_FRAMES)
     macro.add_argument("--dry-run", action="store_true")
+    macro.add_argument("--after-screenshot", action="store_true")
     macro.set_defaults(func=command_macro)
 
     return parser
