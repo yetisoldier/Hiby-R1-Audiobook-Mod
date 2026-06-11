@@ -422,7 +422,17 @@ def verify(
         require("count=320" in resume_init_text, "resume init clears stock last-file slot and adjacent fragments", failures)
         require("00003a005c0041007500640069006f0062006f006f006b007300" in resume_init_text, "resume init also clears partially nulled audiobook path", failures)
         require("AUDIOBOOK_INTERVAL_SECONDS=1" in resume_init_text, "resume init script uses tuned 1s polling", failures)
-        require("AUDIOBOOK_IDLE_INTERVAL_SECONDS=3" in resume_init_text, "resume init script uses lower-power idle polling", failures)
+        require("AUDIOBOOK_IDLE_INTERVAL_SECONDS=5" in resume_init_text, "resume init script uses lower-power idle polling", failures)
+        require(
+            "AUDIOBOOK_BOOK_TITLE_MARKER_MUSIC_POLL_SECONDS=15" in resume_init_text,
+            "resume init throttles title marker polling during music playback",
+            failures,
+        )
+        require(
+            "AUDIOBOOK_DIAGNOSTICS_INTERVAL_SECONDS=60" in resume_init_text,
+            "resume init enables low-rate runtime diagnostics",
+            failures,
+        )
         require("AUDIOBOOK_BOOK_TITLE_AUTOSTART_DELAY_SECONDS=1" in resume_init_text, "resume init script uses tuned title autostart delay", failures)
         require("AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED=1" in resume_init_text, "resume init enables pre-play direct track selection", failures)
         require("AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_ROWS_PER_SWIPE=4" in resume_init_text, "resume init sets direct track list geometry", failures)
@@ -450,6 +460,12 @@ def verify(
                 failures,
             )
             require("AUDIOBOOK_DB_MAINT_LOG_MAX_BYTES=524288" in db_init_text, "db maint init caps DB watcher log growth", failures)
+            require("AUDIOBOOK_DB_RUN_ON_MTIME_ONLY=0" in db_init_text, "db maint init ignores mtime-only DB churn by default", failures)
+            require(
+                "AUDIOBOOK_DB_MTIME_ONLY_MIN_RERUN_SECONDS=900" in db_init_text,
+                "db maint init keeps a long mtime-only rerun guard",
+                failures,
+            )
             require("r1_usrlocal_media_seed.db" in db_init_text, "db maint init installs media DB seed", failures)
         else:
             require(False, "db maint init script exists", failures)
@@ -465,7 +481,8 @@ def verify(
             db_watch_text = db_watch.read_text(encoding="ascii", errors="replace")
             require("\r" not in db_watch_text, "db watch script uses LF line endings", failures)
             require("date -r \"$DB\" '+%s'" in db_watch_text, "db watch uses R1-supported date -r signature", failures)
-            require("run_maint db-stable" in db_watch_text, "db watch runs maintainer after stable scan", failures)
+            require('run_maint "$run_reason"' in db_watch_text, "db watch runs maintainer after stable size-changing scan", failures)
+            require("skip reason=mtime-only" in db_watch_text, "db watch skips mtime-only playback churn", failures)
             require("run_maint boot" in db_watch_text, "db watch runs maintainer once after boot", failures)
             require("--music-dir \"$MUSIC_DIR\"" in db_watch_text, "db watch passes Music folder to helper", failures)
             require("--books-catalog \"$CATALOG_BOOKS\"" in db_watch_text, "db watch writes book-level catalog", failures)
