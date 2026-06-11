@@ -76,6 +76,17 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -CompareTo work\settings-snapshots\YYYYMMDD-HHMMSS-before-usb-mode
 ```
 
+The comparison report is written into the second snapshot folder as
+`settings-snapshot-comparison.txt`. You can also compare two existing snapshots
+without touching the device:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File tools\compare_r1_settings_snapshots.ps1 `
+  -Before work\settings-snapshots\YYYYMMDD-HHMMSS-before-usb-mode `
+  -After work\settings-snapshots\YYYYMMDD-HHMMSS-after-usb-mode
+```
+
 If the diff identifies the saved USB/Dock setting, a development boot script can
 honor that same value so the existing UI setting becomes the boot-ADB toggle.
 A brand-new settings menu item is possible in theory, but it would require

@@ -527,6 +527,7 @@ The audiobook-specific behavior in this repository was developed and tested on a
 - `tools/r1_adb_control.py` - unified non-persistent R1 control console for framebuffer screenshots, named tap presets, drags, playback keys, seek-bar taps, and screenshot-assisted macros.
 - `tools/adb_manage_boot_adb.ps1` - development helper for checking and toggling the `/usr/data/disableadb` marker used by opt-in boot-ADB builds.
 - `tools/adb_snapshot_r1_settings.ps1` - read-only before/after snapshot helper for finding where stock UI settings, such as USB/Dock mode, are persisted.
+- `tools/compare_r1_settings_snapshots.ps1` - local comparison helper that summarizes changed writable state and pulled settings files between two R1 snapshots.
 - `tools/build_r1_db_maint_helper.ps1` - reproducibly builds the static MIPS audiobook DB maintenance helper from Zig and SQLite upstream sources.
 - `tools/test_r1_db_maint_local_fixture.py` - local disposable-fixture test for DB helper fallback scans, sidecar cover/LRC paths, `.m4b`, `.iso`, and release-state invariants.
 - `tools/patch_hiby_player.py` - guarded stock-1.6 binary patcher; experimental scanner-skip, Books playback, and Audiobooks launcher patches are opt-in.

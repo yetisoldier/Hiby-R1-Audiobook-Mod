@@ -139,14 +139,15 @@ foreach ($line in $candidates) {
 
 if ($CompareTo) {
     $comparePath = Resolve-PathStrict $CompareTo
-    $beforeManifest = Join-Path $comparePath "settings-manifest.tsv"
-    $afterManifest = Join-Path $snapshotDir "settings-manifest.tsv"
-    if (Test-Path -LiteralPath $beforeManifest) {
-        $diffPath = Join-Path $snapshotDir "compare-settings-manifest.txt"
-        Compare-Object `
-            -ReferenceObject (Get-Content -LiteralPath $beforeManifest) `
-            -DifferenceObject (Get-Content -LiteralPath $afterManifest) |
-            Out-File -LiteralPath $diffPath -Encoding UTF8
+    $compareScript = Join-Path $PSScriptRoot "compare_r1_settings_snapshots.ps1"
+    if (Test-Path -LiteralPath $compareScript) {
+        powershell -NoProfile -ExecutionPolicy Bypass `
+            -File $compareScript `
+            -Before $comparePath `
+            -After $snapshotDir | Out-Host
+        if ($LASTEXITCODE -ne 0) {
+            throw "settings snapshot comparison failed"
+        }
     }
 }
 
