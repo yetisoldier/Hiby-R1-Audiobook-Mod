@@ -19,6 +19,8 @@ BOOT_DELAY_SECONDS=${AUDIOBOOK_DB_BOOT_DELAY_SECONDS:-20}
 INTERVAL_SECONDS=${AUDIOBOOK_DB_INTERVAL_SECONDS:-30}
 STABLE_SECONDS=${AUDIOBOOK_DB_STABLE_SECONDS:-15}
 FULL_REFRESH_INTERVAL_SECONDS=${AUDIOBOOK_DB_FULL_REFRESH_INTERVAL_SECONDS:-0}
+RUN_ON_MTIME_ONLY=${AUDIOBOOK_DB_RUN_ON_MTIME_ONLY:-0}
+MTIME_ONLY_MIN_RERUN_SECONDS=${AUDIOBOOK_DB_MTIME_ONLY_MIN_RERUN_SECONDS:-900}
 
 rotate_log_if_needed() {
   case "$LOG_MAX_BYTES" in ''|*[!0-9]*|0) return 0 ;; esac
@@ -45,6 +47,11 @@ db_signature() {
   mtime=$(date -r "$DB" '+%s' 2>/dev/null || ls --full-time "$DB" 2>/dev/null | awk '{ print $6 " " $7 " " $8 }')
   [ -n "$size" ] && [ -n "$mtime" ] || return 1
   printf '%s:%s\n' "$size" "$mtime"
+}
+
+db_size_signature() {
+  [ -s "$DB" ] || return 1
+  wc -c <"$DB" 2>/dev/null | awk '{ print $1 }'
 }
 
 ensure_db_seeded() {
@@ -103,19 +110,26 @@ run_maint() {
 
 echo $$ >"$PID_FILE"
 mkdir -p "$BASE" "$BASE/bin" "$BASE/resume.d"
-log "start interval=${INTERVAL_SECONDS}s stable=${STABLE_SECONDS}s full_refresh=${FULL_REFRESH_INTERVAL_SECONDS}s helper=$HELPER seed=$SEED_DB"
+case "$RUN_ON_MTIME_ONLY" in 1|true|yes) RUN_ON_MTIME_ONLY=1 ;; *) RUN_ON_MTIME_ONLY=0 ;; esac
+case "$MTIME_ONLY_MIN_RERUN_SECONDS" in ''|*[!0-9]*) MTIME_ONLY_MIN_RERUN_SECONDS=900 ;; esac
+
+log "start interval=${INTERVAL_SECONDS}s stable=${STABLE_SECONDS}s full_refresh=${FULL_REFRESH_INTERVAL_SECONDS}s run_on_mtime_only=${RUN_ON_MTIME_ONLY} mtime_only_min_rerun=${MTIME_ONLY_MIN_RERUN_SECONDS}s helper=$HELPER seed=$SEED_DB"
 
 sleep "$BOOT_DELAY_SECONDS"
 
 last_sig=
+last_size=
 last_seen_sig=
+last_seen_size=
 last_seen_at=0
 last_run_at=0
 
 ensure_db_seeded boot || true
 run_maint boot || true
 last_sig=$(db_signature 2>/dev/null || true)
+last_size=$(db_size_signature 2>/dev/null || true)
 last_seen_sig=$last_sig
+last_seen_size=$last_size
 last_seen_at=$(now_seconds)
 last_run_at=$last_seen_at
 
@@ -123,28 +137,53 @@ while :; do
   sleep "$INTERVAL_SECONDS"
   ensure_db_seeded loop || true
   sig=$(db_signature 2>/dev/null || true)
+  size=$(db_size_signature 2>/dev/null || true)
   now=$(now_seconds)
   if [ -z "$sig" ]; then
     continue
   fi
   if [ "$sig" != "$last_seen_sig" ]; then
     last_seen_sig=$sig
+    last_seen_size=$size
     last_seen_at=$now
-    log "db-change sig=$sig"
+    log "db-change sig=$sig size=${size:-?}"
     continue
   fi
   age=$((now - last_seen_at))
   since_run=$((now - last_run_at))
   if [ "$sig" != "$last_sig" ] && [ "$age" -ge "$STABLE_SECONDS" ]; then
-    run_maint db-stable || true
-    last_sig=$(db_signature 2>/dev/null || echo "$sig")
-    last_run_at=$now
+    run_reason=db-stable
+    should_run=1
+    if [ -n "$size" ] && [ -n "$last_size" ] && [ "$size" = "$last_size" ]; then
+      run_reason=db-stable-mtime
+      should_run=0
+      if [ "$RUN_ON_MTIME_ONLY" = 1 ]; then
+        should_run=1
+      elif [ "$FULL_REFRESH_INTERVAL_SECONDS" -gt 0 ] && [ "$since_run" -ge "$FULL_REFRESH_INTERVAL_SECONDS" ]; then
+        should_run=1
+        run_reason=periodic-mtime
+      elif [ "$MTIME_ONLY_MIN_RERUN_SECONDS" -gt 0 ] && [ "$since_run" -ge "$MTIME_ONLY_MIN_RERUN_SECONDS" ]; then
+        should_run=1
+      fi
+    fi
+    if [ "$should_run" = 1 ]; then
+      run_maint "$run_reason" || true
+      last_sig=$(db_signature 2>/dev/null || echo "$sig")
+      last_size=$(db_size_signature 2>/dev/null || echo "$size")
+      last_run_at=$now
+    else
+      log "skip reason=mtime-only sig=$sig size=${size:-?} since_run=${since_run}s"
+      last_sig=$sig
+      last_size=$size
+    fi
     continue
   fi
   if [ "$FULL_REFRESH_INTERVAL_SECONDS" -gt 0 ] && [ "$since_run" -ge "$FULL_REFRESH_INTERVAL_SECONDS" ]; then
     run_maint periodic || true
     last_sig=$(db_signature 2>/dev/null || echo "$sig")
+    last_size=$(db_size_signature 2>/dev/null || echo "$size")
     last_seen_sig=$last_sig
+    last_seen_size=$last_size
     last_seen_at=$now
     last_run_at=$now
   fi

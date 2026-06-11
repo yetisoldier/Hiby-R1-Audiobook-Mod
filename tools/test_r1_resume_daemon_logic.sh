@@ -65,6 +65,28 @@ assert_false "path slot ignores music path" path_slot_hex_is_audiobook "$music_h
 assert_true "path preview recognizes audiobook path" path_preview_is_audiobook 'a:\Audiobooks\Book\01.mp3'
 assert_true "path preview recognizes rootless audiobook path" path_preview_is_audiobook '\Audiobooks\Book\01.mp3'
 assert_false "path preview ignores music path" path_preview_is_audiobook 'a:\Music\Artist\01.mp3'
+assert_true "path preview recognizes music path" path_preview_is_music 'a:\Music\Artist\01.mp3'
+assert_false "path preview music ignores audiobook path" path_preview_is_music 'a:\Audiobooks\Book\01.mp3'
+
+BOOK_TITLE_AUTOSTART_ENABLED=1
+BOOK_TITLE_CONTEXT_SECONDS=300
+BOOK_TITLE_MARKER_IDLE_POLL_SECONDS=5
+BOOK_TITLE_MARKER_MUSIC_POLL_SECONDS=15
+book_title_context_until=0
+last_book_title_marker_poll_at=0
+assert_true "marker poll runs immediately for music after start" should_poll_book_title_marker 'a:\Music\Artist\01.mp3' 100
+last_book_title_marker_poll_at=100
+assert_false "marker poll throttles while music is active" should_poll_book_title_marker 'a:\Music\Artist\01.mp3' 109
+assert_true "marker poll resumes after music throttle interval" should_poll_book_title_marker 'a:\Music\Artist\01.mp3' 115
+last_book_title_marker_poll_at=100
+assert_true "marker poll remains fast for audiobook context" should_poll_book_title_marker 'a:\Audiobooks\Book\01.mp3' 101
+book_title_context_until=200
+assert_true "marker poll remains fast during recent audiobook context" should_poll_book_title_marker '' 101
+assert_false "marker poll throttles music even during recent audiobook context" should_poll_book_title_marker 'a:\Music\Artist\01.mp3' 109
+book_title_context_until=0
+BOOK_TITLE_AUTOSTART_ENABLED=0
+assert_false "marker poll obeys autostart disable switch" should_poll_book_title_marker 'a:\Audiobooks\Book\01.mp3' 101
+BOOK_TITLE_AUTOSTART_ENABLED=1
 
 CURRENT_PATH_HEX_CACHE=
 CURRENT_PATH_VALUE_CACHE=

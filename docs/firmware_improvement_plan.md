@@ -22,6 +22,21 @@ items have landed in the `1.6.11-audiobook` release.
   the saved position around 17 minutes, and paused playback afterward. A short
   runtime monitor showed no reboot or daemon duplication.
 
+## v1.4.0 Development Focus
+
+- Branch: `codex/r1-v1.4-stability-resume`.
+- First stability target: reduce background work while normal music is playing.
+- The resume daemon now treats explicit `/Music` playback as a quiet state:
+  it keeps position reads and resume saves at zero, and throttles audiobook
+  title-marker memory polling even if an audiobook was played recently.
+- The DB watcher now ignores timestamp-only media DB churn by default. It still
+  runs at boot and after size-changing database scans, but skips ordinary
+  playback mtime updates so it does not rebuild audiobook tables during music.
+- Runtime-only device testing on `1.6.11-audiobook` showed music playback with
+  `position_reads=0`, `saves=0`, marker polling reduced to 4 polls per minute,
+  and DB watcher mtime-only changes logged as skipped instead of running the
+  helper.
+
 ## Useful New Information From hiby-modding
 
 - `hiby-mods` documents a fuller HiBy media database builder, including wider

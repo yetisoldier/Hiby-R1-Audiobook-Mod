@@ -19,6 +19,9 @@ LOG_MAX_BYTES=${AUDIOBOOK_RESUME_LOG_MAX_BYTES:-524288}
 
 INTERVAL_SECONDS=${AUDIOBOOK_INTERVAL_SECONDS:-5}
 IDLE_INTERVAL_SECONDS=${AUDIOBOOK_IDLE_INTERVAL_SECONDS:-3}
+BOOK_TITLE_MARKER_IDLE_POLL_SECONDS=${AUDIOBOOK_BOOK_TITLE_MARKER_IDLE_POLL_SECONDS:-5}
+BOOK_TITLE_MARKER_MUSIC_POLL_SECONDS=${AUDIOBOOK_BOOK_TITLE_MARKER_MUSIC_POLL_SECONDS:-15}
+DIAGNOSTICS_INTERVAL_SECONDS=${AUDIOBOOK_DIAGNOSTICS_INTERVAL_SECONDS:-60}
 MIN_SAVE_MS=${AUDIOBOOK_MIN_SAVE_MS:-3000}
 RESTORE_ONLY_BEFORE_MS=${AUDIOBOOK_RESTORE_ONLY_BEFORE_MS:-15000}
 RESTORE_MIN_MS=${AUDIOBOOK_RESTORE_MIN_MS:-10000}
@@ -437,6 +440,15 @@ current_path_slot_preview() {
 path_preview_is_audiobook() {
   case "$1" in
     [aA]:\\Audiobooks\\*|:\\Audiobooks\\*|\\Audiobooks\\*)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+path_preview_is_music() {
+  case "$1" in
+    [aA]:\\Music\\*|:\\Music\\*|\\Music\\*)
       return 0
       ;;
   esac
@@ -1742,18 +1754,76 @@ book_title_marker_seq() {
   u32le_at_pid_mem "$pid" "$seq_addr"
 }
 
+book_title_context_active() {
+  now=$1
+  case "${book_title_context_until:-0}:$now:$BOOK_TITLE_CONTEXT_SECONDS" in
+    *[!0-9:]* | :* | *: | *:0) return 1 ;;
+    *)
+      [ "${book_title_context_until:-0}" -gt "$now" ] && return 0
+      ;;
+  esac
+  return 1
+}
+
+poll_interval_due() {
+  last_poll=$1
+  now=$2
+  interval=$3
+  case "$last_poll:$now:$interval" in
+    *[!0-9:]* | :* | *:) return 0 ;;
+  esac
+  [ "$interval" -gt 0 ] || return 0
+  [ "$last_poll" -le 0 ] && return 0
+  [ $((now - last_poll)) -ge "$interval" ]
+}
+
+should_poll_book_title_marker() {
+  path_preview=$1
+  now=$2
+  [ "$BOOK_TITLE_AUTOSTART_ENABLED" = 1 ] || return 1
+  path_preview_is_audiobook "$path_preview" && return 0
+  if path_preview_is_music "$path_preview"; then
+    poll_interval_due "${last_book_title_marker_poll_at:-0}" "$now" "$BOOK_TITLE_MARKER_MUSIC_POLL_SECONDS"
+    return $?
+  fi
+  book_title_context_active "$now" && return 0
+  poll_interval_due "${last_book_title_marker_poll_at:-0}" "$now" "$BOOK_TITLE_MARKER_IDLE_POLL_SECONDS"
+}
+
+diag_inc() {
+  name=$1
+  eval "$name=\$((\${$name:-0} + 1))"
+}
+
+diag_maybe_log() {
+  now=$1
+  case "$DIAGNOSTICS_INTERVAL_SECONDS:$now" in
+    *[!0-9:]* | :* | 0:*) return 0 ;;
+  esac
+  if [ "${diag_last_log_at:-0}" -le 0 ]; then
+    diag_last_log_at=$now
+    return 0
+  fi
+  [ $((now - diag_last_log_at)) -ge "$DIAGNOSTICS_INTERVAL_SECONDS" ] || return 0
+  log "stats loops=${diag_loops:-0} audiobook=${diag_audiobook_loops:-0} non_audiobook=${diag_non_audiobook_loops:-0} path_preview=${diag_path_previews:-0} marker_polls=${diag_marker_polls:-0} marker_skips=${diag_marker_skips:-0} position_reads=${diag_position_reads:-0} saves=${diag_saves:-0}"
+  diag_last_log_at=$now
+  diag_loops=0
+  diag_audiobook_loops=0
+  diag_non_audiobook_loops=0
+  diag_path_previews=0
+  diag_marker_polls=0
+  diag_marker_skips=0
+  diag_position_reads=0
+  diag_saves=0
+}
+
 maybe_autostart_book_title() {
   [ "$BOOK_TITLE_AUTOSTART_ENABLED" = 1 ] || return 0
   seq=$1
   [ -n "$seq" ] || return 0
   now=$(date +%s 2>/dev/null || echo 0)
   context_active=0
-  case "$book_title_context_until:$now:$BOOK_TITLE_CONTEXT_SECONDS" in
-    *[!0-9:]* | :* | *: | *:0) context_active=0 ;;
-    *)
-      [ "$book_title_context_until" -gt "$now" ] && context_active=1
-      ;;
-  esac
+  book_title_context_active "$now" && context_active=1
   pid=$(player_pid)
   [ -n "$pid" ] || return 0
   album_ptr_addr=$((BOOK_TITLE_MARKER_ADDR + 24))
@@ -1824,10 +1894,13 @@ main() {
   mkdir -p "$BASE_DIR" "$STORE_DIR"
   case "$INTERVAL_SECONDS" in ''|*[!0-9]*|0) INTERVAL_SECONDS=1 ;; esac
   case "$IDLE_INTERVAL_SECONDS" in ''|*[!0-9]*|0) IDLE_INTERVAL_SECONDS=3 ;; esac
+  case "$BOOK_TITLE_MARKER_IDLE_POLL_SECONDS" in ''|*[!0-9]*) BOOK_TITLE_MARKER_IDLE_POLL_SECONDS=5 ;; esac
+  case "$BOOK_TITLE_MARKER_MUSIC_POLL_SECONDS" in ''|*[!0-9]*) BOOK_TITLE_MARKER_MUSIC_POLL_SECONDS=15 ;; esac
+  case "$DIAGNOSTICS_INTERVAL_SECONDS" in ''|*[!0-9]*) DIAGNOSTICS_INTERVAL_SECONDS=60 ;; esac
   close_inherited_socket_fds
   refresh_catalog_album_patterns
   echo "$$" >"$PID_FILE"
-  log "start interval=${INTERVAL_SECONDS}s idle_interval=${IDLE_INTERVAL_SECONDS}s new_track_commit_ms=$NEW_TRACK_COMMIT_MS backward_save_guard_ms=$BACKWARD_SAVE_GUARD_MS restore_rewind_ms=$RESTORE_REWIND_MS closed_inherited_socket_fds=$CLOSED_INHERITED_SOCKET_FDS position_source=$POSITION_SOURCE duration_addr=$PLAYER_DURATION_ADDR restore_enabled=$RESTORE_ENABLED track_restore_enabled=$TRACK_RESTORE_ENABLED track_key_fallback=$TRACK_RESTORE_KEY_FALLBACK_ENABLED ui_seek_fallback=$UI_SEEK_FALLBACK_ENABLED ui_seek_screen_guard=$UI_SEEK_SCREEN_GUARD_ENABLED ui_seek_touch_frames=$UI_SEEK_TOUCH_FRAMES play_mode_enforce=$PLAY_MODE_ENFORCE_ENABLED play_mode_target=$PLAY_MODE_TARGET play_mode_offset=$PLAY_MODE_USER_INI_OFFSET book_title_autostart=$BOOK_TITLE_AUTOSTART_ENABLED book_title_direct_track_select=$BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED book_title_direct_track_preplay=$BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED book_title_memscan=$BOOK_TITLE_MEMSCAN_ENABLED book_title_direct_calibrate=$BOOK_TITLE_DIRECT_TRACK_CALIBRATE_ENABLED book_title_recovery_transport=$BOOK_TITLE_DIRECT_TRACK_RECOVERY_TRANSPORT_ENABLED book_title_recovery_max=$BOOK_TITLE_DIRECT_TRACK_RECOVERY_MAX_STEPS book_title_require_path=$BOOK_TITLE_AUTOSTART_REQUIRE_PATH book_title_context_seconds=$BOOK_TITLE_CONTEXT_SECONDS catalog_albums=$CATALOG_ALBUM_PATTERNS catalog_books=$CATALOG_BOOKS"
+  log "start interval=${INTERVAL_SECONDS}s idle_interval=${IDLE_INTERVAL_SECONDS}s marker_idle_poll=${BOOK_TITLE_MARKER_IDLE_POLL_SECONDS}s marker_music_poll=${BOOK_TITLE_MARKER_MUSIC_POLL_SECONDS}s diagnostics_interval=${DIAGNOSTICS_INTERVAL_SECONDS}s new_track_commit_ms=$NEW_TRACK_COMMIT_MS backward_save_guard_ms=$BACKWARD_SAVE_GUARD_MS restore_rewind_ms=$RESTORE_REWIND_MS closed_inherited_socket_fds=$CLOSED_INHERITED_SOCKET_FDS position_source=$POSITION_SOURCE duration_addr=$PLAYER_DURATION_ADDR restore_enabled=$RESTORE_ENABLED track_restore_enabled=$TRACK_RESTORE_ENABLED track_key_fallback=$TRACK_RESTORE_KEY_FALLBACK_ENABLED ui_seek_fallback=$UI_SEEK_FALLBACK_ENABLED ui_seek_screen_guard=$UI_SEEK_SCREEN_GUARD_ENABLED ui_seek_touch_frames=$UI_SEEK_TOUCH_FRAMES play_mode_enforce=$PLAY_MODE_ENFORCE_ENABLED play_mode_target=$PLAY_MODE_TARGET play_mode_offset=$PLAY_MODE_USER_INI_OFFSET book_title_autostart=$BOOK_TITLE_AUTOSTART_ENABLED book_title_direct_track_select=$BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED book_title_direct_track_preplay=$BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED book_title_memscan=$BOOK_TITLE_MEMSCAN_ENABLED book_title_direct_calibrate=$BOOK_TITLE_DIRECT_TRACK_CALIBRATE_ENABLED book_title_recovery_transport=$BOOK_TITLE_DIRECT_TRACK_RECOVERY_TRANSPORT_ENABLED book_title_recovery_max=$BOOK_TITLE_DIRECT_TRACK_RECOVERY_MAX_STEPS book_title_require_path=$BOOK_TITLE_AUTOSTART_REQUIRE_PATH book_title_context_seconds=$BOOK_TITLE_CONTEXT_SECONDS catalog_albums=$CATALOG_ALBUM_PATTERNS catalog_books=$CATALOG_BOOKS"
 
   last_path=
   last_saved_bucket=
@@ -1844,17 +1917,40 @@ main() {
   book_title_autostart_reset_key=
   book_title_restore_wait_log_key=
   book_title_pre_restore_log_key=
+  last_book_title_marker_poll_at=0
+  diag_last_log_at=0
+  diag_loops=0
+  diag_audiobook_loops=0
+  diag_non_audiobook_loops=0
+  diag_path_previews=0
+  diag_marker_polls=0
+  diag_marker_skips=0
+  diag_position_reads=0
+  diag_saves=0
 
   while :; do
+    now_loop=$(date +%s 2>/dev/null || echo 0)
+    diag_inc diag_loops
     loop_sleep=$IDLE_INTERVAL_SECONDS
-    book_title_seq=$(book_title_marker_seq 2>/dev/null || true)
-    if [ -n "$book_title_seq" ] && [ "$book_title_seq" != "$last_book_title_seq" ]; then
-      loop_sleep=$INTERVAL_SECONDS
-      maybe_autostart_book_title "$book_title_seq" || log "book-title autostart failed seq=$book_title_seq"
-      last_book_title_seq=$book_title_seq
+    diag_maybe_log "$now_loop"
+    path_preview=$(current_path_slot_preview)
+    diag_inc diag_path_previews
+
+    if should_poll_book_title_marker "$path_preview" "$now_loop"; then
+      diag_inc diag_marker_polls
+      last_book_title_marker_poll_at=$now_loop
+      book_title_seq=$(book_title_marker_seq 2>/dev/null || true)
+      if [ -n "$book_title_seq" ] && [ "$book_title_seq" != "$last_book_title_seq" ]; then
+        loop_sleep=$INTERVAL_SECONDS
+        maybe_autostart_book_title "$book_title_seq" || log "book-title autostart failed seq=$book_title_seq"
+        last_book_title_seq=$book_title_seq
+        path_preview=$(current_path_slot_preview)
+        diag_inc diag_path_previews
+      fi
+    else
+      diag_inc diag_marker_skips
     fi
 
-    path_preview=$(current_path_slot_preview)
     if path_preview_is_audiobook "$path_preview"; then
       path=$(current_path)
     else
@@ -1862,12 +1958,14 @@ main() {
     fi
     case "$path" in
       [aA]:\\Audiobooks\\*)
+        diag_inc diag_audiobook_loops
         loop_sleep=$INTERVAL_SECONDS
         now=$(date +%s 2>/dev/null || echo 0)
         if [ "$BOOK_TITLE_CONTEXT_SECONDS" -gt 0 ] 2>/dev/null; then
           book_title_context_until=$((now + BOOK_TITLE_CONTEXT_SECONDS))
         fi
         position_rc=0
+        diag_inc diag_position_reads
         pos=$(position_ms) || position_rc=$?
         if [ "$position_rc" -ne 0 ]; then
           if [ "$position_rc" -ne 124 ]; then
@@ -1964,6 +2062,7 @@ main() {
                 path_after_track_restore=$(current_path)
                 if [ "$path_after_track_restore" != "$path" ]; then
                   path=$path_after_track_restore
+                  diag_inc diag_position_reads
                   pos=$(position_ms) || pos=0
                   case "$pos" in ''|*[!0-9]*) pos=0 ;; esac
                   track_index=$(catalog_field_for_path 2 "$path" || true)
@@ -1989,6 +2088,7 @@ main() {
                 restored_path=
               fi
             fi
+            diag_inc diag_position_reads
             pos=$(position_ms) || pos=0
             case "$pos" in ''|*[!0-9]*) pos=0 ;; esac
           fi
@@ -2002,6 +2102,7 @@ main() {
             :
           elif [ "$completed_start_over_path" = "$path" ]; then
             save_position "$path" "$pos"
+            diag_inc diag_saves
             last_saved_bucket=$bucket
             completed_start_over_path=
             deferred_overwrite_path=
@@ -2012,12 +2113,14 @@ main() {
             fi
           elif [ "$bucket" != "$last_saved_bucket" ] || [ "$path" != "$last_path" ]; then
             save_position "$path" "$pos"
+            diag_inc diag_saves
             last_saved_bucket=$bucket
             deferred_overwrite_path=
           fi
         fi
         ;;
       *)
+        diag_inc diag_non_audiobook_loops
         if [ -n "$last_path" ]; then
           log "leave audiobook current=non-audiobook"
         fi
