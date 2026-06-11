@@ -1075,7 +1075,13 @@ static void assign_missing_track_numbers(RowVec *rows) {
     free(current_root);
 }
 
-static void insert_media_rows(sqlite3 *db, const char *table, RowVec *rows, int (*cmp)(const void *, const void *)) {
+static void insert_media_rows(
+    sqlite3 *db,
+    const char *table,
+    RowVec *rows,
+    int (*cmp)(const void *, const void *),
+    int index_by_album
+) {
     if (!table_exists(db, table)) return;
     qsort(rows->items, rows->len, sizeof(MediaRow), cmp);
     char sql[1024];
@@ -1092,6 +1098,16 @@ static void insert_media_rows(sqlite3 *db, const char *table, RowVec *rows, int 
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) die_sql(db, "prepare insert media");
     for (size_t i = 0; i < rows->len; i++) {
         MediaRow *r = &rows->items[i];
+        char *album_character = NULL;
+        char *album_pinyin = NULL;
+        const char *character = r->character;
+        const char *pinyin = r->pinyin_charater;
+        if (index_by_album && r->album && *r->album) {
+            album_character = character_for(r->album);
+            album_pinyin = pinyin_for(r->album);
+            character = album_character;
+            pinyin = album_pinyin;
+        }
         sqlite3_reset(stmt);
         sqlite3_clear_bindings(stmt);
         sqlite3_bind_int(stmt, 1, r->id);
@@ -1107,7 +1123,7 @@ static void insert_media_rows(sqlite3 *db, const char *table, RowVec *rows, int 
         sqlite3_bind_int(stmt, 11, r->begin_time);
         sqlite3_bind_int(stmt, 12, r->end_time);
         sqlite3_bind_int(stmt, 13, r->cue_id);
-        bind_text0(stmt, 14, r->character);
+        bind_text0(stmt, 14, character);
         sqlite3_bind_int64(stmt, 15, r->size);
         sqlite3_bind_int(stmt, 16, r->sample_rate);
         sqlite3_bind_int(stmt, 17, r->bit_rate);
@@ -1121,9 +1137,11 @@ static void insert_media_rows(sqlite3 *db, const char *table, RowVec *rows, int 
         sqlite3_bind_double(stmt, 25, r->track_peak);
         sqlite3_bind_int64(stmt, 26, r->ctime);
         sqlite3_bind_int64(stmt, 27, r->mtime);
-        bind_text0(stmt, 28, r->pinyin_charater);
+        bind_text0(stmt, 28, pinyin);
         bind_text0(stmt, 29, r->album_artist);
         if (sqlite3_step(stmt) != SQLITE_DONE) die_sql(db, "insert media row");
+        free(album_character);
+        free(album_pinyin);
     }
     sqlite3_finalize(stmt);
 }
@@ -1491,10 +1509,10 @@ static void maintain_database(const Options *opts) {
     delete_audiobook_rows(db, "MEDIA2_TABLE");
     delete_audiobook_rows(db, "MEDIA3_TABLE");
     delete_audiobook_rows(db, "SEARCH_TABLE");
-    insert_media_rows(db, "MEDIA_TABLE", &music_rows, cmp_name_ci);
-    insert_media_rows(db, "MEDIA2_TABLE", &music_rows, cmp_album_track);
-    insert_media_rows(db, "MEDIA_TABLE", &audiobook_rows, cmp_name_ci);
-    insert_media_rows(db, "MEDIA2_TABLE", &audiobook_rows, cmp_album_track);
+    insert_media_rows(db, "MEDIA_TABLE", &music_rows, cmp_name_ci, 0);
+    insert_media_rows(db, "MEDIA2_TABLE", &music_rows, cmp_album_track, 0);
+    insert_media_rows(db, "MEDIA_TABLE", &audiobook_rows, cmp_name_ci, 0);
+    insert_media_rows(db, "MEDIA2_TABLE", &audiobook_rows, cmp_album_track, 1);
     rebuild_catalog_tables(db);
     if (exec_sql(db, "COMMIT") != SQLITE_OK) die_sql(db, "commit transaction");
 

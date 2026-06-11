@@ -23,6 +23,7 @@ class MediaRow:
     artist: str
     album_artist: str
     genre: str
+    character: str = ""
 
     @property
     def root(self) -> str:
@@ -31,6 +32,14 @@ class MediaRow:
 
 def denul(value: object) -> str:
     return "" if value is None else str(value).rstrip("\x00")
+
+
+def expected_character(text: str) -> str:
+    value = text or ""
+    i = 0
+    while i < len(value) and (value[i].isspace() or value[i] in "\"'.("):
+        i += 1
+    return value[i].upper() if i < len(value) else "#"
 
 
 def table_exists(conn: sqlite3.Connection, table: str) -> bool:
@@ -54,9 +63,9 @@ def load_audiobook_rows(conn: sqlite3.Connection, table: str, failures: list[str
     if not require_table(conn, table, failures):
         return []
     rows: list[MediaRow] = []
-    for media_id, path, title, album, artist, album_artist, genre in conn.execute(
+    for media_id, path, title, album, artist, album_artist, genre, character in conn.execute(
         f"""
-        SELECT id, path, name, album, artist, album_artist, genre
+        SELECT id, path, name, album, artist, album_artist, genre, character
           FROM {table}
          WHERE path LIKE ? COLLATE NOCASE
          ORDER BY path COLLATE NOCASE
@@ -72,6 +81,7 @@ def load_audiobook_rows(conn: sqlite3.Connection, table: str, failures: list[str
                 artist=denul(artist),
                 album_artist=denul(album_artist),
                 genre=denul(genre),
+                character=denul(character),
             )
         )
     return rows
@@ -277,6 +287,16 @@ def check_database(
         if len(media_rows) != len(media2_rows):
             failures.append(
                 f"MEDIA_TABLE/MEDIA2_TABLE audiobook row count mismatch: {len(media_rows)} vs {len(media2_rows)}"
+            )
+        bad_media2_indexes = [
+            f"{row.path} ({row.character!r} != {expected_character(row.album)!r})"
+            for row in media2_rows
+            if row.album and row.character != expected_character(row.album)
+        ]
+        if bad_media2_indexes:
+            failures.append(
+                "MEDIA2_TABLE audiobook rows should index by book title for the title-list side rail: "
+                + "; ".join(bad_media2_indexes[:5])
             )
         if search_audiobooks:
             failures.append(f"SEARCH_TABLE contains audiobook rows: {search_audiobooks}")

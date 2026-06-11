@@ -241,6 +241,19 @@ def verify_db(db: Path, catalog: Path) -> None:
                 """
             )
         }
+        media2_index = {
+            denul(path): {
+                "character": denul(character),
+                "pinyin": denul(pinyin_charater),
+            }
+            for path, character, pinyin_charater in conn.execute(
+                """
+                SELECT path, character, pinyin_charater
+                  FROM MEDIA2_TABLE
+                 WHERE path LIKE 'a:\\Audiobooks\\%' COLLATE NOCASE
+                """
+            )
+        }
         normal_genres = {
             denul(genre)
             for (genre,) in conn.execute(
@@ -268,6 +281,8 @@ def verify_db(db: Path, catalog: Path) -> None:
     assert_equal(rows[first]["album"], "Test Book", "guide folder fallback book title")
     assert_equal(rows[first]["artist"], "Test Author", "guide folder fallback artist")
     assert_equal(rows[first]["album_artist"], "Test Author", "guide folder fallback album artist")
+    assert_equal(media2_index[first]["character"], "T", "audiobook album-route side index uses book title")
+    assert_equal(media2_index[first]["pinyin"], "TEST BOOK", "audiobook album-route pinyin uses book title")
     assert_equal(rows[second]["genre"], "Audiobook", "custom m4b genre normalized")
     assert_equal(rows[standalone]["genre"], "Audiobook", "blank audiobook genre normalized")
     assert_true("Tolkien Audiobook" not in normal_genres, "custom audiobook genre removed from music genres")

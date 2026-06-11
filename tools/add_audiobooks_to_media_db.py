@@ -603,7 +603,8 @@ MEDIA_COLUMNS = (
 )
 
 
-def row_tuple(row: MediaRow) -> tuple[object, ...]:
+def row_tuple(row: MediaRow, *, index_by_album: bool = False) -> tuple[object, ...]:
+    index_text = row.album if index_by_album and row.album else row.name
     return (
         row.id,
         nul(row.path),
@@ -618,7 +619,7 @@ def row_tuple(row: MediaRow) -> tuple[object, ...]:
         0,
         -1,
         -1,
-        sort_character(row.name),
+        sort_character(index_text),
         row.size,
         row.sample_rate,
         row.bit_rate,
@@ -632,7 +633,7 @@ def row_tuple(row: MediaRow) -> tuple[object, ...]:
         0.0,
         row.ctime,
         row.mtime,
-        pinyin(row.name),
+        pinyin(index_text),
         nul(row.album_artist),
     )
 
@@ -675,7 +676,7 @@ def insert_rows(
     sql_media2 = f"INSERT INTO MEDIA2_TABLE ({columns}) VALUES ({placeholders})"
     tuples_by_title = [row_tuple(row) for row in sorted(rows, key=lambda row: sort_key(row.name))]
     tuples_by_album = [
-        row_tuple(row)
+        row_tuple(row, index_by_album=True)
         for row in sorted(rows, key=lambda row: (sort_key(row.album), row.dis_id, row.ck_id, natural_key(row.path)))
     ]
     conn.executemany(sql_media, tuples_by_title)
