@@ -155,7 +155,25 @@ When the R1 is available again, the most useful tests are:
    The same collector is also useful after normal-music lag, freezes, or random
    reboots once ADB is available again.
 
-4. Repeat once with pre-play direct start disabled to compare fallback behavior:
+4. For battery or normal-music responsiveness checks, run the read-only runtime
+   monitor while music is playing:
+
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass `
+     -File tools\adb_monitor_r1_runtime.ps1 `
+     -DurationMinutes 120 `
+     -IntervalSeconds 60
+   ```
+
+5. Before building or flashing another candidate, run the consolidated local
+   sanity wrapper:
+
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass `
+     -File tools\run_local_dev_sanity.ps1
+   ```
+
+6. Repeat once with pre-play direct start disabled to compare fallback behavior:
 
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass `

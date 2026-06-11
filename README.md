@@ -201,6 +201,27 @@ the daemon logs, catalog, resume records, process/memory/kernel state, and
 `user.ini` snapshot into `work\resume-debug\...` before a reboot clears useful
 clues.
 
+For battery or music-playback responsiveness checks, use the read-only runtime
+monitor while the R1 is playing:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File tools\adb_monitor_r1_runtime.ps1 `
+  -DurationMinutes 120 `
+  -IntervalSeconds 60
+```
+
+It writes battery/sysfs, load, memory, process, current-path, and recent
+audiobook logs to `work\runtime-monitor\...`.
+
+For local development, this wrapper runs the fast parser, shell, Python,
+resume-daemon, DB-helper, and diff checks we use before pushing:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File tools\run_local_dev_sanity.ps1
+```
+
 Author/Title/Series audiobook subviews are being researched in
 `docs\audiobook_views_research.md`. The current release opens the Title view;
 the route research tool can test alternate stock routes in RAM without flashing.
