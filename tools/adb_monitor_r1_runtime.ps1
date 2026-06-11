@@ -70,6 +70,7 @@ dd if=/usr/data/user.ini bs=1 skip=40 count=256 2>/dev/null | xxd -p -c 64 || tr
 echo '--- audiobook logs tail ---'
 tail -20 /usr/data/audiobooks/resume-daemon.log 2>/dev/null || true
 tail -20 /usr/data/audiobooks/db-watch.log 2>/dev/null || true
+tail -20 /usr/data/audiobooks/db-maint.log 2>/dev/null || true
 echo
 '@
 

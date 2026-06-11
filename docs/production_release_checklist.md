@@ -26,6 +26,7 @@ This checklist tracks what must be true before calling the HiBy R1 audiobook fir
 - Post-flash state: daemon and DB watcher started from init, `user.ini` had no audiobook saved-last references, SD-root `r1.upt` was absent, checked DB/catalog passed release invariants, and no known development artifacts remained active under `/usr/data/audiobooks`.
 - Live post-flash resume smoke test passed: selecting `When You Are Engulfed in Flames` from Audiobooks exercised the new near-miss transport fallback from `13/30` to `15/30` with two Next events, then restored the saved `15/30` position around `05:30`.
 - Installed book catalog report from `work\installed-release-verification\20260611-094702\catalog-books.tsv`: six books, two authors, two series, four standalone books, and three multipart books.
+- Two-minute paused runtime monitor after the smoke test under `work\runtime-monitor\post-1.6.7-paused-20260611-0958`: CPU samples were about 90% idle, battery reported full on USB, and the resume daemon plus DB watcher stayed resident.
 
 ## Required Before Promoting 1.6.7
 
