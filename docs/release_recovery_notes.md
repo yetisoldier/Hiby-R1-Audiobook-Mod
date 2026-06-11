@@ -14,7 +14,11 @@ These notes are for the normal HiBy R1 on stock firmware 1.6, not the R1 MIDI.
 
 Local verification on 2026-06-11 passed with `--require-db-maintenance`. This candidate keeps the self-contained DB maintenance path from `1.6.4-audiobook`, guarded Now Playing play-mode correction from the `1.6.6` test build, and optional smart-rewind scaffolding via `AUDIOBOOK_RESTORE_REWIND_MS`, defaulted to exact resume. It adds a narrow near-miss transport fallback for multipart resume: when title-list/visible-row recovery lands a few tracks away and the player is already in the audiobook sequential mode, the daemon can use the R1's own Next/Previous transport to step to the saved track instead of giving up or skipping through the whole book. A runtime-only live test on the R1 moved Sedaris `13/30 -> 15/30` with two Next events, and a normal title-list flow restored Sedaris `15/30` to the saved position.
 
-This candidate was staged to the SD card as `/usr/data/mnt/sd_0/r1.upt` on 2026-06-11 with matching byte count, MD5, and SHA-256, but still needs a post-flash installed-device verification pass before it should replace the public `1.6.4-audiobook` release.
+This candidate was staged to the SD card as `/usr/data/mnt/sd_0/r1.upt` on 2026-06-11 with matching byte count, MD5, and SHA-256. After flashing, the SD-root updater trigger was archived as `/usr/data/mnt/sd_0/r1-audiobooks-1.6.7-audiobook-installed-20260611-094611.upt`.
+
+Post-flash installed-device verification passed on 2026-06-11 with artifacts under `work\installed-release-verification\20260611-094702`: `/etc/r1_audiobook_version` and `/usr/resource/config.json` report `1.6.7-audiobook`, the resume daemon and DB watcher are running, play-mode byte `3` is active, SD-root `r1.upt` is absent, `user.ini` has no saved-last audiobook references, `/usr/data` has about 13.5 MB free, DB integrity is `ok`, both media tables contain 135 audiobook rows, six audiobook books were cataloged, and there is no audiobook leakage into Music search, album, or genre tables. No known development artifacts remained in active `/usr/data/audiobooks`.
+
+A live post-flash smoke test from the Audiobooks title list selected `When You Are Engulfed in Flames`, initially landed near the saved multipart position, exercised the new near-miss transport fallback from `13/30` to `15/30` with two Next events, restored to the saved `15/30` position at about `05:30`, and was paused afterward.
 
 After flashing this candidate, run installed-device verification with:
 
