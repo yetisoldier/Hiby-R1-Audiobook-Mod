@@ -493,6 +493,10 @@ def verify(
         require("AUDIOBOOK_UI_SEEK_FALLBACK_ENABLED" in daemon_text, "daemon exposes UI seek fallback toggle", failures)
         require("UI_SEEK_TOUCH_FRAMES" in daemon_text, "daemon uses short generated tap streams for UI seek fallback", failures)
         require("ui_seek_screen_ready" in daemon_text, "daemon guards UI seek against non-Now Playing screens", failures)
+        require("PLAY_MODE_TARGET=${AUDIOBOOK_PLAY_MODE_TARGET:-3}" in daemon_text, "daemon targets sequential audiobook playback", failures)
+        require("PLAY_MODE_USER_INI_OFFSET=${AUDIOBOOK_PLAY_MODE_USER_INI_OFFSET:-592}" in daemon_text, "daemon reads persisted play mode byte", failures)
+        require("ensure_audiobook_play_mode" in daemon_text, "daemon enforces audiobook play mode", failures)
+        require("play-mode skipped screen-not-ready" in daemon_text, "daemon guards play mode taps against non-Now Playing screens", failures)
 
     catalog = root / "usr/bin/r1_audiobook_catalog.tsv"
     require(catalog.exists() and catalog.stat().st_size > 0, f"seed catalog present: {catalog}", failures)

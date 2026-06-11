@@ -13,6 +13,14 @@ Current shareable package:
 - UPT SHA256: `02b286676d93ec683307820e1ef40288f34ef21a42a24f5cbda361f2d3733b7b`
 - Base firmware: stock HiBy R1 1.6 for the normal R1, not the R1 MIDI
 
+Latest local development candidate, not released or flashed yet:
+
+- Version marker: `1.6.6-audiobook`
+- Package: `work\audiobook-firmware-1.6.6-candidate\r1-audiobooks-1.6.6-audiobook.upt`
+- UPT MD5: `60369ba2fdd431013cce941d3223b817`
+- UPT SHA256: `020081183bc9a98f87cd35a8d0f17551d40d69179f679cf67a2b34cd397c265d`
+- Adds guarded audiobook play-mode correction and the latest multipart resume recovery fixes.
+
 Before flashing, keep a known-good stock 1.6 `r1.upt` available for recovery. This mod has only been tested on one normal HiBy R1. Reinstalling stock firmware should reverse it, but it is still unofficial firmware, so use it at your own risk. Do not use it on the R1 MIDI or other HiBy players unless you are prepared to recover the device yourself.
 
 ## Screenshots
@@ -147,6 +155,7 @@ If the media database is missing or empty, the firmware can seed a valid empty D
 - The DB helper provides practical fallback metadata but is not a full audiobook tag parser. Clean folder structure and numbered multipart files matter.
 - If the SD card is replaced, the player should still boot and Music should still work. Run the on-device Music scan/update and wait or reboot so the watcher can rebuild catalogs for the new card.
 - Existing per-book resume records are stored internally under `/usr/data/audiobooks/resume.d`. They are small and survive SD-card replacement, but a resume record may not match a different card's renamed or reorganized audiobook files.
+- In the public `1.6.4-audiobook` release, the stock Now Playing play mode still matters: Shuffle or single-track repeat can make multipart books advance out of order after resume. Set the play-mode icon to the list-loop/sequential mode for audiobooks. Development builds after `1.6.4-audiobook` add an automatic guarded switch back to that sequential mode while an audiobook is active.
 - Development builds after `1.6.4-audiobook` use lower-power idle polling for the resume daemon while normal music or non-audiobook content is active. The stable `1.6.4-audiobook` release polls more aggressively, which can have a small battery and responsiveness cost during normal music playback.
 - If an update ever boots to a black screen, use the normal R1 flash/recovery flow with a stock 1.6 `r1.upt`.
 

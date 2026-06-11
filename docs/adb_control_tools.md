@@ -201,6 +201,20 @@ The seek command only taps the visible progress bar; it does not verify the
 result. Use the resume helper or the existing guarded seek test when position
 verification matters.
 
+Now Playing play-mode button:
+
+```powershell
+python tools\r1_adb_control.py preset now-playing-mode --after-screenshot
+```
+
+Live settings snapshots on the R1 found the persisted play-mode byte in
+`/usr/data/user.ini` at offset `0x250` (`592` decimal). The observed tap cycle
+on the normal R1 was `1 -> 2 -> 0 -> 3 -> 1`. Framebuffer crops showed
+`1=single-track loop`, `2=random/shuffle`, `0=random/shuffle`, and `3=list loop`.
+Audiobook runtime builds after `1.6.4-audiobook` target value `3` while an
+audiobook is active, guarded by the Now Playing framebuffer check so the daemon
+does not tap the mode coordinate from the wrong screen.
+
 ## Dry Runs
 
 Dry runs generate the local input-event file and print the target action without

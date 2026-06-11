@@ -65,6 +65,7 @@ TOUCH_PRESETS: dict[str, TouchPreset] = {
     "seek-start": TouchPreset(22, 619, "Now Playing seek bar near start"),
     "seek-middle": TouchPreset(240, 619, "Now Playing seek bar middle"),
     "seek-end": TouchPreset(458, 619, "Now Playing seek bar near end"),
+    "now-playing-mode": TouchPreset(49, 730, "Now Playing play mode button"),
 }
 
 KEY_PRESETS: dict[str, KeyPreset] = {

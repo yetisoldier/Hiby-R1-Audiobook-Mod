@@ -146,7 +146,7 @@ current resume and browsing path is production-stable.
    Music -> Update Database scan, wait for the watcher, then verify that any
    test book with `cover.jpg` and matching `.lrc` gets those paths in the DB.
 
-7. If runtime-only testing passes, build a new `1.6.5-audiobook` candidate and
+7. If runtime-only testing passes, build a new development candidate and
    run the full pre-flash verifier before staging.
 
 ## Next Live Tests
@@ -165,7 +165,10 @@ When the R1 is available again, the most useful tests are:
 2. From the Audiobooks title list, tap a multipart book with a saved position
    on a later file. Expected result: the track list may appear briefly, but the
    daemon should tap the saved track directly instead of audibly playing each
-   earlier track.
+   earlier track. The daemon should also force Now Playing play mode to
+   sequential list-loop mode (`/usr/data/user.ini` offset `0x250`, value `3`) so
+   shuffle or single-track repeat cannot make multipart books advance out of
+   order.
 
 3. If the result is odd, collect a debug bundle before rebooting:
 
@@ -233,3 +236,10 @@ When the R1 is available again, the most useful tests are:
 - QEMU system emulation: useful someday, but not ready for release validation.
   Local host-native helper tests and live ADB runtime tests remain more useful
   right now.
+- Playback-mode handling: live R1 snapshots mapped `/usr/data/user.ini` offset
+  `0x250` (`592` decimal) as the Now Playing play-mode byte. The observed
+  normal-R1 tap cycle is `1 -> 2 -> 0 -> 3 -> 1`; framebuffer crops showed
+  `1=single-track loop`, `2=random/shuffle`, `0=random/shuffle`, and
+  `3=list loop`. Development builds now target value `3` for active
+  audiobooks, using the Now Playing framebuffer guard before tapping the mode
+  button.

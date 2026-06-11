@@ -290,6 +290,128 @@ pid_mem_first_catalog_path() {
 }
 assert_false "preplay direct start obeys select disable switch" book_title_direct_start_saved_track 123 456 789
 
+RESTORE_ENABLED=1
+TRACK_RESTORE_ENABLED=1
+TRACK_RESTORE_KEY_FALLBACK_ENABLED=0
+RESTORE_MIN_MS=10000
+RESTORE_ONLY_BEFORE_MS=15000
+book_title_autostart_until=$(( $(date +%s) + 60 ))
+autostart_restore_active=1
+selected_path='a:\Audiobooks\Author\Book\01.mp3'
+near_path='a:\Audiobooks\Author\Book\14.mp3'
+saved_path='a:\Audiobooks\Author\Book\15.mp3'
+test_record=$(mktemp)
+visible_after_direct_file=$(mktemp)
+direct_near_miss_file=$(mktemp)
+: >"$test_record"
+
+existing_record_for_path() {
+  printf '%s\n' "$test_record"
+}
+
+record_saved_path_for_current() {
+  printf '%s\n' "$saved_path"
+}
+
+same_book_root() {
+  return 0
+}
+
+json_bool() {
+  printf '%s\n' false
+}
+
+json_number() {
+  case "$1" in
+    position_ms) printf '%s\n' 270200 ;;
+    *) printf '\n' ;;
+  esac
+}
+
+current_path() {
+  printf '%s\n' "$selected_path"
+}
+
+catalog_field_for_path() {
+  case "$2" in
+    "$saved_path") printf '%s\n' 15 ;;
+    "$near_path") printf '%s\n' 14 ;;
+    *) printf '%s\n' 1 ;;
+  esac
+}
+
+book_title_direct_track_select() {
+  printf '%s\n' called >"$direct_near_miss_file"
+  selected_path=$near_path
+  return 2
+}
+
+book_title_visible_track_select() {
+  printf '%s\n' "$1:$2:$3" >"$visible_after_direct_file"
+  selected_path=$saved_path
+  return 0
+}
+
+assert_true "track restore recovers direct near miss through visible rows" maybe_restore_track 'a:\Audiobooks\Author\Book\01.mp3' 1021
+direct_near_miss_called=$(cat "$direct_near_miss_file" 2>/dev/null || true)
+assert_eq "track restore reaches direct near-miss selector" "called" "$direct_near_miss_called"
+visible_after_direct_args=$(cat "$visible_after_direct_file" 2>/dev/null || true)
+assert_eq "visible fallback receives actual near-miss index" "14:15:$saved_path" "$visible_after_direct_args"
+rm -f "$test_record" "$visible_after_direct_file" "$direct_near_miss_file"
+
+PLAY_MODE_ENFORCE_ENABLED=1
+PLAY_MODE_TARGET=3
+PLAY_MODE_MAX_TAPS=4
+PLAY_MODE_TOUCH_X=49
+PLAY_MODE_TOUCH_Y=730
+PLAY_MODE_SETTLE_SECONDS=0
+mode_state=0
+play_mode_taps=0
+
+play_mode_value() {
+  printf '%s\n' "$mode_state"
+}
+
+play_mode_screen_ready() {
+  return 0
+}
+
+touch_generated_tap() {
+  label=$1
+  x=$2
+  y=$3
+  if [ "$label:$x:$y" != "play-mode:49:730" ]; then
+    fail "play mode guard used unexpected tap $label:$x:$y"
+    return 1
+  fi
+  play_mode_taps=$((play_mode_taps + 1))
+  case "$mode_state" in
+    1) mode_state=2 ;;
+    2) mode_state=0 ;;
+    0) mode_state=3 ;;
+    3) mode_state=1 ;;
+    *) mode_state=9 ;;
+  esac
+  return 0
+}
+
+assert_true "play mode guard reaches sequential playback" ensure_audiobook_play_mode
+assert_eq "play mode guard taps through cycle" "1:3" "$play_mode_taps:$mode_state"
+
+mode_state=3
+play_mode_taps=0
+assert_true "play mode guard leaves sequential playback alone" ensure_audiobook_play_mode
+assert_eq "sequential playback needs no taps" "0:3" "$play_mode_taps:$mode_state"
+
+play_mode_screen_ready() {
+  return 1
+}
+
+mode_state=2
+play_mode_taps=0
+assert_false "play mode guard blocks when screen not ready" ensure_audiobook_play_mode
+assert_eq "screen guard prevents play mode tap" "0:2" "$play_mode_taps:$mode_state"
+
 if [ "$failures" -ne 0 ]; then
   exit 1
 fi

@@ -89,6 +89,14 @@ UI_SEEK_TOUCH_FRAMES=${AUDIOBOOK_UI_SEEK_TOUCH_FRAMES:-2}
 UI_SEEK_SCREEN_GUARD_ENABLED=${AUDIOBOOK_UI_SEEK_SCREEN_GUARD_ENABLED:-1}
 UI_SEEK_SCREEN_MIN_BAR_PIXELS=${AUDIOBOOK_UI_SEEK_SCREEN_MIN_BAR_PIXELS:-300}
 UI_SEEK_FB_STRIDE=${AUDIOBOOK_UI_SEEK_FB_STRIDE:-960}
+PLAY_MODE_ENFORCE_ENABLED=${AUDIOBOOK_PLAY_MODE_ENFORCE_ENABLED:-1}
+PLAY_MODE_TARGET=${AUDIOBOOK_PLAY_MODE_TARGET:-3}
+PLAY_MODE_USER_INI_OFFSET=${AUDIOBOOK_PLAY_MODE_USER_INI_OFFSET:-592}
+PLAY_MODE_MAX_TAPS=${AUDIOBOOK_PLAY_MODE_MAX_TAPS:-4}
+PLAY_MODE_TOUCH_X=${AUDIOBOOK_PLAY_MODE_TOUCH_X:-49}
+PLAY_MODE_TOUCH_Y=${AUDIOBOOK_PLAY_MODE_TOUCH_Y:-730}
+PLAY_MODE_SETTLE_SECONDS=${AUDIOBOOK_PLAY_MODE_SETTLE_SECONDS:-1}
+PLAY_MODE_SCREEN_GUARD_ENABLED=${AUDIOBOOK_PLAY_MODE_SCREEN_GUARD_ENABLED:-1}
 
 log() {
   printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >>"$LOG"
@@ -668,6 +676,45 @@ touch_generated_tap() {
   return "$rc"
 }
 
+play_mode_value() {
+  case "$PLAY_MODE_USER_INI_OFFSET" in ''|*[!0-9]*) return 1 ;; esac
+  dd if="$USER_INI" bs=1 skip="$PLAY_MODE_USER_INI_OFFSET" count=1 2>/dev/null |
+    od -An -tu1 2>/dev/null |
+    awk '{ print $1; exit }'
+}
+
+play_mode_screen_ready() {
+  [ "$PLAY_MODE_SCREEN_GUARD_ENABLED" = 1 ] || return 0
+  ui_seek_screen_ready
+}
+
+ensure_audiobook_play_mode() {
+  [ "$PLAY_MODE_ENFORCE_ENABLED" = 1 ] || return 0
+  case "$PLAY_MODE_TARGET:$PLAY_MODE_MAX_TAPS:$PLAY_MODE_TOUCH_X:$PLAY_MODE_TOUCH_Y" in
+    *[!0-9:]* | :* | *:) return 1 ;;
+  esac
+  mode=$(play_mode_value || true)
+  case "$mode" in ''|*[!0-9]*) log "play-mode unavailable target=$PLAY_MODE_TARGET"; return 1 ;; esac
+  [ "$mode" = "$PLAY_MODE_TARGET" ] && return 0
+  if ! play_mode_screen_ready; then
+    log "play-mode skipped screen-not-ready mode=$mode target=$PLAY_MODE_TARGET"
+    return 1
+  fi
+  taps=0
+  while [ "$taps" -lt "$PLAY_MODE_MAX_TAPS" ]; do
+    old_mode=$mode
+    touch_generated_tap play-mode "$PLAY_MODE_TOUCH_X" "$PLAY_MODE_TOUCH_Y" || return 1
+    taps=$((taps + 1))
+    sleep "$PLAY_MODE_SETTLE_SECONDS"
+    mode=$(play_mode_value || true)
+    case "$mode" in ''|*[!0-9]*) mode=? ;; esac
+    log "play-mode tap=$taps mode=$old_mode->$mode target=$PLAY_MODE_TARGET"
+    [ "$mode" = "$PLAY_MODE_TARGET" ] && return 0
+  done
+  log "play-mode failed mode=$mode target=$PLAY_MODE_TARGET taps=$taps"
+  return 1
+}
+
 ui_seek_screen_ready() {
   [ "$UI_SEEK_SCREEN_GUARD_ENABLED" = 1 ] || return 0
   case "$UI_SEEK_BAR_X_MIN:$UI_SEEK_BAR_X_MAX:$UI_SEEK_BAR_Y:$UI_SEEK_SCREEN_MIN_BAR_PIXELS:$UI_SEEK_FB_STRIDE" in
@@ -1173,6 +1220,28 @@ maybe_restore_track() {
     return 0
   fi
   if [ "$direct_status" -eq 2 ]; then
+    path_after_direct=$(current_path)
+    if [ "$path_after_direct" = "$saved_path" ]; then
+      return 0
+    fi
+    if same_book_root "$path_after_direct" "$root"; then
+      current_index_after_direct=$(catalog_field_for_path 2 "$path_after_direct" || true)
+      case "$current_index_after_direct:$saved_index" in
+        *[!0-9:]* | :* | *:) ;;
+        *)
+          log "direct-track-select near-miss visible fallback current=$current_index_after_direct saved=$saved_index path=$path_after_direct"
+          book_title_visible_track_select "$current_index_after_direct" "$saved_index" "$saved_path"
+          visible_after_direct_status=$?
+          if [ "$visible_after_direct_status" -eq 0 ]; then
+            return 0
+          fi
+          if [ "$visible_after_direct_status" -eq 2 ]; then
+            log "visible-track-select stopped key fallback after direct near miss saved=$saved_index saved_path=$saved_path"
+            return 1
+          fi
+          ;;
+      esac
+    fi
     log "direct-track-select stopped key fallback after near miss saved=$saved_index saved_path=$saved_path"
     return 1
   fi
@@ -1466,7 +1535,7 @@ main() {
   close_inherited_socket_fds
   refresh_catalog_album_patterns
   echo "$$" >"$PID_FILE"
-  log "start interval=${INTERVAL_SECONDS}s idle_interval=${IDLE_INTERVAL_SECONDS}s new_track_commit_ms=$NEW_TRACK_COMMIT_MS backward_save_guard_ms=$BACKWARD_SAVE_GUARD_MS closed_inherited_socket_fds=$CLOSED_INHERITED_SOCKET_FDS position_source=$POSITION_SOURCE duration_addr=$PLAYER_DURATION_ADDR restore_enabled=$RESTORE_ENABLED track_restore_enabled=$TRACK_RESTORE_ENABLED track_key_fallback=$TRACK_RESTORE_KEY_FALLBACK_ENABLED ui_seek_fallback=$UI_SEEK_FALLBACK_ENABLED ui_seek_screen_guard=$UI_SEEK_SCREEN_GUARD_ENABLED ui_seek_touch_frames=$UI_SEEK_TOUCH_FRAMES book_title_autostart=$BOOK_TITLE_AUTOSTART_ENABLED book_title_direct_track_select=$BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED book_title_direct_track_preplay=$BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED book_title_require_path=$BOOK_TITLE_AUTOSTART_REQUIRE_PATH book_title_context_seconds=$BOOK_TITLE_CONTEXT_SECONDS catalog_albums=$CATALOG_ALBUM_PATTERNS"
+  log "start interval=${INTERVAL_SECONDS}s idle_interval=${IDLE_INTERVAL_SECONDS}s new_track_commit_ms=$NEW_TRACK_COMMIT_MS backward_save_guard_ms=$BACKWARD_SAVE_GUARD_MS closed_inherited_socket_fds=$CLOSED_INHERITED_SOCKET_FDS position_source=$POSITION_SOURCE duration_addr=$PLAYER_DURATION_ADDR restore_enabled=$RESTORE_ENABLED track_restore_enabled=$TRACK_RESTORE_ENABLED track_key_fallback=$TRACK_RESTORE_KEY_FALLBACK_ENABLED ui_seek_fallback=$UI_SEEK_FALLBACK_ENABLED ui_seek_screen_guard=$UI_SEEK_SCREEN_GUARD_ENABLED ui_seek_touch_frames=$UI_SEEK_TOUCH_FRAMES play_mode_enforce=$PLAY_MODE_ENFORCE_ENABLED play_mode_target=$PLAY_MODE_TARGET play_mode_offset=$PLAY_MODE_USER_INI_OFFSET book_title_autostart=$BOOK_TITLE_AUTOSTART_ENABLED book_title_direct_track_select=$BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED book_title_direct_track_preplay=$BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED book_title_require_path=$BOOK_TITLE_AUTOSTART_REQUIRE_PATH book_title_context_seconds=$BOOK_TITLE_CONTEXT_SECONDS catalog_albums=$CATALOG_ALBUM_PATTERNS"
 
   last_path=
   last_saved_bucket=
@@ -1548,6 +1617,7 @@ main() {
           track_index=$(catalog_field_for_path 2 "$path" || true)
           track_count=$(catalog_field_for_path 3 "$path" || true)
           log "audiobook path=$path pos_ms=$pos track=${track_index:-?}/${track_count:-?}"
+          ensure_audiobook_play_mode || true
           restored_path=
           clear_restore_failure_state
           last_saved_bucket=
