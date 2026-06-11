@@ -126,16 +126,26 @@ else {
 
 $dbLocal = Join-Path $verifyDir "usrlocal_media.db"
 $catalogLocal = Join-Path $verifyDir "catalog.tsv"
+$booksCatalogLocal = Join-Path $verifyDir "catalog-books.tsv"
 Invoke-AdbPull "/usr/data/usrlocal_media.db" $dbLocal
 Invoke-AdbPull "/usr/data/audiobooks/catalog.tsv" $catalogLocal
+$booksCatalogArg = @()
+$booksCatalogPresence = Invoke-AdbText "if [ -s /usr/data/audiobooks/catalog-books.tsv ]; then echo present; else echo missing; fi"
+if ($booksCatalogPresence -match "present") {
+    Invoke-AdbPull "/usr/data/audiobooks/catalog-books.tsv" $booksCatalogLocal
+    $booksCatalogArg = @("--books-catalog", $booksCatalogLocal)
+}
 
-python $checkScriptPath $dbLocal --catalog $catalogLocal --expect-audiobooks
+python $checkScriptPath $dbLocal --catalog $catalogLocal @booksCatalogArg --expect-audiobooks
 if ($LASTEXITCODE -ne 0) {
     throw "release-state database check failed"
 }
 
 $hashLines = @()
-foreach ($path in @($dbLocal, $catalogLocal)) {
+foreach ($path in @($dbLocal, $catalogLocal, $booksCatalogLocal)) {
+    if (!(Test-Path -LiteralPath $path)) {
+        continue
+    }
     $hash = (Get-FileHash -Algorithm MD5 -LiteralPath $path).Hash.ToLowerInvariant()
     $item = Get-Item -LiteralPath $path
     $hashLines += "$hash  $($item.Length)  $path"

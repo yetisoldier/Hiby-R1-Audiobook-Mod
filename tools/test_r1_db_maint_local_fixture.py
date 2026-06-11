@@ -199,6 +199,8 @@ def verify_db(db: Path, catalog: Path) -> None:
             str(db),
             "--catalog",
             str(catalog),
+            "--books-catalog",
+            str(books_catalog),
             "--expect-audiobooks",
         ],
         check=False,

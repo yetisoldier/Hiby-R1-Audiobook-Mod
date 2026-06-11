@@ -172,7 +172,88 @@ def check_catalog(catalog: Path, media_rows: list[MediaRow], failures: list[str]
             failures.append(f"catalog inconsistent book_key for root: {root}")
 
 
-def check_database(db: Path, catalog: Path | None, *, expect_audiobooks: bool) -> int:
+def load_books_catalog(path: Path) -> dict[str, dict[str, str]]:
+    rows: dict[str, dict[str, str]] = {}
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        header = handle.readline().rstrip("\n").split("\t")
+        expected = [
+            "root_hiby_path",
+            "album",
+            "author",
+            "book_key",
+            "series",
+            "series_part",
+            "track_count",
+            "first_media_id",
+        ]
+        if header != expected:
+            raise ValueError(f"unexpected books catalog header: {header}")
+        for line_number, raw in enumerate(handle, 2):
+            line = raw.rstrip("\n")
+            if not line:
+                continue
+            fields = line.split("\t")
+            if len(fields) != len(header):
+                raise ValueError(
+                    f"books catalog line {line_number}: expected {len(header)} fields, got {len(fields)}"
+                )
+            rows[fields[0]] = dict(zip(header, fields))
+    return rows
+
+
+def check_books_catalog(books_catalog: Path, media_rows: list[MediaRow], failures: list[str]) -> None:
+    if not books_catalog.exists():
+        failures.append(f"books catalog not found: {books_catalog}")
+        return
+    try:
+        book_rows = load_books_catalog(books_catalog)
+    except Exception as exc:
+        failures.append(f"books catalog parse failed: {exc}")
+        return
+
+    media_by_root: dict[str, list[MediaRow]] = defaultdict(list)
+    for row in media_rows:
+        media_by_root[row.root].append(row)
+
+    if set(book_rows) != set(media_by_root):
+        missing = sorted(set(media_by_root) - set(book_rows))
+        extra = sorted(set(book_rows) - set(media_by_root))
+        if missing:
+            failures.append(f"books catalog missing roots: {missing[:5]}")
+        if extra:
+            failures.append(f"books catalog has extra roots: {extra[:5]}")
+
+    for root, row in book_rows.items():
+        media = media_by_root.get(root, [])
+        try:
+            track_count = int(row["track_count"])
+            first_media_id = int(row["first_media_id"])
+        except ValueError:
+            failures.append(f"books catalog has non-numeric count/id for root: {root}")
+            continue
+        if track_count != len(media):
+            failures.append(f"books catalog track_count mismatch for root: {root}")
+        media_ids = {item.media_id for item in media}
+        if first_media_id not in media_ids:
+            failures.append(f"books catalog first_media_id not in media rows for root: {root}")
+        if not row["book_key"]:
+            failures.append(f"books catalog missing book_key for root: {root}")
+        if media:
+            albums = {item.album for item in media if item.album}
+            authors = {item.album_artist for item in media if item.album_artist}
+            if row["album"] and row["album"] not in albums:
+                failures.append(f"books catalog title mismatch for root: {root}")
+            if row["author"] and row["author"] not in authors:
+                failures.append(f"books catalog author mismatch for root: {root}")
+
+
+def check_database(
+    db: Path,
+    catalog: Path | None,
+    books_catalog: Path | None,
+    *,
+    expect_audiobooks: bool,
+) -> int:
     failures: list[str] = []
     conn = sqlite3.connect(db)
     try:
@@ -221,6 +302,8 @@ def check_database(db: Path, catalog: Path | None, *, expect_audiobooks: bool) -
 
         if catalog is not None:
             check_catalog(catalog, media_rows, failures)
+        if books_catalog is not None:
+            check_books_catalog(books_catalog, media_rows, failures)
 
         roots = {row.root for row in media_rows}
         print(f"database: {db}")
@@ -233,6 +316,8 @@ def check_database(db: Path, catalog: Path | None, *, expect_audiobooks: bool) -
         print(f"GENRE_TABLE has Audiobook: {'Audiobook' in genre_catalog}")
         if catalog is not None:
             print(f"catalog: {catalog}")
+        if books_catalog is not None:
+            print(f"books catalog: {books_catalog}")
         if failures:
             print("\nFailures:")
             for failure in failures:
@@ -248,6 +333,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("db", type=Path, help="usrlocal_media.db to check")
     parser.add_argument("--catalog", type=Path, help="Optional audiobook resume catalog TSV")
+    parser.add_argument("--books-catalog", type=Path, help="Optional book-level audiobook catalog TSV")
     parser.add_argument("--expect-audiobooks", action="store_true")
     return parser.parse_args()
 
@@ -257,7 +343,7 @@ def main() -> int:
     if not args.db.exists():
         print(f"DB not found: {args.db}", file=sys.stderr)
         return 2
-    return check_database(args.db, args.catalog, expect_audiobooks=args.expect_audiobooks)
+    return check_database(args.db, args.catalog, args.books_catalog, expect_audiobooks=args.expect_audiobooks)
 
 
 if __name__ == "__main__":
