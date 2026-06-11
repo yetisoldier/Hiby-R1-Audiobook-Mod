@@ -485,10 +485,11 @@ RAM patch status from the first live test:
 - The visible list-screen time/progress stayed at `00:00`.
 - A follow-up test that passed `s1 - 4` as playback metadata caused `error 13 playback failure`; it was reverted in RAM.
 
-Development firmware builds now also install `/etc/init.d/S90adb` as a copy of
-stock `/etc/init.d/T90adb`. Stock `rcS` only runs `S??*` scripts, which is why
-ADB does not survive a normal stock reboot even when `/usr/data/disableadb` is
-absent.
+Development firmware builds can opt into boot ADB with
+`tools\build_r1_audiobook_firmware.ps1 -EnableBootAdb`, which installs
+`/etc/init.d/S90adb` as a copy of stock `/etc/init.d/T90adb`. Stock `rcS` only
+runs `S??*` scripts, which is why ADB does not survive a normal stock reboot
+even when `/usr/data/disableadb` is absent.
 
 ## Attribution And Sources
 
