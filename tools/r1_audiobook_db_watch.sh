@@ -9,6 +9,7 @@ AUDIOBOOKS_DIR=${AUDIOBOOK_DB_AUDIOBOOKS_DIR:-$SD_ROOT/Audiobooks}
 MUSIC_DIR=${AUDIOBOOK_DB_MUSIC_DIR:-$SD_ROOT/Music}
 CATALOG=${AUDIOBOOK_CATALOG:-$BASE/catalog.tsv}
 CATALOG_ALBUM_PATTERNS=${AUDIOBOOK_CATALOG_ALBUM_PATTERNS:-$BASE/catalog-albums.txt}
+CATALOG_BOOKS=${AUDIOBOOK_CATALOG_BOOKS:-$BASE/catalog-books.tsv}
 SEED_DB=${AUDIOBOOK_DB_SEED:-$BASE/bin/r1_usrlocal_media_seed.db}
 LOG=${AUDIOBOOK_DB_MAINT_LOG:-$BASE/db-maint.log}
 PID_FILE=${AUDIOBOOK_DB_MAINT_PID:-$BASE/db-maint.pid}
@@ -76,6 +77,7 @@ run_maint() {
     --base-dir "$BASE" \
     --catalog "$CATALOG" \
     --album-patterns "$CATALOG_ALBUM_PATTERNS" \
+    --books-catalog "$CATALOG_BOOKS" \
     --verbose >>"$LOG" 2>&1
   rc=$?
   if [ "$rc" -eq 0 ]; then

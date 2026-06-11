@@ -23,6 +23,7 @@
 #define DEFAULT_BASE_DIR "/usr/data/audiobooks"
 #define DEFAULT_CATALOG "/usr/data/audiobooks/catalog.tsv"
 #define DEFAULT_ALBUM_PATTERNS "/usr/data/audiobooks/catalog-albums.txt"
+#define DEFAULT_BOOKS_CATALOG "/usr/data/audiobooks/catalog-books.tsv"
 #define HIBY_MUSIC_PREFIX_LIKE "a:\\Music\\%"
 #define HIBY_PREFIX "a:\\Audiobooks\\"
 #define HIBY_PREFIX_LIKE "a:\\Audiobooks\\%"
@@ -85,6 +86,7 @@ typedef struct {
     const char *base_dir;
     const char *catalog_path;
     const char *album_patterns_path;
+    const char *books_catalog_path;
     int verbose;
 } Options;
 
@@ -1361,10 +1363,13 @@ static void write_field(FILE *fp, const char *text) {
 static void write_catalog_files(const Options *opts, RowVec *rows) {
     ensure_parent_dir(opts->catalog_path);
     ensure_parent_dir(opts->album_patterns_path);
+    ensure_parent_dir(opts->books_catalog_path);
     char tmp_catalog[PATH_MAX];
     char tmp_albums[PATH_MAX];
+    char tmp_books[PATH_MAX];
     snprintf(tmp_catalog, sizeof(tmp_catalog), "%s.tmp.%ld", opts->catalog_path, (long)getpid());
     snprintf(tmp_albums, sizeof(tmp_albums), "%s.tmp.%ld", opts->album_patterns_path, (long)getpid());
+    snprintf(tmp_books, sizeof(tmp_books), "%s.tmp.%ld", opts->books_catalog_path, (long)getpid());
     FILE *catalog = fopen(tmp_catalog, "w");
     if (!catalog) {
         fprintf(stderr, "could not write %s: %s\n", tmp_catalog, strerror(errno));
@@ -1375,9 +1380,15 @@ static void write_catalog_files(const Options *opts, RowVec *rows) {
         fprintf(stderr, "could not write %s: %s\n", tmp_albums, strerror(errno));
         exit(1);
     }
+    FILE *books = fopen(tmp_books, "w");
+    if (!books) {
+        fprintf(stderr, "could not write %s: %s\n", tmp_books, strerror(errno));
+        exit(1);
+    }
 
     qsort(rows->items, rows->len, sizeof(MediaRow), cmp_catalog);
     fprintf(catalog, "root_hiby_path\ttrack_index\ttrack_count\tmedia_id\tpath\ttitle\talbum\tauthor\tbook_key\tseries\tseries_part\n");
+    fprintf(books, "root_hiby_path\talbum\tauthor\tbook_key\tseries\tseries_part\ttrack_count\tfirst_media_id\n");
     char *current_root = NULL;
     char *last_album = NULL;
     size_t group_start = 0;
@@ -1395,6 +1406,19 @@ static void write_catalog_files(const Options *opts, RowVec *rows) {
         int track_count = (int)(group_end - group_start);
         char *series = catalog_series_from_root(current_root);
         char *series_part = catalog_series_part_from_root(current_root, series);
+        char *book_key = book_key_for_catalog(&rows->items[group_start], current_root);
+        write_field(books, current_root);
+        fputc('\t', books);
+        write_field(books, rows->items[group_start].album);
+        fputc('\t', books);
+        write_field(books, rows->items[group_start].album_artist);
+        fputc('\t', books);
+        write_field(books, book_key);
+        fputc('\t', books);
+        write_field(books, series);
+        fputc('\t', books);
+        write_field(books, series_part);
+        fprintf(books, "\t%d\t%d\n", track_count, rows->items[group_start].id);
         for (size_t i = group_start; i < group_end; i++) {
             int index = (int)(i - group_start + 1);
             fprintf(catalog, "%s\t%d\t%d\t%d\t", current_root, index, track_count, rows->items[i].id);
@@ -1406,9 +1430,7 @@ static void write_catalog_files(const Options *opts, RowVec *rows) {
             fputc('\t', catalog);
             write_field(catalog, rows->items[i].album_artist);
             fputc('\t', catalog);
-            char *book_key = book_key_for_catalog(&rows->items[i], current_root);
             write_field(catalog, book_key);
-            free(book_key);
             fputc('\t', catalog);
             write_field(catalog, series);
             fputc('\t', catalog);
@@ -1421,6 +1443,7 @@ static void write_catalog_files(const Options *opts, RowVec *rows) {
                 last_album = xstrdup(rows->items[i].album);
             }
         }
+        free(book_key);
         free(series);
         free(series_part);
         group_start = group_end;
@@ -1429,8 +1452,10 @@ static void write_catalog_files(const Options *opts, RowVec *rows) {
     free(last_album);
     if (fclose(catalog) != 0) die("failed closing catalog");
     if (fclose(albums) != 0) die("failed closing album patterns");
+    if (fclose(books) != 0) die("failed closing books catalog");
     if (rename(tmp_catalog, opts->catalog_path) != 0) die("failed replacing catalog");
     if (rename(tmp_albums, opts->album_patterns_path) != 0) die("failed replacing album patterns");
+    if (rename(tmp_books, opts->books_catalog_path) != 0) die("failed replacing books catalog");
 }
 
 static void maintain_database(const Options *opts) {
@@ -1495,6 +1520,7 @@ static void usage(void) {
         "  --base-dir PATH           runtime state folder (default " DEFAULT_BASE_DIR ")\n"
         "  --catalog PATH            catalog output (default " DEFAULT_CATALOG ")\n"
         "  --album-patterns PATH     album pattern output (default " DEFAULT_ALBUM_PATTERNS ")\n"
+        "  --books-catalog PATH      book-level catalog output (default " DEFAULT_BOOKS_CATALOG ")\n"
         "  --verbose                 print summary\n");
 }
 
@@ -1507,6 +1533,7 @@ static Options parse_args(int argc, char **argv) {
     opts.base_dir = DEFAULT_BASE_DIR;
     opts.catalog_path = DEFAULT_CATALOG;
     opts.album_patterns_path = DEFAULT_ALBUM_PATTERNS;
+    opts.books_catalog_path = DEFAULT_BOOKS_CATALOG;
     opts.verbose = 0;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--db") == 0 && i + 1 < argc) opts.db_path = argv[++i];
@@ -1516,6 +1543,7 @@ static Options parse_args(int argc, char **argv) {
         else if (strcmp(argv[i], "--base-dir") == 0 && i + 1 < argc) opts.base_dir = argv[++i];
         else if (strcmp(argv[i], "--catalog") == 0 && i + 1 < argc) opts.catalog_path = argv[++i];
         else if (strcmp(argv[i], "--album-patterns") == 0 && i + 1 < argc) opts.album_patterns_path = argv[++i];
+        else if (strcmp(argv[i], "--books-catalog") == 0 && i + 1 < argc) opts.books_catalog_path = argv[++i];
         else if (strcmp(argv[i], "--verbose") == 0) opts.verbose = 1;
         else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             usage();

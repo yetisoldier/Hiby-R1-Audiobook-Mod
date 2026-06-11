@@ -457,6 +457,7 @@ def verify(
             require("run_maint db-stable" in db_watch_text, "db watch runs maintainer after stable scan", failures)
             require("run_maint boot" in db_watch_text, "db watch runs maintainer once after boot", failures)
             require("--music-dir \"$MUSIC_DIR\"" in db_watch_text, "db watch passes Music folder to helper", failures)
+            require("--books-catalog \"$CATALOG_BOOKS\"" in db_watch_text, "db watch writes book-level catalog", failures)
             require("seeded-db reason=" in db_watch_text, "db watch seeds missing media DB", failures)
         else:
             require(False, "db watch script exists", failures)

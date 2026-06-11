@@ -49,6 +49,7 @@ def run_helper(helper: Path, work_dir: Path, runner: list[str] | None = None) ->
     base_dir = work_dir / "state"
     catalog = work_dir / "catalog.tsv"
     album_patterns = work_dir / "catalog-albums.txt"
+    books_catalog = work_dir / "catalog-books.tsv"
     shutil.copy2(SEED_DB, db)
 
     music_dir = sd_root / "Music" / "Test Artist" / "Test Album"
@@ -85,6 +86,8 @@ def run_helper(helper: Path, work_dir: Path, runner: list[str] | None = None) ->
         str(catalog),
         "--album-patterns",
         str(album_patterns),
+        "--books-catalog",
+        str(books_catalog),
         "--verbose",
     ]
     proc = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -166,6 +169,28 @@ def verify_db(db: Path, catalog: Path) -> None:
         "",
         "standalone catalog series part blank",
     )
+    books_catalog = catalog.parent / "catalog-books.tsv"
+    assert_true(books_catalog.exists() and books_catalog.stat().st_size > 0, "book-level catalog written")
+    books_lines = books_catalog.read_text(encoding="utf-8").splitlines()
+    books_header = books_lines[0].split("\t")
+    assert_true("author" in books_header and "series" in books_header, "book-level catalog view columns")
+    book_rows = {
+        fields[0]: fields
+        for fields in (
+            line.split("\t")
+            for line in books_lines[1:]
+            if line
+        )
+    }
+    series_root = r"a:\Audiobooks\Test Author\Test Series\2020 - Test Book [Test Series 02]"
+    standalone_root = r"a:\Audiobooks\Test Author\2021 - Standalone Book"
+    assert_equal(book_rows[series_root][books_header.index("album")], "Test Book", "book-level catalog title")
+    assert_equal(book_rows[series_root][books_header.index("author")], "Test Author", "book-level catalog author")
+    assert_equal(book_rows[series_root][books_header.index("series")], "Test Series", "book-level catalog series")
+    assert_equal(book_rows[series_root][books_header.index("series_part")], "02", "book-level catalog series part")
+    assert_equal(book_rows[series_root][books_header.index("track_count")], "2", "book-level catalog track count")
+    assert_equal(book_rows[standalone_root][books_header.index("series")], "", "standalone book-level series blank")
+    assert_equal(book_rows[standalone_root][books_header.index("series_part")], "", "standalone book-level series part blank")
 
     check = subprocess.run(
         [
