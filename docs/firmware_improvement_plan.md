@@ -1,7 +1,7 @@
 # Firmware Improvement Plan
 
 This plan keeps `1.6.4-audiobook` as the stable public baseline while preparing
-incremental changes that can be tested off-device before a new firmware build.
+and validating incremental changes for the next release candidate.
 
 ## Current Stable Baseline
 
@@ -11,6 +11,16 @@ incremental changes that can be tested off-device before a new firmware build.
   entry, use the stock Now Playing screen, and keep per-book resume state.
 - The installed DB watcher/helper can rebuild catalogs from `/Music` and
   `/Audiobooks` after the user runs Music -> Update Database.
+
+## Current Verified Candidate
+
+- `1.6.7-audiobook` is installed and verified on the test R1.
+- It keeps the self-contained `1.6.4` DB/catalog path, adds the guarded
+  audiobook play-mode correction, and adds a narrow near-miss transport fallback
+  for multipart resume.
+- Post-flash testing selected a multipart Sedaris book from the Audiobooks
+  title list, landed near the saved track, stepped from `13/30` to `15/30` with
+  two Next events, and restored to the saved `15/30` position.
 
 ## Useful New Information From hiby-modding
 
@@ -34,15 +44,19 @@ incremental changes that can be tested off-device before a new firmware build.
 3. Build a candidate helper binary and test it through ADB as a runtime-only
    replacement before building or flashing a new firmware package.
 4. Only after runtime tests pass, build a new firmware candidate with a new
-   version marker such as `1.6.5-audiobook`.
+   version marker.
 
-## Implemented For Next Test Build
+## Implemented For 1.6.7 Candidate
 
 - Multipart title-tap resume no longer relies on stock hardware Next/Previous
   fallback by default. Live testing showed that those buttons can move through
   tracks in a non-linear database order for at least one multipart audiobook.
   The daemon now prefers direct visible-row selection and stops safely if that
   cannot prove it reached the saved track.
+- A narrow near-miss transport fallback is enabled after direct/visible row
+  recovery gets close but not exact. It only runs when the persisted play-mode
+  byte is already the audiobook sequential target, and it limits the number of
+  Next/Previous steps so it cannot skip through a whole book.
 - The native DB helper now recognizes `.iso` files during fallback scans,
   matching the broader HiBy format table used by the hiby-modding database
   updater.

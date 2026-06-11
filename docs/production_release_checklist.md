@@ -2,42 +2,46 @@
 
 This checklist tracks what must be true before calling the HiBy R1 audiobook firmware a production release instead of a beta/release-candidate.
 
-## Current Release Candidate
+## Current Public Release
 
+- Public release: GitHub `v1.0.0`, firmware marker `1.6.4-audiobook`.
 - Base firmware: stock HiBy R1 1.6 for the normal R1, not R1 MIDI.
-- Current custom version marker: `1.6.4-audiobook`.
-- Current package MD5: `71c8d0d94bf50529a06aa9a31350f595`.
-- Current package SHA256: `02b286676d93ec683307820e1ef40288f34ef21a42a24f5cbda361f2d3733b7b`.
-- Visible About version should render as a truncated `HiBy R1 1.6.4-a` style string because the UI truncates the longer suffix.
-- Self-contained DB maintenance helper SHA256: `de40a30fda504366a137f4c6fa57670d05039108355c7f85a4a6199c7d280377`.
-- Embedded seed DB MD5: `7dc472d4d9d086d22efbff24ab2fce13`.
-- Local package verifier passed on 2026-06-10 with `--require-db-maintenance --expect-current-hashes`.
-- Installed release-clean DB/catalog checker status: passed after the `1.6.4-audiobook` install on 2026-06-10.
-- Post-flash verifier artifacts: `work\installed-release-verification\20260610-153805`.
-- Installed package archive: `/usr/data/mnt/sd_0/r1-audiobooks-1.6.4-audiobook-installed-20260610-1531.upt`.
-- Installed helper fresh-DB rebuild test for previous build: `work\native-db-maint\installed-helper-fresh-db-test-20260610-150158`, passed with 135 rebuilt audiobook rows and no Music album/genre/search leakage.
-- Live `1.6.4` seed-rebuild test before flash: `work\watcher-seed-rebuild-test-20260610-152923`, passed from a deleted DB/catalog with 114 rebuilt Music rows, 135 rebuilt Audiobook rows, and no audiobook Music catalog leakage.
-- Pre-install DB/catalog backups: copied locally under `work\release-db-install-backups\20260610-130148` and copied to SD under `/usr/data/mnt/sd_0/.r1-audiobook-backups/release-db-20260610-130148`; the large internal DB backup was removed after SD verification.
-- Post-reboot check on 2026-06-10: daemon and DB watcher started from init, `user.ini` had no audiobook saved-last references, SD-root `r1.upt` was renamed to the installed archive, and the checked DB/catalog passed release invariants after boot writes.
-- Development artifact cleanup on 2026-06-10: moved 20 known development leftovers from `/usr/data/audiobooks` to `/usr/data/mnt/sd_0/.r1-audiobook-backups/dev-artifacts/dev-archive-20260610-131619`; active runtime files, catalog, resume records, and logs remained in place.
-- Reusable installed-release verifier passed on 2026-06-10 with artifacts under `work\installed-release-verification\20260610-140926`; no known development artifacts remained afterward.
+- Package MD5: `71c8d0d94bf50529a06aa9a31350f595`.
+- Package SHA256: `02b286676d93ec683307820e1ef40288f34ef21a42a24f5cbda361f2d3733b7b`.
+- Installed verification passed on 2026-06-10 under `work\installed-release-verification\20260610-153805`.
+- Self-contained DB maintenance passed live seed-rebuild testing under `work\watcher-seed-rebuild-test-20260610-152923`.
 
-## Required Before Production
+## Verified Next Candidate
 
-- Fresh stock install test: `1.6.4-audiobook` flashed and verified with the installed DB watcher/helper/seed path without a PC/ADB DB install. Still useful as a final real-world smoke test with a different SD card, the normal on-device Music scan, and the watcher.
-- Reboot behavior: boot-to-launcher passed after the installed custom package and release-clean DB/catalog. Still worth repeating after a longer audiobook/music usage session.
-- Resume matrix: single-file resume passed post-reboot with `Squirrel Seeks Chipmunk` restoring to `41@41`. Installed-package multipart title-tap resume also passed: selecting `When You Are Engulfed in Flames` direct-selected track `14/30` after 3 list swipes and restored to `906@906` for the saved `905206 ms` bookmark; the record then updated to `925419 ms` after brief playback. Previous live tests covered music interruption and natural track transition behavior. The live `1.6.2` daemon also passed a completed-book start-over test with `Holidays on Ice`: a synthetic `completed: true` record started from the beginning and cleared completion after playback began.
-- Music separation: post-reboot DB/catalog check passed with no audiobook search/album/genre leakage. UI evidence also showed Music All listing normal music only and the Genres list had no `Audiobook` entry where it would sort alphabetically.
-- SD-card behavior: verify boot and Music still work when the SD card is removed or replaced; audiobook resume files may be absent, but the player must not fail. The DB watcher is designed to skip work when the SD root is absent and rebuild from `/Audiobooks` after the next stock scan.
-- Updater hygiene: passed after the `1.6.4` install; SD-root `r1.upt` was renamed to `/usr/data/mnt/sd_0/r1-audiobooks-1.6.4-audiobook-installed-20260610-1531.upt`.
-- Recovery package: keep stock 1.6 `r1.upt`, the custom package, hashes, and recovery instructions together.
-- Device cleanup: development-only files have been archived to SD. Future cleanup runs should still dry-run first and preserve `catalog.tsv`, `catalog-roots.txt`, `catalog-albums.txt`, `resume.d`, and logs.
+- Candidate version marker: `1.6.7-audiobook`.
+- Candidate package: `work\audiobook-firmware-1.6.7-candidate\r1-audiobooks-1.6.7-audiobook.upt`.
+- Candidate package MD5: `7a5b0267811de7198039aa96144f3f8c`.
+- Candidate package SHA256: `2ac14cdd858f91af99cff8365c5d0664ca3d01233a89bc82e8ba010c7dfcbd78`.
+- Candidate rootfs MD5: `c6346d46b2927d8719425117a5d0dd17`.
+- Candidate rootfs SHA256: `1f059947f8150d9c750b2bae896efff24026876b8abaaff8b5bbe4ce7159fd1f`.
+- Visible About version is expected to render as a truncated `HiBy R1 1.6.7-a` style string because the stock UI truncates the longer suffix.
+- Local package verifier passed on 2026-06-11 with `--require-db-maintenance`.
+- Installed release-clean verifier passed on 2026-06-11 under `work\installed-release-verification\20260611-094702`.
+- Installed package archive: `/usr/data/mnt/sd_0/r1-audiobooks-1.6.7-audiobook-installed-20260611-094611.upt`.
+- Post-flash state: daemon and DB watcher started from init, `user.ini` had no audiobook saved-last references, SD-root `r1.upt` was absent, checked DB/catalog passed release invariants, and no known development artifacts remained active under `/usr/data/audiobooks`.
+- Live post-flash resume smoke test passed: selecting `When You Are Engulfed in Flames` from Audiobooks exercised the new near-miss transport fallback from `13/30` to `15/30` with two Next events, then restored the saved `15/30` position around `05:30`.
+- Installed book catalog report from `work\installed-release-verification\20260611-094702\catalog-books.tsv`: six books, two authors, two series, four standalone books, and three multipart books.
+
+## Required Before Promoting 1.6.7
+
+- Real-world listening: use `1.6.7-audiobook` for normal music plus audiobook sessions, including switching between music and at least two books, and watch for freezes, random reboots, battery drain, or failed resume.
+- Reboot behavior: repeat a reboot after normal listening and confirm the player returns to the launcher, starts the daemon/watcher, and keeps Audiobooks responsive.
+- Fresh-card behavior: if practical, test a second SD card or a renamed `/Audiobooks` tree, run Music -> Update Database, and confirm the watcher rebuilds catalogs without PC/ADB DB installation.
+- Music separation: installed verifier already passed DB/catalog checks; optionally repeat UI checks in Music Albums, Genres, Search, and Files after longer use.
+- Recovery package: keep stock HiBy R1 1.6 `r1.upt`, the `1.6.7` candidate, hashes, and recovery instructions together before publishing.
+- Release packaging: if promoted, upload `r1-audiobooks-1.6.7-audiobook.upt`, update README install text, create release notes that call out the play-mode guard and near-miss multipart resume fallback, and keep `1.6.4` available as the previous stable release.
+- Device cleanup: development-only files have been archived to SD. Future cleanup runs should still dry-run first and preserve `catalog.tsv`, `catalog-books.tsv`, `catalog-albums.txt`, `resume.d`, and logs.
 
 ## Known Limitations
 
 - ADB is not persistent in practice on the test device. The user manually enables ADB after reboot/update for verification.
 - Audiobooks uses the stock `genre\Audiobook` media route. It opens directly to the audiobook title list, but Back goes to the Genres page first; a second Back returns to the launcher.
-- The visible About suffix is expected to truncate to `1.6.4-a`.
+- The visible About suffix is expected to truncate to a `1.6.x-a` style string.
 - The current scanner/database path can reuse the stock on-device Music scan, then a firmware-installed watcher/helper updates audiobook rows and catalog tables. If the media DB is missing, the watcher seeds a valid empty schema and the helper scans `/Music` plus `/Audiobooks` itself. It does not parse full audiobook tags itself; when the stock scanner did not provide metadata, it derives title/author/book from folder and filename structure.
 
 ## Release-Safe Commands
@@ -46,19 +50,26 @@ Build:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\build_r1_audiobook_firmware.ps1 `
-  -OutDir work\audiobook-firmware-1.6.4 `
-  -OutputUpt work\audiobook-firmware-1.6.4\r1-audiobooks-1.6.4-audiobook.upt `
+  -OutDir work\audiobook-firmware-1.6.7-candidate `
+  -OutputUpt work\audiobook-firmware-1.6.7-candidate\r1-audiobooks-1.6.7-audiobook.upt `
   -IncludeAudiobookLauncherGenre `
   -IncludeAudiobookTitleAutoStartMarker `
   -IncludeAudiobookResumeRuntime `
   -IncludeAudiobookDbMaintenance `
-  -AudiobookResumeCatalog work\audiobook-resume-catalog.tsv
+  -AudiobookResumeCatalog work\audiobook-resume-catalog.tsv `
+  -CustomVersionId 1.6.7-audiobook `
+  -CustomVersionLabel "HiBy R1 Audiobook FW 1.6.7"
 ```
 
 Verify:
 
 ```powershell
-python tools\verify_r1_audiobook_build.py --require-db-maintenance
+python tools\verify_r1_audiobook_build.py `
+  --out-dir work\audiobook-firmware-1.6.7-candidate `
+  --upt-name r1-audiobooks-1.6.7-audiobook.upt `
+  --expected-version 1.6.7-audiobook `
+  --expected-label "HiBy R1 Audiobook FW 1.6.7" `
+  --require-db-maintenance
 ```
 
 Optional legacy PC/ADB DB catalog build for diagnostics:
@@ -81,13 +92,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\adb_install_release_au
 Stage:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\adb_stage_verified_firmware.ps1 -IUnderstandThisStagesFirmware
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\adb_stage_verified_firmware.ps1 `
+  -Package work\audiobook-firmware-1.6.7-candidate\r1-audiobooks-1.6.7-audiobook.upt `
+  -BuildOutDir work\audiobook-firmware-1.6.7-candidate `
+  -ExpectedVersion 1.6.7-audiobook `
+  -ExpectedLabel "HiBy R1 Audiobook FW 1.6.7" `
+  -IUnderstandThisStagesFirmware
 ```
 
 Post-reboot installed-release verification:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\adb_verify_installed_audiobook_release.ps1 `
+  -ExpectedVersion 1.6.7-audiobook `
+  -RequirePlayModeGuard `
   -CaptureFramebuffer
 ```
 

@@ -26,7 +26,8 @@ function Invoke-AdbText([string]$Command) {
 }
 
 function Pull-IfExists([string]$Remote, [string]$Local) {
-    $exists = (& $adbPath shell "[ -e '$Remote' ] && echo yes || true").Trim()
+    $existsOutput = & $adbPath shell "[ -e '$Remote' ] && echo yes || true"
+    $exists = if ($null -eq $existsOutput) { "" } else { ($existsOutput -join "`n").Trim() }
     if ($exists -eq "yes") {
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Local) | Out-Null
         & $adbPath pull $Remote $Local | Out-Host
@@ -79,6 +80,10 @@ echo '--- daemon stdout tail ---'
 tail -80 '$RemoteBase/resume-daemon.stdout.log' 2>/dev/null || true
 echo '--- db watch log tail ---'
 tail -80 '$RemoteBase/db-watch.log' 2>/dev/null || true
+echo '--- db maint log tail ---'
+tail -80 '$RemoteBase/db-maint.log' 2>/dev/null || true
+echo '--- db maint stdout tail ---'
+tail -80 '$RemoteBase/db-maint.stdout.log' 2>/dev/null || true
 "@
 
 & $adbPath shell $summary | Tee-Object -FilePath (Join-Path $OutDir "summary.txt") | Out-Host
@@ -89,8 +94,11 @@ if ($LASTEXITCODE -ne 0) {
 Pull-IfExists "$RemoteBase/resume-daemon.log" (Join-Path $OutDir "resume-daemon.log")
 Pull-IfExists "$RemoteBase/resume-daemon.stdout.log" (Join-Path $OutDir "resume-daemon.stdout.log")
 Pull-IfExists "$RemoteBase/db-watch.log" (Join-Path $OutDir "db-watch.log")
+Pull-IfExists "$RemoteBase/db-maint.log" (Join-Path $OutDir "db-maint.log")
+Pull-IfExists "$RemoteBase/db-maint.stdout.log" (Join-Path $OutDir "db-maint.stdout.log")
 Pull-IfExists "$RemoteBase/catalog.tsv" (Join-Path $OutDir "catalog.tsv")
 Pull-IfExists "$RemoteBase/catalog-albums.txt" (Join-Path $OutDir "catalog-albums.txt")
+Pull-IfExists "$RemoteBase/catalog-books.tsv" (Join-Path $OutDir "catalog-books.tsv")
 Pull-IfExists "$RemoteBase/resume.d" (Join-Path $OutDir "resume.d")
 Pull-IfExists "/usr/data/user.ini" (Join-Path $OutDir "user.ini")
 
