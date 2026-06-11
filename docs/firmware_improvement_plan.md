@@ -173,7 +173,18 @@ When the R1 is available again, the most useful tests are:
      -File tools\run_local_dev_sanity.ps1
    ```
 
-6. Repeat once with pre-play direct start disabled to compare fallback behavior:
+6. Use the unified ADB controller to capture screens and drive common UI steps
+   when manual tapping is inconvenient:
+
+   ```powershell
+   python tools\r1_adb_control.py macro open-audiobooks
+   python tools\r1_adb_control.py row 1 --after-screenshot
+   python tools\r1_adb_control.py key playpause
+   ```
+
+   See `docs\adb_control_tools.md` for the full preset list.
+
+7. Repeat once with pre-play direct start disabled to compare fallback behavior:
 
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass `

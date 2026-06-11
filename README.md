@@ -513,6 +513,7 @@ The audiobook-specific behavior in this repository was developed and tested on a
 - `docs/release_recovery_notes.md` - compact install, verification, and stock-recovery notes for the current audiobook release candidate.
 - `docs/production_release_checklist.md` - remaining checks before treating the current candidate as production instead of beta.
 - `docs/firmware_improvement_plan.md` - forward plan for post-1.6.4 improvements based on new hiby-modding references and local test strategy.
+- `docs/adb_control_tools.md` - live ADB control notes for screenshots, taps, drags, playback keys, and screenshot-assisted Audiobooks flows.
 - `docs/safe_prototype.md` - older non-flash ADB/database-filter prototype workflow, kept for developers and recovery-minded tinkerers.
 - `docs/images/` - README screenshots captured from the test R1.
 - `tools/extract_r1_firmware.ps1` - extracts `stock/r1.upt` and reconstructs `rootfs.squashfs` plus `xImage`.
@@ -523,6 +524,7 @@ The audiobook-specific behavior in this repository was developed and tested on a
 - `tools/adb_install_release_audiobook_db.ps1` - installs a checked release DB/catalog pair over ADB with local and on-device backups.
 - `tools/adb_verify_installed_audiobook_release.ps1` - post-reboot installed-release verifier for version markers, daemon status, update-trigger hygiene, free space, DB/catalog invariants, and optional framebuffer capture.
 - `tools/adb_collect_r1_state.ps1` - read-only ADB collection script for device state and databases.
+- `tools/r1_adb_control.py` - unified non-persistent R1 control console for framebuffer screenshots, named tap presets, drags, playback keys, seek-bar taps, and screenshot-assisted macros.
 - `tools/build_r1_db_maint_helper.ps1` - reproducibly builds the static MIPS audiobook DB maintenance helper from Zig and SQLite upstream sources.
 - `tools/test_r1_db_maint_local_fixture.py` - local disposable-fixture test for DB helper fallback scans, sidecar cover/LRC paths, `.m4b`, `.iso`, and release-state invariants.
 - `tools/patch_hiby_player.py` - guarded stock-1.6 binary patcher; experimental scanner-skip, Books playback, and Audiobooks launcher patches are opt-in.

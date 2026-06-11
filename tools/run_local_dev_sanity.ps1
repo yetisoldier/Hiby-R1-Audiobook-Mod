@@ -72,7 +72,8 @@ Invoke-Checked {
         tools\adb_test_audiobook_launcher_route_variant.py `
         tools\adb_test_audiobook_ui_seek_fallback.py `
         tools\adb_test_audiobook_seek_restore.py `
-        tools\adb_send_dmr_command.py
+        tools\adb_send_dmr_command.py `
+        tools\r1_adb_control.py
 } "Python compile"
 
 Invoke-Checked {
