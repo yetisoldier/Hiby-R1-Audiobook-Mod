@@ -4,21 +4,23 @@ These notes are for the normal HiBy R1 on stock firmware 1.6, not the R1 MIDI.
 
 ## Next Development Candidate
 
-- Custom version marker: `1.6.6-audiobook`
-- Firmware package: `work\audiobook-firmware-1.6.6-candidate\r1-audiobooks-1.6.6-audiobook.upt`
-- Firmware MD5: `2936e72639ad6464ebfd9c117ce7812b`
-- Firmware SHA256: `49447d092343ade4c5c2a048ee9807065f89ad2d087c43315897dfdb036d06fe`
-- Rootfs MD5: `01997dbb8986ad3e8bf21498e3e8192d`
-- Rootfs SHA256: `8aaa05d9a215a8775b3e5660cb74d00a26f7be4cd5ece8f98fcdddfa116badcd`
+- Custom version marker: `1.6.7-audiobook`
+- Firmware package: `work\audiobook-firmware-1.6.7-candidate\r1-audiobooks-1.6.7-audiobook.upt`
+- Firmware MD5: `7a5b0267811de7198039aa96144f3f8c`
+- Firmware SHA256: `2ac14cdd858f91af99cff8365c5d0664ca3d01233a89bc82e8ba010c7dfcbd78`
+- Rootfs MD5: `c6346d46b2927d8719425117a5d0dd17`
+- Rootfs SHA256: `1f059947f8150d9c750b2bae896efff24026876b8abaaff8b5bbe4ce7159fd1f`
 - `hiby_player` MD5: `09997a636c94112ff76c85a6d4a8d0ff`
 
-Local verification on 2026-06-11 passed with `--require-db-maintenance`. This candidate keeps the self-contained DB maintenance path from `1.6.4-audiobook` and adds guarded Now Playing play-mode correction for audiobooks, targeting the observed list-loop/sequential byte value `3` at `/usr/data/user.ini` offset `0x250`. It also includes optional smart-rewind scaffolding via `AUDIOBOOK_RESTORE_REWIND_MS`, defaulted to exact resume. A live runtime-only test on the device restored the multipart Sedaris test book to track `15/30` and about `4:31` after a title-list tap, with the daemon running from `/usr/data` before this package was flashed.
+Local verification on 2026-06-11 passed with `--require-db-maintenance`. This candidate keeps the self-contained DB maintenance path from `1.6.4-audiobook`, guarded Now Playing play-mode correction from the `1.6.6` test build, and optional smart-rewind scaffolding via `AUDIOBOOK_RESTORE_REWIND_MS`, defaulted to exact resume. It adds a narrow near-miss transport fallback for multipart resume: when title-list/visible-row recovery lands a few tracks away and the player is already in the audiobook sequential mode, the daemon can use the R1's own Next/Previous transport to step to the saved track instead of giving up or skipping through the whole book. A runtime-only live test on the R1 moved Sedaris `13/30 -> 15/30` with two Next events, and a normal title-list flow restored Sedaris `15/30` to the saved position.
+
+This candidate was staged to the SD card as `/usr/data/mnt/sd_0/r1.upt` on 2026-06-11 with matching byte count, MD5, and SHA-256, but still needs a post-flash installed-device verification pass before it should replace the public `1.6.4-audiobook` release.
 
 After flashing this candidate, run installed-device verification with:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\adb_verify_installed_audiobook_release.ps1 `
-  -ExpectedVersion 1.6.6-audiobook `
+  -ExpectedVersion 1.6.7-audiobook `
   -RequirePlayModeGuard `
   -CaptureFramebuffer
 ```

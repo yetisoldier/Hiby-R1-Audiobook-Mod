@@ -499,6 +499,9 @@ def verify(
         require("PLAY_MODE_USER_INI_OFFSET=${AUDIOBOOK_PLAY_MODE_USER_INI_OFFSET:-592}" in daemon_text, "daemon reads persisted play mode byte", failures)
         require("ensure_audiobook_play_mode" in daemon_text, "daemon enforces audiobook play mode", failures)
         require("play-mode skipped screen-not-ready" in daemon_text, "daemon guards play mode taps against non-Now Playing screens", failures)
+        require("TRACK_RESTORE_NEAR_MISS_TRANSPORT_ENABLED" in daemon_text, "daemon exposes near-miss transport fallback toggle", failures)
+        require("track_restore_near_miss_transport" in daemon_text, "daemon includes near-miss transport fallback", failures)
+        require("track-restore near-miss transport skipped mode=" in daemon_text, "daemon gates near-miss transport by play mode", failures)
 
     catalog = root / "usr/bin/r1_audiobook_catalog.tsv"
     require(catalog.exists() and catalog.stat().st_size > 0, f"seed catalog present: {catalog}", failures)

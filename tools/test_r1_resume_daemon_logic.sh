@@ -369,6 +369,139 @@ visible_after_direct_args=$(cat "$visible_after_direct_file" 2>/dev/null || true
 assert_eq "visible fallback receives actual near-miss index" "14:15:$saved_path" "$visible_after_direct_args"
 rm -f "$test_record" "$visible_after_direct_file" "$direct_near_miss_file"
 
+RESTORE_ENABLED=1
+TRACK_RESTORE_ENABLED=1
+TRACK_RESTORE_KEY_FALLBACK_ENABLED=0
+TRACK_RESTORE_NEAR_MISS_TRANSPORT_ENABLED=1
+TRACK_RESTORE_NEAR_MISS_MAX_STEPS=4
+PLAY_MODE_TARGET=3
+RESTORE_MIN_MS=10000
+RESTORE_ONLY_BEFORE_MS=15000
+book_title_autostart_until=$(( $(date +%s) + 60 ))
+autostart_restore_active=1
+test_record=$(mktemp)
+: >"$test_record"
+start_path='a:\Audiobooks\Author\Book\01.mp3'
+near_path='a:\Audiobooks\Author\Book\13.mp3'
+mid_path='a:\Audiobooks\Author\Book\14.mp3'
+saved_path='a:\Audiobooks\Author\Book\15.mp3'
+selected_path=$start_path
+transport_next_calls=0
+transport_prev_calls=0
+
+existing_record_for_path() {
+  printf '%s\n' "$test_record"
+}
+
+record_saved_path_for_current() {
+  printf '%s\n' "$saved_path"
+}
+
+book_root_for_path() {
+  printf '%s\n' 'a:\Audiobooks\Author\Book'
+}
+
+same_book_root() {
+  return 0
+}
+
+json_bool() {
+  printf '%s\n' false
+}
+
+json_number() {
+  case "$1" in
+    position_ms) printf '%s\n' 270200 ;;
+    *) printf '\n' ;;
+  esac
+}
+
+current_path() {
+  printf '%s\n' "$selected_path"
+}
+
+catalog_field_for_path() {
+  case "$2" in
+    "$start_path") printf '%s\n' 1 ;;
+    "$near_path") printf '%s\n' 13 ;;
+    "$mid_path") printf '%s\n' 14 ;;
+    "$saved_path") printf '%s\n' 15 ;;
+    *) printf '\n' ;;
+  esac
+}
+
+book_title_direct_track_select() {
+  selected_path=$mid_path
+  return 2
+}
+
+book_title_visible_track_select() {
+  selected_path=$near_path
+  return 2
+}
+
+play_mode_value() {
+  printf '%s\n' 3
+}
+
+track_next() {
+  transport_next_calls=$((transport_next_calls + 1))
+  case "$transport_next_calls" in
+    1) selected_path=$mid_path ;;
+    2) selected_path=$saved_path ;;
+    *) selected_path=$saved_path ;;
+  esac
+  return 0
+}
+
+track_prev() {
+  transport_prev_calls=$((transport_prev_calls + 1))
+  return 1
+}
+
+assert_true "track restore uses near-miss transport fallback" maybe_restore_track "$start_path" 1021
+assert_eq "near-miss transport advances to saved track" "$saved_path" "$selected_path"
+assert_eq "near-miss transport uses expected next count" "2:0" "$transport_next_calls:$transport_prev_calls"
+rm -f "$test_record"
+
+RESTORE_ENABLED=1
+TRACK_RESTORE_ENABLED=1
+TRACK_RESTORE_KEY_FALLBACK_ENABLED=0
+TRACK_RESTORE_NEAR_MISS_TRANSPORT_ENABLED=1
+TRACK_RESTORE_NEAR_MISS_MAX_STEPS=4
+PLAY_MODE_TARGET=3
+RESTORE_MIN_MS=10000
+RESTORE_ONLY_BEFORE_MS=15000
+book_title_autostart_until=$(( $(date +%s) + 60 ))
+autostart_restore_active=1
+test_record=$(mktemp)
+: >"$test_record"
+start_path='a:\Audiobooks\Author\Book\01.mp3'
+near_path='a:\Audiobooks\Author\Book\13.mp3'
+mid_path='a:\Audiobooks\Author\Book\14.mp3'
+saved_path='a:\Audiobooks\Author\Book\15.mp3'
+selected_path=$start_path
+transport_next_calls=0
+transport_prev_calls=0
+
+play_mode_value() {
+  printf '%s\n' 1
+}
+
+track_next() {
+  transport_next_calls=$((transport_next_calls + 1))
+  return 1
+}
+
+track_prev() {
+  transport_prev_calls=$((transport_prev_calls + 1))
+  return 1
+}
+
+assert_false "near-miss transport refuses non-audiobook play mode" maybe_restore_track "$start_path" 1021
+assert_eq "non-audiobook mode prevents transport taps" "0:0:$near_path" "$transport_next_calls:$transport_prev_calls:$selected_path"
+rm -f "$test_record"
+
 PLAY_MODE_ENFORCE_ENABLED=1
 PLAY_MODE_TARGET=3
 PLAY_MODE_MAX_TAPS=4

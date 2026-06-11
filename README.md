@@ -13,13 +13,13 @@ Current shareable package:
 - UPT SHA256: `02b286676d93ec683307820e1ef40288f34ef21a42a24f5cbda361f2d3733b7b`
 - Base firmware: stock HiBy R1 1.6 for the normal R1, not the R1 MIDI
 
-Latest local development candidate, not released or flashed yet:
+Latest local development candidate, staged for live flash testing but not released:
 
-- Version marker: `1.6.6-audiobook`
-- Package: `work\audiobook-firmware-1.6.6-candidate\r1-audiobooks-1.6.6-audiobook.upt`
-- UPT MD5: `2936e72639ad6464ebfd9c117ce7812b`
-- UPT SHA256: `49447d092343ade4c5c2a048ee9807065f89ad2d087c43315897dfdb036d06fe`
-- Adds guarded audiobook play-mode correction and the latest multipart resume recovery fixes.
+- Version marker: `1.6.7-audiobook`
+- Package: `work\audiobook-firmware-1.6.7-candidate\r1-audiobooks-1.6.7-audiobook.upt`
+- UPT MD5: `7a5b0267811de7198039aa96144f3f8c`
+- UPT SHA256: `2ac14cdd858f91af99cff8365c5d0664ca3d01233a89bc82e8ba010c7dfcbd78`
+- Adds guarded audiobook play-mode correction plus a narrow near-miss transport fallback for multipart resume. A runtime-only live test on the R1 moved Sedaris `13/30 -> 15/30` with two Next events after the normal visible-row recovery missed.
 
 Before flashing, keep a known-good stock 1.6 `r1.upt` available for recovery. This mod has only been tested on one normal HiBy R1. Reinstalling stock firmware should reverse it, but it is still unofficial firmware, so use it at your own risk. Do not use it on the R1 MIDI or other HiBy players unless you are prepared to recover the device yourself.
 

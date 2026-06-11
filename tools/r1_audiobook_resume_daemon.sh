@@ -33,6 +33,8 @@ RESTORE_ENABLED=${AUDIOBOOK_RESTORE_ENABLED:-0}
 TRACK_RESTORE_ENABLED=${AUDIOBOOK_TRACK_RESTORE_ENABLED:-1}
 TRACK_RESTORE_MAX_STEPS=${AUDIOBOOK_TRACK_RESTORE_MAX_STEPS:-50}
 TRACK_RESTORE_KEY_FALLBACK_ENABLED=${AUDIOBOOK_TRACK_RESTORE_KEY_FALLBACK_ENABLED:-0}
+TRACK_RESTORE_NEAR_MISS_TRANSPORT_ENABLED=${AUDIOBOOK_TRACK_RESTORE_NEAR_MISS_TRANSPORT_ENABLED:-1}
+TRACK_RESTORE_NEAR_MISS_MAX_STEPS=${AUDIOBOOK_TRACK_RESTORE_NEAR_MISS_MAX_STEPS:-4}
 TRACK_SWITCH_SETTLE_SECONDS=${AUDIOBOOK_TRACK_SWITCH_SETTLE_SECONDS:-3}
 TRACK_SWITCH_POLL_US=${AUDIOBOOK_TRACK_SWITCH_POLL_US:-200000}
 TOUCH_NEXT_EVENT_FILE=${AUDIOBOOK_TOUCH_NEXT_EVENT_FILE:-$BASE_DIR/input/touch_next_event1.bin}
@@ -1195,6 +1197,72 @@ maybe_restore() {
   return 1
 }
 
+track_restore_near_miss_transport() {
+  [ "$TRACK_RESTORE_NEAR_MISS_TRANSPORT_ENABLED" = 1 ] || return 1
+  saved_path=$1
+  saved_index=$2
+  reason=$3
+  mode=$(play_mode_value || true)
+  [ "$mode" = "$PLAY_MODE_TARGET" ] || {
+    log "track-restore near-miss transport skipped mode=$mode target=$PLAY_MODE_TARGET reason=$reason saved=$saved_index"
+    return 1
+  }
+  path=$(current_path)
+  [ "$path" = "$saved_path" ] && return 0
+  current_index=$(catalog_field_for_path 2 "$path" || true)
+  case "$current_index" in ''|*[!0-9]*) return 1 ;; esac
+  case "$saved_index" in ''|*[!0-9]*) return 1 ;; esac
+  case "$TRACK_RESTORE_NEAR_MISS_MAX_STEPS" in ''|*[!0-9]*) return 1 ;; esac
+  if [ "$saved_index" -gt "$current_index" ]; then
+    direction=next
+    steps=$((saved_index - current_index))
+  elif [ "$saved_index" -lt "$current_index" ]; then
+    direction=prev
+    steps=$((current_index - saved_index))
+  else
+    return 0
+  fi
+  [ "$steps" -le "$TRACK_RESTORE_NEAR_MISS_MAX_STEPS" ] || {
+    log "track-restore near-miss transport too many steps current=$current_index saved=$saved_index max=$TRACK_RESTORE_NEAR_MISS_MAX_STEPS reason=$reason"
+    return 1
+  }
+
+  log "track-restore near-miss transport start reason=$reason current=$current_index saved=$saved_index direction=$direction steps=$steps path=$path saved_path=$saved_path"
+  count=0
+  while [ "$count" -lt "$steps" ]; do
+    count=$((count + 1))
+    path_before=$(current_path)
+    if [ "$direction" = next ]; then
+      expected_index=$((current_index + count))
+      track_next || return 1
+    else
+      expected_index=$((current_index - count))
+      track_prev || return 1
+    fi
+    ticks=$(track_switch_settle_ticks)
+    while [ "$ticks" -gt 0 ]; do
+      sleep_track_switch_poll
+      path_now=$(current_path)
+      index_now=$(catalog_field_for_path 2 "$path_now" || true)
+      [ "$path_now" = "$saved_path" ] && break
+      [ "$index_now" = "$expected_index" ] && break
+      if [ "$path_now" != "$path_before" ] && [ -n "$index_now" ]; then
+        break
+      fi
+      ticks=$((ticks - 1))
+    done
+    path_now=$(current_path)
+    index_now=$(catalog_field_for_path 2 "$path_now" || true)
+    log "track-restore near-miss transport $direction step=$count/$steps path=$path_now index=${index_now:-?}"
+    [ "$path_now" = "$saved_path" ] && return 0
+  done
+
+  path_now=$(current_path)
+  [ "$path_now" = "$saved_path" ] && return 0
+  log "track-restore near-miss transport failed reason=$reason final_path=$path_now saved_path=$saved_path"
+  return 1
+}
+
 maybe_restore_track() {
   [ "$RESTORE_ENABLED" = 1 ] || return 0
   [ "$TRACK_RESTORE_ENABLED" = 1 ] || return 0
@@ -1258,6 +1326,9 @@ maybe_restore_track() {
             return 0
           fi
           if [ "$visible_after_direct_status" -eq 2 ]; then
+            if track_restore_near_miss_transport "$saved_path" "$saved_index" "direct-near-miss"; then
+              return 0
+            fi
             log "visible-track-select stopped key fallback after direct near miss saved=$saved_index saved_path=$saved_path"
             return 1
           fi
@@ -1273,6 +1344,9 @@ maybe_restore_track() {
     return 0
   fi
   if [ "$visible_status" -eq 2 ]; then
+    if track_restore_near_miss_transport "$saved_path" "$saved_index" "visible-near-miss"; then
+      return 0
+    fi
     log "visible-track-select stopped key fallback after near miss saved=$saved_index saved_path=$saved_path"
     return 1
   fi
