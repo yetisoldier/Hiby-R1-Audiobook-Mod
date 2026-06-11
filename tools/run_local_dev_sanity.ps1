@@ -48,6 +48,8 @@ $psFiles = @(
     "tools\build_r1_audiobook_firmware.ps1",
     "tools\build_r1_db_maint_helper.ps1",
     "tools\extract_r1_firmware.ps1",
+    "tools\install_mips_binutils_wsl.ps1",
+    "tools\mips_objdump_wsl.ps1",
     "tools\test_r1_db_maint_qemu_wsl.ps1",
     "tools\test_r1_resume_daemon_logic_wsl.ps1"
 )

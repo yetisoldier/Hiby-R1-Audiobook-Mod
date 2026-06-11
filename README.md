@@ -538,6 +538,8 @@ The audiobook-specific behavior in this repository was developed and tested on a
 - `tools/build_r1_upt.py` - rebuilds an R1-style OTA `.upt` from `xImage` and `rootfs.squashfs`.
 - `tools/build_r1_audiobook_firmware.ps1` - offline build wrapper for the audiobook prototype firmware image.
 - `tools/verify_r1_audiobook_build.py` - local pre-flash sanity checker for the rebuilt full-dev package.
+- `tools/install_mips_binutils_wsl.ps1` - downloads and extracts MIPS objdump under `.deps` without installing WSL packages system-wide.
+- `tools/mips_objdump_wsl.ps1` - wrapper for disassembling R1 MIPS binaries with the locally extracted objdump.
 - `tools/adb_live_test_patched_player.ps1` - opt-in ADB helper for a temporary, non-flash patched-player test.
 - `tools/adb_runtime_patch_hiby_player.py` - guarded dry-run/apply/revert helper for patching the running stock player in RAM.
 - `tools/adb_install_audiobook_resume_runtime.ps1` - installs and starts the live per-book resume daemon over ADB.
