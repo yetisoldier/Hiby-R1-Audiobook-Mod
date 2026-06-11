@@ -3,7 +3,7 @@ param(
     [string]$Adb = "C:\Program Files\Software Fix\adb.exe",
 
     [Parameter(Mandatory=$false)]
-    [string]$Package = "work\audiobook-firmware-1.6.9-scanfix-candidate\r1-audiobooks-1.6.9-audiobook.upt",
+    [string]$Package = "work\audiobook-firmware-1.6.11-logcap-candidate\r1-audiobooks-1.6.11-audiobook.upt",
 
     [Parameter(Mandatory=$false)]
     [string]$BuildOutDir = "",
@@ -15,10 +15,10 @@ param(
     [string]$StockRootfs = "work\original\rootfs.squashfs",
 
     [Parameter(Mandatory=$false)]
-    [string]$ExpectedVersion = "1.6.9-audiobook",
+    [string]$ExpectedVersion = "1.6.11-audiobook",
 
     [Parameter(Mandatory=$false)]
-    [string]$ExpectedLabel = "HiBy R1 Audiobook FW 1.6.9",
+    [string]$ExpectedLabel = "HiBy R1 Audiobook FW 1.6.11",
 
     [Parameter(Mandatory=$false)]
     [string]$RemoteFinal = "/usr/data/mnt/sd_0/r1.upt",

@@ -3,9 +3,11 @@ set -u
 
 BASE_DIR=${AUDIOBOOK_BASE_DIR:-/usr/data/audiobooks}
 HELPER=${AUDIOBOOK_HELPER:-$BASE_DIR/bin/r1_audiobook_resume_helper}
+MEMSCAN_HELPER=${AUDIOBOOK_MEMSCAN_HELPER:-$BASE_DIR/bin/r1_audiobook_memscan}
 STORE_DIR=${AUDIOBOOK_STORE_DIR:-$BASE_DIR/resume.d}
 CATALOG=${AUDIOBOOK_CATALOG:-$BASE_DIR/catalog.tsv}
 CATALOG_ALBUM_PATTERNS=${AUDIOBOOK_CATALOG_ALBUM_PATTERNS:-$BASE_DIR/catalog-albums.txt}
+CATALOG_BOOKS=${AUDIOBOOK_CATALOG_BOOKS:-$BASE_DIR/catalog-books.tsv}
 USER_INI=${AUDIOBOOK_USER_INI:-/usr/data/user.ini}
 LOG=${AUDIOBOOK_RESUME_LOG:-$BASE_DIR/resume-daemon.log}
 PID_FILE=${AUDIOBOOK_RESUME_PID:-$BASE_DIR/resume-daemon.pid}
@@ -13,6 +15,7 @@ CLOSED_INHERITED_SOCKET_FDS=0
 PLAYER_PID_CACHE=
 CURRENT_PATH_HEX_CACHE=
 CURRENT_PATH_VALUE_CACHE=
+LOG_MAX_BYTES=${AUDIOBOOK_RESUME_LOG_MAX_BYTES:-524288}
 
 INTERVAL_SECONDS=${AUDIOBOOK_INTERVAL_SECONDS:-5}
 IDLE_INTERVAL_SECONDS=${AUDIOBOOK_IDLE_INTERVAL_SECONDS:-3}
@@ -73,6 +76,9 @@ BOOK_TITLE_TRACK_LIST_OFFSET=${AUDIOBOOK_BOOK_TITLE_TRACK_LIST_OFFSET:-52}
 BOOK_TITLE_TRACK_LIST_SCAN_BYTES=${AUDIOBOOK_BOOK_TITLE_TRACK_LIST_SCAN_BYTES:-4096}
 BOOK_TITLE_CATALOG_SCAN_PTR_OFFSET=${AUDIOBOOK_BOOK_TITLE_CATALOG_SCAN_PTR_OFFSET:-44}
 BOOK_TITLE_CATALOG_SCAN_BYTES=${AUDIOBOOK_BOOK_TITLE_CATALOG_SCAN_BYTES:-8192}
+BOOK_TITLE_MEMSCAN_ENABLED=${AUDIOBOOK_BOOK_TITLE_MEMSCAN_ENABLED:-1}
+BOOK_TITLE_MEMSCAN_ADDR=${AUDIOBOOK_BOOK_TITLE_MEMSCAN_ADDR:-9113600}
+BOOK_TITLE_MEMSCAN_BYTES=${AUDIOBOOK_BOOK_TITLE_MEMSCAN_BYTES:-212992}
 BOOK_TITLE_AUTOSTART_REQUIRE_PATH=${AUDIOBOOK_BOOK_TITLE_AUTOSTART_REQUIRE_PATH:-1}
 BOOK_TITLE_CONTEXT_SECONDS=${AUDIOBOOK_BOOK_TITLE_CONTEXT_SECONDS:-300}
 BOOK_TITLE_SOURCE_MAGIC=${AUDIOBOOK_BOOK_TITLE_SOURCE_MAGIC:-2695890197}
@@ -83,6 +89,9 @@ BOOK_TITLE_DIRECT_TRACK_SWIPE_SETTLE_SECONDS=${AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK
 BOOK_TITLE_DIRECT_TRACK_MAX_SWIPES=${AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_MAX_SWIPES:-20}
 BOOK_TITLE_DIRECT_TRACK_VISIBLE_ROWS=${AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_VISIBLE_ROWS:-5}
 BOOK_TITLE_DIRECT_TRACK_ROWS_PER_SWIPE=${AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_ROWS_PER_SWIPE:-4}
+BOOK_TITLE_DIRECT_TRACK_CALIBRATE_ENABLED=${AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_CALIBRATE_ENABLED:-1}
+BOOK_TITLE_DIRECT_TRACK_RECOVERY_TRANSPORT_ENABLED=${AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_RECOVERY_TRANSPORT_ENABLED:-1}
+BOOK_TITLE_DIRECT_TRACK_RECOVERY_MAX_STEPS=${AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_RECOVERY_MAX_STEPS:-20}
 BOOK_TITLE_RESTORE_LOG_BUCKET_MS=${AUDIOBOOK_BOOK_TITLE_RESTORE_LOG_BUCKET_MS:-5000}
 UI_SEEK_FALLBACK_ENABLED=${AUDIOBOOK_UI_SEEK_FALLBACK_ENABLED:-1}
 UI_SEEK_BAR_X_MIN=${AUDIOBOOK_UI_SEEK_BAR_X_MIN:-21}
@@ -104,7 +113,18 @@ PLAY_MODE_TOUCH_Y=${AUDIOBOOK_PLAY_MODE_TOUCH_Y:-730}
 PLAY_MODE_SETTLE_SECONDS=${AUDIOBOOK_PLAY_MODE_SETTLE_SECONDS:-1}
 PLAY_MODE_SCREEN_GUARD_ENABLED=${AUDIOBOOK_PLAY_MODE_SCREEN_GUARD_ENABLED:-1}
 
+rotate_log_if_needed() {
+  case "$LOG_MAX_BYTES" in ''|*[!0-9]*|0) return 0 ;; esac
+  [ -f "$LOG" ] || return 0
+  size=$(wc -c <"$LOG" 2>/dev/null | awk '{ print $1 }')
+  case "$size" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$size" -le "$LOG_MAX_BYTES" ] && return 0
+  mv -f "$LOG" "$LOG.1" 2>/dev/null || return 0
+  printf '%s rotated log previous_size=%s max=%s previous=%s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$size" "$LOG_MAX_BYTES" "$LOG.1" >>"$LOG"
+}
+
 log() {
+  rotate_log_if_needed
   printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >>"$LOG"
 }
 
@@ -552,6 +572,28 @@ catalog_field_for_root_index() {
   ' "$CATALOG"
 }
 
+catalog_first_path_for_root() {
+  [ -f "$CATALOG" ] || return 1
+  grep -F "$1" "$CATALOG" | awk -F '\t' '$2 == 1 { print $5; exit }'
+}
+
+book_title_memscan_root() {
+  [ "$BOOK_TITLE_MEMSCAN_ENABLED" = 1 ] || return 1
+  [ -x "$MEMSCAN_HELPER" ] || return 1
+  [ -s "$CATALOG_BOOKS" ] || return 1
+  pid=$1
+  root=$(
+    "$MEMSCAN_HELPER" \
+      --pid "$pid" \
+      --catalog-books "$CATALOG_BOOKS" \
+      --addr "$BOOK_TITLE_MEMSCAN_ADDR" \
+      --bytes "$BOOK_TITLE_MEMSCAN_BYTES" 2>/dev/null |
+      head -1
+  )
+  [ -n "$root" ] || return 1
+  printf '%s\n' "$root"
+}
+
 book_key_for_path() {
   catalog_field_for_path 9 "$1" || true
 }
@@ -973,6 +1015,77 @@ tap_track_list_index() {
   log "$tap_track_log_label tapped index=$tap_track_target_index swipes=$tap_track_swipes row=$tap_track_row"
 }
 
+book_title_verify_selected_track() {
+  saved_path=$1
+  saved_index=$2
+  selected_row=$3
+  log_label=$4
+  path_before_select=$5
+
+  saved_root=$(book_root_for_path "$saved_path")
+  ticks=$(track_switch_settle_ticks)
+  verify_min_ticks=0
+  if [ "$path_before_select" = "$saved_path" ]; then
+    verify_min_ticks=$ticks
+  fi
+  verify_seen_ticks=0
+  while [ "$ticks" -gt 0 ]; do
+    sleep_track_switch_poll
+    verify_seen_ticks=$((verify_seen_ticks + 1))
+    path_now=$(current_path)
+    [ "$path_now" = "$saved_path" ] && [ "$verify_seen_ticks" -ge "$verify_min_ticks" ] && {
+      log "$log_label reached path=$path_now saved=$saved_index row=$selected_row"
+      return 0
+    }
+    if [ -n "$path_now" ] && [ "$path_now" != "$path_before_select" ]; then
+      selected_root=$(book_root_for_path "$path_now")
+      if [ "$selected_root" = "$saved_root" ]; then
+        selected_index=$(catalog_field_for_path 2 "$path_now" || true)
+        log "$log_label selected path=$path_now index=${selected_index:-?} saved=$saved_index row=$selected_row"
+        case "$selected_index:$saved_index:$selected_row" in
+          *[!0-9:]* | :* | *:) return 2 ;;
+        esac
+        delta=$((saved_index - selected_index))
+        retry_row=$((selected_row + delta))
+        if [ "$retry_row" -ge 1 ] && [ "$retry_row" -le 5 ]; then
+          log "$log_label retry selected=$selected_index saved=$saved_index row=$retry_row"
+          touch_back_to_track_list || return 2
+          sleep "$BOOK_TITLE_DIRECT_TRACK_RETURN_DELAY_SECONDS"
+          path_before_retry=$(current_path)
+          touch_track_row "$retry_row" || return 2
+          retry_ticks=$(track_switch_settle_ticks)
+          while [ "$retry_ticks" -gt 0 ]; do
+            sleep_track_switch_poll
+            path_retry=$(current_path)
+            [ "$path_retry" = "$saved_path" ] && {
+              log "$log_label retry reached path=$path_retry saved=$saved_index row=$retry_row"
+              return 0
+            }
+            if [ -n "$path_retry" ] && [ "$path_retry" != "$path_before_retry" ]; then
+              retry_root=$(book_root_for_path "$path_retry")
+              if [ "$retry_root" = "$saved_root" ]; then
+                retry_index=$(catalog_field_for_path 2 "$path_retry" || true)
+                log "$log_label retry selected path=$path_retry index=${retry_index:-?} saved=$saved_index"
+                break
+              fi
+            fi
+            retry_ticks=$((retry_ticks - 1))
+          done
+        fi
+        if track_restore_near_miss_transport "$saved_path" "$saved_index" "book-title-direct-misselect"; then
+          return 0
+        fi
+        return 2
+      fi
+    fi
+    ticks=$((ticks - 1))
+  done
+
+  path_now=$(current_path)
+  log "$log_label did not reach saved path final_path=$path_now saved_path=$saved_path"
+  [ "$path_now" = "$saved_path" ]
+}
+
 book_title_direct_track_select() {
   [ "$BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED" = 1 ] || return 1
   book_title_autostart_active_now || return 1
@@ -1267,7 +1380,14 @@ track_restore_near_miss_transport() {
   current_index=$(catalog_field_for_path 2 "$path" || true)
   case "$current_index" in ''|*[!0-9]*) return 1 ;; esac
   case "$saved_index" in ''|*[!0-9]*) return 1 ;; esac
-  case "$TRACK_RESTORE_NEAR_MISS_MAX_STEPS" in ''|*[!0-9]*) return 1 ;; esac
+  max_steps=$TRACK_RESTORE_NEAR_MISS_MAX_STEPS
+  case "$reason" in
+    book-title-direct-misselect)
+      [ "$BOOK_TITLE_DIRECT_TRACK_RECOVERY_TRANSPORT_ENABLED" = 1 ] || return 1
+      max_steps=$BOOK_TITLE_DIRECT_TRACK_RECOVERY_MAX_STEPS
+      ;;
+  esac
+  case "$max_steps" in ''|*[!0-9]*) return 1 ;; esac
   if [ "$saved_index" -gt "$current_index" ]; then
     direction=next
     steps=$((saved_index - current_index))
@@ -1277,8 +1397,8 @@ track_restore_near_miss_transport() {
   else
     return 0
   fi
-  [ "$steps" -le "$TRACK_RESTORE_NEAR_MISS_MAX_STEPS" ] || {
-    log "track-restore near-miss transport too many steps current=$current_index saved=$saved_index max=$TRACK_RESTORE_NEAR_MISS_MAX_STEPS reason=$reason"
+  [ "$steps" -le "$max_steps" ] || {
+    log "track-restore near-miss transport too many steps current=$current_index saved=$saved_index max=$max_steps reason=$reason"
     return 1
   }
 
@@ -1550,7 +1670,19 @@ book_title_direct_start_saved_track() {
   track_list_ptr=$2
   catalog_scan_ptr=$3
 
-  track_path=$(pid_mem_first_catalog_path "$pid" "$track_list_ptr" "$BOOK_TITLE_TRACK_LIST_SCAN_BYTES" || true)
+  track_path=
+  root=$(book_title_memscan_root "$pid" || true)
+  if [ -n "$root" ]; then
+    track_path=$(catalog_first_path_for_root "$root")
+    if [ -n "$track_path" ]; then
+      log "book-title direct-start memscan root=$root path=$track_path"
+    else
+      log "book-title direct-start memscan no first path root=$root"
+    fi
+  fi
+  if [ -z "$track_path" ]; then
+    track_path=$(pid_mem_first_catalog_path "$pid" "$track_list_ptr" "$BOOK_TITLE_TRACK_LIST_SCAN_BYTES" || true)
+  fi
   if [ -z "$track_path" ]; then
     track_path=$(pid_mem_first_catalog_path "$pid" "$catalog_scan_ptr" "$BOOK_TITLE_CATALOG_SCAN_BYTES" || true)
   fi
@@ -1580,6 +1712,14 @@ book_title_direct_start_saved_track() {
   track_count=$(catalog_field_for_path 3 "$saved_path" || true)
   case "$saved_index" in ''|*[!0-9]*) return 1 ;; esac
 
+  path_before_direct=$(current_path)
+  if [ "$BOOK_TITLE_DIRECT_TRACK_CALIBRATE_ENABLED" = 1 ] && [ "$path_before_direct" = "$saved_path" ]; then
+    log "book-title direct-start visible-probe saved_index=$saved_index/${track_count:-?} saved_ms=$saved_pos saved_path=$saved_path"
+    touch_track_row 1 || return 1
+    book_title_verify_selected_track "$saved_path" "$saved_index" 1 "book-title direct-start visible-probe" "$path_before_direct"
+    return $?
+  fi
+
   geometry=$(direct_track_geometry "$saved_index") || {
     log "book-title direct-start too many swipes saved=$saved_index max=$(direct_track_max_swipes) path=$saved_path"
     return 1
@@ -1589,6 +1729,7 @@ book_title_direct_start_saved_track() {
   row=$2
   log "book-title direct-start root=$root saved_index=$saved_index/${track_count:-?} saved_ms=$saved_pos swipes=$swipes row=$row saved_path=$saved_path"
   tap_track_list_index "$saved_index" "book-title direct-start" || return 1
+  book_title_verify_selected_track "$saved_path" "$saved_index" "$row" "book-title direct-start" "$path_before_direct"
 }
 
 book_title_marker_seq() {
@@ -1686,7 +1827,7 @@ main() {
   close_inherited_socket_fds
   refresh_catalog_album_patterns
   echo "$$" >"$PID_FILE"
-  log "start interval=${INTERVAL_SECONDS}s idle_interval=${IDLE_INTERVAL_SECONDS}s new_track_commit_ms=$NEW_TRACK_COMMIT_MS backward_save_guard_ms=$BACKWARD_SAVE_GUARD_MS restore_rewind_ms=$RESTORE_REWIND_MS closed_inherited_socket_fds=$CLOSED_INHERITED_SOCKET_FDS position_source=$POSITION_SOURCE duration_addr=$PLAYER_DURATION_ADDR restore_enabled=$RESTORE_ENABLED track_restore_enabled=$TRACK_RESTORE_ENABLED track_key_fallback=$TRACK_RESTORE_KEY_FALLBACK_ENABLED ui_seek_fallback=$UI_SEEK_FALLBACK_ENABLED ui_seek_screen_guard=$UI_SEEK_SCREEN_GUARD_ENABLED ui_seek_touch_frames=$UI_SEEK_TOUCH_FRAMES play_mode_enforce=$PLAY_MODE_ENFORCE_ENABLED play_mode_target=$PLAY_MODE_TARGET play_mode_offset=$PLAY_MODE_USER_INI_OFFSET book_title_autostart=$BOOK_TITLE_AUTOSTART_ENABLED book_title_direct_track_select=$BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED book_title_direct_track_preplay=$BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED book_title_require_path=$BOOK_TITLE_AUTOSTART_REQUIRE_PATH book_title_context_seconds=$BOOK_TITLE_CONTEXT_SECONDS catalog_albums=$CATALOG_ALBUM_PATTERNS"
+  log "start interval=${INTERVAL_SECONDS}s idle_interval=${IDLE_INTERVAL_SECONDS}s new_track_commit_ms=$NEW_TRACK_COMMIT_MS backward_save_guard_ms=$BACKWARD_SAVE_GUARD_MS restore_rewind_ms=$RESTORE_REWIND_MS closed_inherited_socket_fds=$CLOSED_INHERITED_SOCKET_FDS position_source=$POSITION_SOURCE duration_addr=$PLAYER_DURATION_ADDR restore_enabled=$RESTORE_ENABLED track_restore_enabled=$TRACK_RESTORE_ENABLED track_key_fallback=$TRACK_RESTORE_KEY_FALLBACK_ENABLED ui_seek_fallback=$UI_SEEK_FALLBACK_ENABLED ui_seek_screen_guard=$UI_SEEK_SCREEN_GUARD_ENABLED ui_seek_touch_frames=$UI_SEEK_TOUCH_FRAMES play_mode_enforce=$PLAY_MODE_ENFORCE_ENABLED play_mode_target=$PLAY_MODE_TARGET play_mode_offset=$PLAY_MODE_USER_INI_OFFSET book_title_autostart=$BOOK_TITLE_AUTOSTART_ENABLED book_title_direct_track_select=$BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED book_title_direct_track_preplay=$BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED book_title_memscan=$BOOK_TITLE_MEMSCAN_ENABLED book_title_direct_calibrate=$BOOK_TITLE_DIRECT_TRACK_CALIBRATE_ENABLED book_title_recovery_transport=$BOOK_TITLE_DIRECT_TRACK_RECOVERY_TRANSPORT_ENABLED book_title_recovery_max=$BOOK_TITLE_DIRECT_TRACK_RECOVERY_MAX_STEPS book_title_require_path=$BOOK_TITLE_AUTOSTART_REQUIRE_PATH book_title_context_seconds=$BOOK_TITLE_CONTEXT_SECONDS catalog_albums=$CATALOG_ALBUM_PATTERNS catalog_books=$CATALOG_BOOKS"
 
   last_path=
   last_saved_bucket=

@@ -6,6 +6,9 @@ param(
     [string]$HelperSource = "work\device-audiobook-helper-20260609\audiobooks\bin\r1_audiobook_resume_helper",
 
     [Parameter(Mandatory=$false)]
+    [string]$MemscanHelperSource = "work\native-memscan\r1_audiobook_memscan",
+
+    [Parameter(Mandatory=$false)]
     [string]$DaemonSource = "tools\r1_audiobook_resume_daemon.sh",
 
     [Parameter(Mandatory=$false)]
@@ -73,6 +76,9 @@ param(
     [int]$BookTitleRestoreLogBucketMs = 5000,
 
     [Parameter(Mandatory=$false)]
+    [int]$ResumeLogMaxBytes = 524288,
+
+    [Parameter(Mandatory=$false)]
     [int]$BookTitleDirectTrackMaxSwipes = 20,
 
     [Parameter(Mandatory=$false)]
@@ -81,6 +87,18 @@ param(
 
     [Parameter(Mandatory=$false)]
     [int]$BookTitleDirectTrackRowsPerSwipe = 4,
+
+    [Parameter(Mandatory=$false)]
+    [switch]$DisableBookTitleMemscan,
+
+    [Parameter(Mandatory=$false)]
+    [switch]$DisableBookTitleDirectTrackCalibrate,
+
+    [Parameter(Mandatory=$false)]
+    [switch]$DisableBookTitleDirectTrackRecovery,
+
+    [Parameter(Mandatory=$false)]
+    [int]$BookTitleDirectTrackRecoveryMaxSteps = 20,
 
     [Parameter(Mandatory=$false)]
     [int]$UiSeekBarXMin = 21,
@@ -115,6 +133,7 @@ function Require-Path([string]$PathValue) {
 
 $adbPath = Require-Path $Adb
 $helperPath = Require-Path $HelperSource
+$memscanHelperPath = Require-Path $MemscanHelperSource
 $daemonPath = Require-Path $DaemonSource
 $catalogPath = $null
 if ($CatalogSource) {
@@ -229,6 +248,9 @@ if ($KeyPrevEventSource) {
 $trackRestoreValue = if ($RestoreEnabled -and -not $DisableTrackRestore) { "1" } else { "0" }
 $directTrackSelectValue = if ($DisableBookTitleDirectTrackSelect) { "0" } else { "1" }
 $directTrackPreplayValue = if ($DisableBookTitleDirectTrackPreplay) { "0" } else { "1" }
+$bookTitleMemscanValue = if ($DisableBookTitleMemscan) { "0" } else { "1" }
+$bookTitleDirectTrackCalibrateValue = if ($DisableBookTitleDirectTrackCalibrate) { "0" } else { "1" }
+$bookTitleDirectTrackRecoveryValue = if ($DisableBookTitleDirectTrackRecovery) { "0" } else { "1" }
 $uiSeekFallbackValue = if ($DisableUiSeekFallback) { "0" } else { "1" }
 $uiSeekScreenGuardValue = if ($DisableUiSeekScreenGuard) { "0" } else { "1" }
 
@@ -245,6 +267,11 @@ if ($LASTEXITCODE -ne 0) {
 & $adbPath push $helperPath "$RemoteBase/bin/r1_audiobook_resume_helper"
 if ($LASTEXITCODE -ne 0) {
     throw "failed to push resume helper"
+}
+
+& $adbPath push $memscanHelperPath "$RemoteBase/bin/r1_audiobook_memscan"
+if ($LASTEXITCODE -ne 0) {
+    throw "failed to push memscan helper"
 }
 
 & $adbPath push $daemonPath "$RemoteBase/bin/r1_audiobook_resume_daemon.sh"
@@ -310,10 +337,10 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $installCommand = @"
-chmod 755 '$RemoteBase/bin/r1_audiobook_resume_helper' '$RemoteBase/bin/r1_audiobook_resume_daemon.sh';
+chmod 755 '$RemoteBase/bin/r1_audiobook_resume_helper' '$RemoteBase/bin/r1_audiobook_memscan' '$RemoteBase/bin/r1_audiobook_resume_daemon.sh';
 start-stop-daemon -K -p '$RemoteBase/resume-daemon.ssd.pid' 2>/dev/null || true;
 rm -f '$RemoteBase/resume-daemon.pid' '$RemoteBase/resume-daemon.ssd.pid';
-env AUDIOBOOK_POSITION_SOURCE='$PositionSource' AUDIOBOOK_RESTORE_ENABLED='$(if ($RestoreEnabled) { "1" } else { "0" })' AUDIOBOOK_TRACK_RESTORE_ENABLED='$trackRestoreValue' AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED='$directTrackSelectValue' AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED='$directTrackPreplayValue' AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_MAX_SWIPES='$BookTitleDirectTrackMaxSwipes' AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_VISIBLE_ROWS='$BookTitleDirectTrackVisibleRows' AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_ROWS_PER_SWIPE='$BookTitleDirectTrackRowsPerSwipe' AUDIOBOOK_BOOK_TITLE_AUTOSTART_REQUIRE_PATH='$(if ($DisableBookTitlePathGuard) { "0" } else { "1" })' AUDIOBOOK_INTERVAL_SECONDS='$IntervalSeconds' AUDIOBOOK_IDLE_INTERVAL_SECONDS='$IdleIntervalSeconds' AUDIOBOOK_BOOK_TITLE_AUTOSTART_DELAY_SECONDS='$BookTitleAutostartDelaySeconds' AUDIOBOOK_BOOK_TITLE_CONTEXT_SECONDS='$BookTitleContextSeconds' AUDIOBOOK_NEW_TRACK_COMMIT_MS='$NewTrackCommitMs' AUDIOBOOK_RESTORE_RETRY_MAX_AFTER_FAILURE_SECONDS='$RestoreRetryMaxAfterFailureSeconds' AUDIOBOOK_FAILED_RESTORE_SKIP_LOG_BUCKET_MS='$FailedRestoreSkipLogBucketMs' AUDIOBOOK_BOOK_TITLE_RESTORE_LOG_BUCKET_MS='$BookTitleRestoreLogBucketMs' AUDIOBOOK_UI_SEEK_FALLBACK_ENABLED='$uiSeekFallbackValue' AUDIOBOOK_UI_SEEK_SCREEN_GUARD_ENABLED='$uiSeekScreenGuardValue' AUDIOBOOK_UI_SEEK_SCREEN_MIN_BAR_PIXELS='$UiSeekScreenMinBarPixels' AUDIOBOOK_UI_SEEK_BAR_X_MIN='$UiSeekBarXMin' AUDIOBOOK_UI_SEEK_BAR_X_MAX='$UiSeekBarXMax' AUDIOBOOK_UI_SEEK_BAR_Y='$UiSeekBarY' AUDIOBOOK_UI_SEEK_VERIFY_TOLERANCE_MS='$UiSeekVerifyToleranceMs' AUDIOBOOK_UI_SEEK_TOUCH_FRAMES='$UiSeekTouchFrames' start-stop-daemon -S -b -m -p '$RemoteBase/resume-daemon.ssd.pid' -x '$RemoteBase/bin/r1_audiobook_resume_daemon.sh';
+env AUDIOBOOK_POSITION_SOURCE='$PositionSource' AUDIOBOOK_RESTORE_ENABLED='$(if ($RestoreEnabled) { "1" } else { "0" })' AUDIOBOOK_TRACK_RESTORE_ENABLED='$trackRestoreValue' AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED='$directTrackSelectValue' AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED='$directTrackPreplayValue' AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_MAX_SWIPES='$BookTitleDirectTrackMaxSwipes' AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_VISIBLE_ROWS='$BookTitleDirectTrackVisibleRows' AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_ROWS_PER_SWIPE='$BookTitleDirectTrackRowsPerSwipe' AUDIOBOOK_BOOK_TITLE_MEMSCAN_ENABLED='$bookTitleMemscanValue' AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_CALIBRATE_ENABLED='$bookTitleDirectTrackCalibrateValue' AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_RECOVERY_TRANSPORT_ENABLED='$bookTitleDirectTrackRecoveryValue' AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_RECOVERY_MAX_STEPS='$BookTitleDirectTrackRecoveryMaxSteps' AUDIOBOOK_BOOK_TITLE_AUTOSTART_REQUIRE_PATH='$(if ($DisableBookTitlePathGuard) { "0" } else { "1" })' AUDIOBOOK_INTERVAL_SECONDS='$IntervalSeconds' AUDIOBOOK_IDLE_INTERVAL_SECONDS='$IdleIntervalSeconds' AUDIOBOOK_BOOK_TITLE_AUTOSTART_DELAY_SECONDS='$BookTitleAutostartDelaySeconds' AUDIOBOOK_BOOK_TITLE_CONTEXT_SECONDS='$BookTitleContextSeconds' AUDIOBOOK_NEW_TRACK_COMMIT_MS='$NewTrackCommitMs' AUDIOBOOK_RESTORE_RETRY_MAX_AFTER_FAILURE_SECONDS='$RestoreRetryMaxAfterFailureSeconds' AUDIOBOOK_FAILED_RESTORE_SKIP_LOG_BUCKET_MS='$FailedRestoreSkipLogBucketMs' AUDIOBOOK_BOOK_TITLE_RESTORE_LOG_BUCKET_MS='$BookTitleRestoreLogBucketMs' AUDIOBOOK_RESUME_LOG_MAX_BYTES='$ResumeLogMaxBytes' AUDIOBOOK_UI_SEEK_FALLBACK_ENABLED='$uiSeekFallbackValue' AUDIOBOOK_UI_SEEK_SCREEN_GUARD_ENABLED='$uiSeekScreenGuardValue' AUDIOBOOK_UI_SEEK_SCREEN_MIN_BAR_PIXELS='$UiSeekScreenMinBarPixels' AUDIOBOOK_UI_SEEK_BAR_X_MIN='$UiSeekBarXMin' AUDIOBOOK_UI_SEEK_BAR_X_MAX='$UiSeekBarXMax' AUDIOBOOK_UI_SEEK_BAR_Y='$UiSeekBarY' AUDIOBOOK_UI_SEEK_VERIFY_TOLERANCE_MS='$UiSeekVerifyToleranceMs' AUDIOBOOK_UI_SEEK_TOUCH_FRAMES='$UiSeekTouchFrames' start-stop-daemon -S -b -m -p '$RemoteBase/resume-daemon.ssd.pid' -x '$RemoteBase/bin/r1_audiobook_resume_daemon.sh';
 sleep 1;
 echo '--- pid ---';
 cat '$RemoteBase/resume-daemon.pid' '$RemoteBase/resume-daemon.ssd.pid' 2>/dev/null;

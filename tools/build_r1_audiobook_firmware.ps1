@@ -32,6 +32,9 @@ param(
     [string]$AudiobookResumeHelper = "work\device-audiobook-helper-20260609\audiobooks\bin\r1_audiobook_resume_helper",
 
     [Parameter(Mandatory=$false)]
+    [string]$AudiobookMemscanHelper = "work\native-memscan\r1_audiobook_memscan",
+
+    [Parameter(Mandatory=$false)]
     [string]$AudiobookResumeDaemon = "tools\r1_audiobook_resume_daemon.sh",
 
     [Parameter(Mandatory=$false)]
@@ -182,6 +185,7 @@ exit $?
 
 if ($IncludeAudiobookResumeRuntime) {
     $resumeHelperPath = Resolve-PathStrict $AudiobookResumeHelper
+    $memscanHelperPath = Resolve-PathStrict $AudiobookMemscanHelper
     $resumeDaemonPath = Resolve-PathStrict $AudiobookResumeDaemon
     if ($TouchNextEventSource) {
         $touchNextEventPath = Resolve-PathStrict $TouchNextEventSource
@@ -286,6 +290,7 @@ if ($IncludeAudiobookResumeRuntime) {
         $resumeCatalogPath = Resolve-PathStrict $AudiobookResumeCatalog
     }
     Copy-Item -Force -LiteralPath $resumeHelperPath -Destination (Join-Path $rootTree "usr\bin\r1_audiobook_resume_helper")
+    Copy-Item -Force -LiteralPath $memscanHelperPath -Destination (Join-Path $rootTree "usr\bin\r1_audiobook_memscan")
     Copy-Item -Force -LiteralPath $resumeDaemonPath -Destination (Join-Path $rootTree "usr\bin\r1_audiobook_resume_daemon.sh")
     Copy-Item -Force -LiteralPath $touchNextEventPath -Destination (Join-Path $rootTree "usr\bin\r1_touch_next_event1.bin")
     Copy-Item -Force -LiteralPath $touchFirstTrackEventPath -Destination (Join-Path $rootTree "usr\bin\r1_touch_first_track_event1.bin")
@@ -347,6 +352,7 @@ fi
 mkdir -p "$BASE/bin" "$BASE/input" "$BASE/resume.d"
 clear_stock_audiobook_last_file
 cp -f /usr/bin/r1_audiobook_resume_helper "$BASE/bin/r1_audiobook_resume_helper"
+cp -f /usr/bin/r1_audiobook_memscan "$BASE/bin/r1_audiobook_memscan"
 cp -f /usr/bin/r1_audiobook_resume_daemon.sh "$BASE/bin/r1_audiobook_resume_daemon.sh"
 cp -f /usr/bin/r1_touch_next_event1.bin "$BASE/input/touch_next_event1.bin"
 cp -f /usr/bin/r1_touch_first_track_event1.bin "$BASE/input/touch_first_track_event1.bin"
@@ -376,7 +382,7 @@ if [ ! -s "$BASE/catalog.tsv" ]; then
   fi
 fi
 
-chmod 755 "$BASE/bin/r1_audiobook_resume_helper" "$BASE/bin/r1_audiobook_resume_daemon.sh"
+chmod 755 "$BASE/bin/r1_audiobook_resume_helper" "$BASE/bin/r1_audiobook_memscan" "$BASE/bin/r1_audiobook_resume_daemon.sh"
 for file in "$BASE/input/"*.bin; do
   if [ -e "$file" ]; then
     chmod 644 "$file"
@@ -394,6 +400,10 @@ AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED=1
 AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_MAX_SWIPES=20
 AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_VISIBLE_ROWS=5
 AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_ROWS_PER_SWIPE=4
+AUDIOBOOK_BOOK_TITLE_MEMSCAN_ENABLED=1
+AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_CALIBRATE_ENABLED=1
+AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_RECOVERY_TRANSPORT_ENABLED=1
+AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_RECOVERY_MAX_STEPS=20
 AUDIOBOOK_BOOK_TITLE_AUTOSTART_REQUIRE_PATH=1
 AUDIOBOOK_INTERVAL_SECONDS=1
 AUDIOBOOK_IDLE_INTERVAL_SECONDS=3
@@ -403,6 +413,7 @@ AUDIOBOOK_NEW_TRACK_COMMIT_MS=15000
 AUDIOBOOK_RESTORE_RETRY_MAX_AFTER_FAILURE_SECONDS=300
 AUDIOBOOK_FAILED_RESTORE_SKIP_LOG_BUCKET_MS=30000
 AUDIOBOOK_BOOK_TITLE_RESTORE_LOG_BUCKET_MS=5000
+AUDIOBOOK_RESUME_LOG_MAX_BYTES=524288
 AUDIOBOOK_UI_SEEK_FALLBACK_ENABLED=1
 AUDIOBOOK_UI_SEEK_SCREEN_GUARD_ENABLED=1
 AUDIOBOOK_UI_SEEK_SCREEN_MIN_BAR_PIXELS=300
@@ -410,10 +421,12 @@ AUDIOBOOK_UI_SEEK_TOUCH_FRAMES=2
 export AUDIOBOOK_POSITION_SOURCE AUDIOBOOK_RESTORE_ENABLED AUDIOBOOK_TRACK_RESTORE_ENABLED
 export AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED
 export AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_MAX_SWIPES AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_VISIBLE_ROWS AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_ROWS_PER_SWIPE
+export AUDIOBOOK_BOOK_TITLE_MEMSCAN_ENABLED
+export AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_CALIBRATE_ENABLED AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_RECOVERY_TRANSPORT_ENABLED AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_RECOVERY_MAX_STEPS
 export AUDIOBOOK_BOOK_TITLE_AUTOSTART_REQUIRE_PATH
 export AUDIOBOOK_INTERVAL_SECONDS AUDIOBOOK_IDLE_INTERVAL_SECONDS AUDIOBOOK_BOOK_TITLE_AUTOSTART_DELAY_SECONDS AUDIOBOOK_BOOK_TITLE_CONTEXT_SECONDS
 export AUDIOBOOK_NEW_TRACK_COMMIT_MS AUDIOBOOK_RESTORE_RETRY_MAX_AFTER_FAILURE_SECONDS AUDIOBOOK_FAILED_RESTORE_SKIP_LOG_BUCKET_MS
-export AUDIOBOOK_BOOK_TITLE_RESTORE_LOG_BUCKET_MS AUDIOBOOK_UI_SEEK_FALLBACK_ENABLED
+export AUDIOBOOK_BOOK_TITLE_RESTORE_LOG_BUCKET_MS AUDIOBOOK_RESUME_LOG_MAX_BYTES AUDIOBOOK_UI_SEEK_FALLBACK_ENABLED
 export AUDIOBOOK_UI_SEEK_SCREEN_GUARD_ENABLED AUDIOBOOK_UI_SEEK_SCREEN_MIN_BAR_PIXELS AUDIOBOOK_UI_SEEK_TOUCH_FRAMES
 start-stop-daemon -S -b -m -p "$BASE/resume-daemon.ssd.pid" -x /bin/sh -- "$BASE/bin/r1_audiobook_resume_daemon.sh" >>"$BASE/resume-daemon.stdout.log" 2>&1
 '@
@@ -460,8 +473,9 @@ AUDIOBOOK_DB_BOOT_DELAY_SECONDS=20
 AUDIOBOOK_DB_INTERVAL_SECONDS=30
 AUDIOBOOK_DB_STABLE_SECONDS=15
 AUDIOBOOK_DB_FULL_REFRESH_INTERVAL_SECONDS=0
+AUDIOBOOK_DB_MAINT_LOG_MAX_BYTES=524288
 export AUDIOBOOK_DB_BOOT_DELAY_SECONDS AUDIOBOOK_DB_INTERVAL_SECONDS AUDIOBOOK_DB_STABLE_SECONDS
-export AUDIOBOOK_DB_FULL_REFRESH_INTERVAL_SECONDS
+export AUDIOBOOK_DB_FULL_REFRESH_INTERVAL_SECONDS AUDIOBOOK_DB_MAINT_LOG_MAX_BYTES
 
 start-stop-daemon -S -b -m -p "$BASE/db-maint.ssd.pid" -x /bin/sh -- "$BASE/bin/r1_audiobook_db_watch.sh" >>"$BASE/db-maint.stdout.log" 2>&1
 '@

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -18,6 +19,10 @@ from pathlib import Path
 
 
 EXPECTED_CURRENT_HASHES = {
+    "r1-audiobooks-1.6.11-audiobook.upt": {
+        "md5": "208b7312800e4c26af79d9af7cd5570d",
+        "sha256": "bd353cd343d9968c532b2df8a9fd6ee74cb2e8dff66531bbb10a55bb5734abad",
+    },
     "r1-audiobooks-1.6.9-audiobook.upt": {
         "md5": "3c3b3f05724acc474fb349e6378fc351",
         "sha256": "f78e67089ff84021b18d69a4af2cb01be6f872bc59d187bf9cba256f8cd792aa",
@@ -27,8 +32,8 @@ EXPECTED_CURRENT_HASHES = {
         "sha256": "02b286676d93ec683307820e1ef40288f34ef21a42a24f5cbda361f2d3733b7b",
     },
     "rootfs.squashfs": {
-        "md5": "67b5dc7345d3289e32af4ec451075004",
-        "sha256": "821643d96a2a3742955ba636480b7754eb5d9ba7ff63e1aa3061915f0d51bfcb",
+        "md5": "34ac94a36a27ab32a082f340e2db260c",
+        "sha256": "85bab0efbeb3f6931195a968eae02d3576b6edb2b0bb4f85682c5408b6a9c15c",
     },
     "r1-audiobooks-1.6.3-audiobook.upt": {
         "md5": "1954b92ae7a394a0dc450c2d5f70f3d2",
@@ -422,6 +427,7 @@ def verify(
         require("AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED=1" in resume_init_text, "resume init enables pre-play direct track selection", failures)
         require("AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_ROWS_PER_SWIPE=4" in resume_init_text, "resume init sets direct track list geometry", failures)
         require("AUDIOBOOK_NEW_TRACK_COMMIT_MS=15000" in resume_init_text, "resume init script uses 15s new-track commit guard", failures)
+        require("AUDIOBOOK_RESUME_LOG_MAX_BYTES=524288" in resume_init_text, "resume init caps resume daemon log growth", failures)
         require("AUDIOBOOK_UI_SEEK_SCREEN_GUARD_ENABLED=1" in resume_init_text, "resume init script enables UI seek screen guard", failures)
     else:
         require(False, "resume init script exists", failures)
@@ -443,6 +449,7 @@ def verify(
                 "db maint init avoids periodic DB churn by default",
                 failures,
             )
+            require("AUDIOBOOK_DB_MAINT_LOG_MAX_BYTES=524288" in db_init_text, "db maint init caps DB watcher log growth", failures)
             require("r1_usrlocal_media_seed.db" in db_init_text, "db maint init installs media DB seed", failures)
         else:
             require(False, "db maint init script exists", failures)
@@ -463,6 +470,8 @@ def verify(
             require("--music-dir \"$MUSIC_DIR\"" in db_watch_text, "db watch passes Music folder to helper", failures)
             require("--books-catalog \"$CATALOG_BOOKS\"" in db_watch_text, "db watch writes book-level catalog", failures)
             require("seeded-db reason=" in db_watch_text, "db watch seeds missing media DB", failures)
+            require("LOG_MAX_BYTES=${AUDIOBOOK_DB_MAINT_LOG_MAX_BYTES:-524288}" in db_watch_text, "db watch defaults to capped log growth", failures)
+            require("rotate_log_if_needed" in db_watch_text, "db watch rotates logs when capped", failures)
         else:
             require(False, "db watch script exists", failures)
 
@@ -488,10 +497,19 @@ def verify(
         require("late restore path=" in daemon_text, "daemon includes late same-track restore retry", failures)
         require("should_skip_failed_restore_save" in daemon_text, "daemon includes failed-restore bookmark save guard", failures)
         require("close_inherited_socket_fds" in daemon_text, "daemon closes inherited socket fds on startup", failures)
+        require("LOG_MAX_BYTES=${AUDIOBOOK_RESUME_LOG_MAX_BYTES:-524288}" in daemon_text, "daemon defaults to capped log growth", failures)
+        require("rotate_log_if_needed" in daemon_text, "daemon rotates logs when capped", failures)
         require("book_title_direct_track_select" in daemon_text, "daemon includes title-list direct track selection", failures)
         require("book_title_visible_track_select" in daemon_text, "daemon includes visible-row track selection", failures)
         require("book_title_direct_start_saved_track" in daemon_text, "daemon includes pre-play saved-track direct start", failures)
         require("pid_mem_first_catalog_path" in daemon_text, "daemon can identify selected track list from catalog paths", failures)
+        require("MEMSCAN_HELPER=${AUDIOBOOK_MEMSCAN_HELPER:-$BASE_DIR/bin/r1_audiobook_memscan}" in daemon_text, "daemon defines memscan helper", failures)
+        require("book_title_memscan_root" in daemon_text, "daemon can identify selected book root from player memory", failures)
+        require("book-title direct-start memscan root=" in daemon_text, "daemon logs memscan direct-start roots", failures)
+        require("BOOK_TITLE_DIRECT_TRACK_CALIBRATE_ENABLED" in daemon_text, "daemon can calibrate retained track-list scroll state", failures)
+        require("book_title_verify_selected_track" in daemon_text, "daemon verifies direct-start row taps", failures)
+        require("BOOK_TITLE_DIRECT_TRACK_RECOVERY_MAX_STEPS" in daemon_text, "daemon exposes title-start recovery transport limit", failures)
+        require("book-title-direct-misselect" in daemon_text, "daemon recovers from direct-start misselects", failures)
         require("AUDIOBOOK_RESUME_DAEMON_SOURCE_ONLY" in daemon_text, "daemon includes source-only guard for local logic tests", failures)
         require("TOUCH_TRACK_SWIPE_MOVE6_EVENT_FILE" in daemon_text, "daemon includes timed track-list swipe packets", failures)
         require("RESTORE_RETRY_MAX_AFTER_FAILURE_SECONDS" in daemon_text, "daemon backs off repeated failed seek restores", failures)
@@ -513,6 +531,11 @@ def verify(
 
     catalog = root / "usr/bin/r1_audiobook_catalog.tsv"
     require(catalog.exists() and catalog.stat().st_size > 0, f"seed catalog present: {catalog}", failures)
+
+    memscan = root / "usr/bin/r1_audiobook_memscan"
+    require(memscan.exists(), "memscan helper present", failures)
+    if memscan.exists():
+        require(os.access(memscan, os.X_OK), "memscan helper is executable", failures)
 
     ota_update = out_dir / "ota-tree/ota_v0/ota_update.in"
     rootfs_md5 = digest(rootfs, "md5") if rootfs.exists() else ""
@@ -552,10 +575,10 @@ def verify(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--out-dir", type=Path, default=Path("work/audiobook-firmware-1.6.9-scanfix-candidate"))
-    parser.add_argument("--upt-name", default="r1-audiobooks-1.6.9-audiobook.upt")
-    parser.add_argument("--expected-version", default="1.6.9-audiobook")
-    parser.add_argument("--expected-label", default="HiBy R1 Audiobook FW 1.6.9")
+    parser.add_argument("--out-dir", type=Path, default=Path("work/audiobook-firmware-1.6.11-logcap-candidate"))
+    parser.add_argument("--upt-name", default="r1-audiobooks-1.6.11-audiobook.upt")
+    parser.add_argument("--expected-version", default="1.6.11-audiobook")
+    parser.add_argument("--expected-label", default="HiBy R1 Audiobook FW 1.6.11")
     parser.add_argument(
         "--stock-rootfs",
         type=Path,

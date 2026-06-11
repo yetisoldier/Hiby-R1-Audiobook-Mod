@@ -291,6 +291,67 @@ set -e
 assert_eq "visible track select blocks key fallback after near miss" "2" "$status"
 assert_eq "visible track select near miss still taps expected row" "4" "$row_tapped"
 
+TRACK_RESTORE_NEAR_MISS_TRANSPORT_ENABLED=1
+TRACK_RESTORE_NEAR_MISS_MAX_STEPS=4
+BOOK_TITLE_DIRECT_TRACK_RECOVERY_TRANSPORT_ENABLED=1
+BOOK_TITLE_DIRECT_TRACK_RECOVERY_MAX_STEPS=20
+PLAY_MODE_TARGET=3
+selected_index_num=16
+transport_next_calls=0
+transport_prev_calls=0
+row_taps=
+
+path_for_index() {
+  printf 'a:\\Audiobooks\\Author\\Book\\%02d.mp3\n' "$1"
+}
+
+saved_path=$(path_for_index 16)
+
+touch_track_row() {
+  row_taps="${row_taps}${1},"
+  selected_index_num=24
+  return 0
+}
+
+current_path() {
+  path_for_index "$selected_index_num"
+}
+
+book_root_for_path() {
+  printf '%s\n' 'a:\Audiobooks\Author\Book'
+}
+
+catalog_field_for_path() {
+  case "$1" in
+    2)
+      path_leaf=${2##*\\}
+      printf '%s\n' "${path_leaf%.mp3}"
+      ;;
+    *) printf '\n' ;;
+  esac
+}
+
+play_mode_value() {
+  printf '%s\n' 3
+}
+
+track_next() {
+  transport_next_calls=$((transport_next_calls + 1))
+  selected_index_num=$((selected_index_num + 1))
+  return 0
+}
+
+track_prev() {
+  transport_prev_calls=$((transport_prev_calls + 1))
+  selected_index_num=$((selected_index_num - 1))
+  return 0
+}
+
+touch_track_row 1
+assert_true "direct-start verifier recovers delayed row-tap overshoot" book_title_verify_selected_track "$saved_path" 16 1 "test direct-start verifier" "$saved_path"
+assert_eq "direct-start verifier uses expanded recovery limit" "0:8:16" "$transport_next_calls:$transport_prev_calls:$selected_index_num"
+assert_eq "direct-start verifier only tapped probe row" "1," "$row_taps"
+
 BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED=0
 selected=0
 swipe_taps=0

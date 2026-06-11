@@ -2,32 +2,37 @@
 
 These notes are for the normal HiBy R1 on stock firmware 1.6, not the R1 MIDI.
 
-## Next Development Candidate
+## Current Release
 
-- Custom version marker: `1.6.7-audiobook`
-- Firmware package: `work\audiobook-firmware-1.6.7-candidate\r1-audiobooks-1.6.7-audiobook.upt`
-- Firmware MD5: `7a5b0267811de7198039aa96144f3f8c`
-- Firmware SHA256: `2ac14cdd858f91af99cff8365c5d0664ca3d01233a89bc82e8ba010c7dfcbd78`
-- Rootfs MD5: `c6346d46b2927d8719425117a5d0dd17`
-- Rootfs SHA256: `1f059947f8150d9c750b2bae896efff24026876b8abaaff8b5bbe4ce7159fd1f`
+- GitHub release: `v1.3.0`
+- Custom version marker: `1.6.11-audiobook`
+- Firmware package: `work\audiobook-firmware-1.6.11-logcap-candidate\r1-audiobooks-1.6.11-audiobook.upt`
+- Firmware MD5: `208b7312800e4c26af79d9af7cd5570d`
+- Firmware SHA256: `bd353cd343d9968c532b2df8a9fd6ee74cb2e8dff66531bbb10a55bb5734abad`
+- Rootfs MD5: `34ac94a36a27ab32a082f340e2db260c`
+- Rootfs SHA256: `85bab0efbeb3f6931195a968eae02d3576b6edb2b0bb4f85682c5408b6a9c15c`
 - `hiby_player` MD5: `09997a636c94112ff76c85a6d4a8d0ff`
 
-Local verification on 2026-06-11 passed with `--require-db-maintenance`. This candidate keeps the self-contained DB maintenance path from `1.6.4-audiobook`, guarded Now Playing play-mode correction from the `1.6.6` test build, and optional smart-rewind scaffolding via `AUDIOBOOK_RESTORE_REWIND_MS`, defaulted to exact resume. It adds a narrow near-miss transport fallback for multipart resume: when title-list/visible-row recovery lands a few tracks away and the player is already in the audiobook sequential mode, the daemon can use the R1's own Next/Previous transport to step to the saved track instead of giving up or skipping through the whole book. A runtime-only live test on the R1 moved Sedaris `13/30 -> 15/30` with two Next events, and a normal title-list flow restored Sedaris `15/30` to the saved position.
+Local verification on 2026-06-11 passed with `--require-db-maintenance`. This release keeps the self-contained DB maintenance path from `1.6.4-audiobook`, guarded Now Playing play-mode correction, title-list near-miss transport fallback, and exact resume by default. It adds row-tap verification for title-list resume, a small selected-title memscan helper, and capped resume/DB maintenance logs to avoid internal storage creep.
 
-This candidate was staged to the SD card as `/usr/data/mnt/sd_0/r1.upt` on 2026-06-11 with matching byte count, MD5, and SHA-256. After flashing, the SD-root updater trigger was archived as `/usr/data/mnt/sd_0/r1-audiobooks-1.6.7-audiobook-installed-20260611-094611.upt`.
+This candidate was staged to the SD card as `/usr/data/mnt/sd_0/r1.upt` on 2026-06-11 with matching byte count, MD5, and SHA-256. After flashing, the SD-root updater trigger was archived as `/usr/data/mnt/sd_0/r1-audiobooks-1.6.11-audiobook-installed-20260611.upt`.
 
-Post-flash installed-device verification passed on 2026-06-11 with artifacts under `work\installed-release-verification\20260611-094702`: `/etc/r1_audiobook_version` and `/usr/resource/config.json` report `1.6.7-audiobook`, the resume daemon and DB watcher are running, play-mode byte `3` is active, SD-root `r1.upt` is absent, `user.ini` has no saved-last audiobook references, `/usr/data` has about 13.5 MB free, DB integrity is `ok`, both media tables contain 135 audiobook rows, six audiobook books were cataloged, and there is no audiobook leakage into Music search, album, or genre tables. No known development artifacts remained in active `/usr/data/audiobooks`.
+Post-flash installed-device verification passed on 2026-06-11 with artifacts under `work\installed-release-verification\20260611-180112`: `/etc/r1_audiobook_version` and `/usr/resource/config.json` report `1.6.11-audiobook`, the resume daemon and DB watcher are running with log rotation, play-mode byte `3` is active, SD-root `r1.upt` is absent, `/usr/data` has about 27 MB free, DB integrity is `ok`, both media tables contain 135 audiobook rows, six audiobook books were cataloged, and there is no audiobook leakage into Music search, album, or genre tables. No known development artifacts remained in active `/usr/data/audiobooks`.
 
-A live post-flash smoke test from the Audiobooks title list selected `When You Are Engulfed in Flames`, initially landed near the saved multipart position, exercised the new near-miss transport fallback from `13/30` to `15/30` with two Next events, restored to the saved `15/30` position at about `05:30`, and was paused afterward.
+A short post-flash runtime monitor under `work\runtime-monitor\post-1.6.11-flash-short` showed no reboot, one resume daemon, one DB watcher, stable internal free space, and small capped logs. A live ADB smoke test opened Audiobooks, selected `Ice Like Fire`, restored to the saved position around 17 minutes, and was paused afterward.
 
 After flashing this candidate, run installed-device verification with:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\adb_verify_installed_audiobook_release.ps1 `
-  -ExpectedVersion 1.6.7-audiobook `
+  -ExpectedVersion 1.6.11-audiobook `
   -RequirePlayModeGuard `
   -CaptureFramebuffer
 ```
+
+## Previous Development Candidate
+
+The previous public release was `v1.2.0`, firmware marker `1.6.9-audiobook`.
 
 ## Current Shareable Candidate
 

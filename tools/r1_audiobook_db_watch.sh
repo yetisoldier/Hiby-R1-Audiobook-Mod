@@ -13,13 +13,25 @@ CATALOG_BOOKS=${AUDIOBOOK_CATALOG_BOOKS:-$BASE/catalog-books.tsv}
 SEED_DB=${AUDIOBOOK_DB_SEED:-$BASE/bin/r1_usrlocal_media_seed.db}
 LOG=${AUDIOBOOK_DB_MAINT_LOG:-$BASE/db-maint.log}
 PID_FILE=${AUDIOBOOK_DB_MAINT_PID:-$BASE/db-maint.pid}
+LOG_MAX_BYTES=${AUDIOBOOK_DB_MAINT_LOG_MAX_BYTES:-524288}
 
 BOOT_DELAY_SECONDS=${AUDIOBOOK_DB_BOOT_DELAY_SECONDS:-20}
 INTERVAL_SECONDS=${AUDIOBOOK_DB_INTERVAL_SECONDS:-30}
 STABLE_SECONDS=${AUDIOBOOK_DB_STABLE_SECONDS:-15}
 FULL_REFRESH_INTERVAL_SECONDS=${AUDIOBOOK_DB_FULL_REFRESH_INTERVAL_SECONDS:-0}
 
+rotate_log_if_needed() {
+  case "$LOG_MAX_BYTES" in ''|*[!0-9]*|0) return 0 ;; esac
+  [ -f "$LOG" ] || return 0
+  size=$(wc -c <"$LOG" 2>/dev/null | awk '{ print $1 }')
+  case "$size" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$size" -le "$LOG_MAX_BYTES" ] && return 0
+  mv -f "$LOG" "$LOG.1" 2>/dev/null || return 0
+  printf '%s rotated log previous_size=%s max=%s previous=%s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$size" "$LOG_MAX_BYTES" "$LOG.1" >>"$LOG"
+}
+
 log() {
+  rotate_log_if_needed
   printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >>"$LOG"
 }
 
@@ -80,6 +92,7 @@ run_maint() {
     --books-catalog "$CATALOG_BOOKS" \
     --verbose >>"$LOG" 2>&1
   rc=$?
+  rotate_log_if_needed
   if [ "$rc" -eq 0 ]; then
     log "done reason=$reason"
   else

@@ -25,8 +25,8 @@ from adb_runtime_patch_hiby_player import (  # noqa: E402
     ptrace_write,
     read_memory_bytes,
     shell,
-    verify_stock_binary,
 )
+from patch_hiby_player import STOCK_MD5  # noqa: E402
 
 
 REMOTE_DIR = "/usr/data/codex_row_probe"
@@ -34,6 +34,13 @@ SCRATCH = 0x8B1F00
 PROBE = 0x75DCEC
 ALBUM_SCRATCH = 0x8E4000
 ALBUM_PROBE = 0x75DE00
+PLAY_OPEN_SCRATCH = 0x8B2100
+# 0x75df00 looked tempting during early tracing, but live testing showed it can
+# reboot the R1. It is in/near the rodata mapping used by the player, so keep it
+# documented as a known-bad cave and refuse to arm that tracer until a safer
+# executable scratch area is found.
+PLAY_OPEN_PROBE = 0x75DF00
+KNOWN_AUDIOBOOK_PLAYER_MD5 = "09997a636c94112ff76c85a6d4a8d0ff"
 
 # Normal file/list selection dispatch in stock 1.6. We intercept a few
 # instructions before the playback call and then jump to the handler's normal
@@ -41,6 +48,12 @@ ALBUM_PROBE = 0x75DE00
 MUSIC_PROBE_JUMP = 0x4A1004
 MUSIC_PROBE_ORIGINAL = bytes.fromhex("2538200225308002")
 MUSIC_SUCCESS_EPILOGUE = 0x4A1030
+
+# Shared media-open path used by several list routes. The probe records the
+# incoming arguments, replays the overwritten prologue, then continues stock.
+PLAY_OPEN_JUMP = 0x49E200
+PLAY_OPEN_ORIGINAL = bytes.fromhex("20f3bd27d40cb7af")
+PLAY_OPEN_CONTINUE = 0x49E208
 
 # Shared Genre -> Album list opener. The caller has already resolved the album
 # title pointer in $a1; this hook records it, then executes the original prologue
@@ -54,13 +67,30 @@ def assemble(addr: int, text: str) -> bytes:
     return bytes(Ks(KS_ARCH_MIPS, KS_MODE_MIPS32 + KS_MODE_LITTLE_ENDIAN).asm(text, addr=addr)[0])
 
 
+def verify_known_player_binary(adb: str) -> None:
+    out = shell(adb, "md5sum /usr/bin/hiby_player").strip()
+    digest = out.split()[0].lower()
+    if digest not in {STOCK_MD5, KNOWN_AUDIOBOOK_PLAYER_MD5}:
+        raise RuntimeError(
+            "/usr/bin/hiby_player is not a known stock/audiobook 1.6 binary: "
+            f"{digest}"
+        )
+
+
 def li(reg: str, value: int) -> str:
     value &= 0xFFFFFFFF
     return f"lui ${reg}, 0x{(value >> 16) & 0xffff:x}\nori ${reg}, ${reg}, 0x{value & 0xffff:x}"
 
 
+def jump_patch(from_addr: int, to_addr: int) -> bytes:
+    patch = assemble(from_addr, f"j 0x{to_addr:x}")
+    if len(patch) != 8:
+        raise RuntimeError(f"unexpected jump patch length at 0x{from_addr:x}: {len(patch)}")
+    return patch
+
+
 def arm_music(adb: str) -> None:
-    verify_stock_binary(adb)
+    verify_known_player_binary(adb)
     pid = find_stock_player_pid(adb)
     local = Path("work/row-probe")
     local.mkdir(parents=True, exist_ok=True)
@@ -95,9 +125,7 @@ def arm_music(adb: str) -> None:
         """,
     )
     probe = probe + b"\x00" * ((len(probe) + 3) // 4 * 4 - len(probe))
-    call_patch = assemble(MUSIC_PROBE_JUMP, f"j 0x{PROBE:x}")
-    if len(call_patch) != len(MUSIC_PROBE_ORIGINAL):
-        raise RuntimeError(f"unexpected jump patch length: {len(call_patch)}")
+    call_patch = jump_patch(MUSIC_PROBE_JUMP, PROBE)
 
     ptrace_write(
         adb,
@@ -115,16 +143,41 @@ def arm_music(adb: str) -> None:
     print(f"armed music row probe in pid {pid}; handler jump now {verify.hex()}")
 
 
+def restore_music(adb: str) -> None:
+    verify_known_player_binary(adb)
+    pid = find_stock_player_pid(adb)
+    local = Path("work/row-probe")
+    local.mkdir(parents=True, exist_ok=True)
+    shell(adb, f"mkdir -p '{REMOTE_DIR}'")
+    call_patch = jump_patch(MUSIC_PROBE_JUMP, PROBE)
+    actual = read_memory_bytes(adb, pid, MUSIC_PROBE_JUMP, len(call_patch), REMOTE_DIR, local, "music_probe_restore_pre", "bin")
+    if actual == MUSIC_PROBE_ORIGINAL:
+        print("music row probe already restored")
+        return
+    if actual != call_patch:
+        raise RuntimeError(
+            f"music row probe is not in a known state at 0x{MUSIC_PROBE_JUMP:x}: "
+            f"expected {call_patch.hex()} or {MUSIC_PROBE_ORIGINAL.hex()}, got {actual.hex()}"
+        )
+    ptrace_write(
+        adb,
+        pid,
+        REMOTE_DIR,
+        local,
+        "restore_music_row",
+        [("music_probe_restore", MUSIC_PROBE_JUMP, MUSIC_PROBE_ORIGINAL)],
+    )
+    print("restored music row probe")
+
+
 def arm_album(adb: str) -> None:
-    verify_stock_binary(adb)
+    verify_known_player_binary(adb)
     pid = find_stock_player_pid(adb)
     local = Path("work/row-probe")
     local.mkdir(parents=True, exist_ok=True)
     shell(adb, f"mkdir -p '{REMOTE_DIR}'")
 
-    call_patch = assemble(ALBUM_OPEN_MARKER_JUMP, f"j 0x{ALBUM_PROBE:x}")
-    if len(call_patch) != len(ALBUM_OPEN_MARKER_ORIGINAL):
-        raise RuntimeError(f"unexpected album jump patch length: {len(call_patch)}")
+    call_patch = jump_patch(ALBUM_OPEN_MARKER_JUMP, ALBUM_PROBE)
 
     actual = read_memory_bytes(
         adb,
@@ -199,6 +252,102 @@ def arm_album(adb: str) -> None:
     print(f"armed album open marker in pid {pid}; opener jump now {verify.hex()}")
 
 
+def arm_play_open(adb: str) -> None:
+    raise RuntimeError(
+        "play-open probe is disabled: 0x75df00 caused a live reboot during "
+        "testing. Find a verified executable cave before re-enabling this."
+    )
+
+    verify_known_player_binary(adb)
+    pid = find_stock_player_pid(adb)
+    local = Path("work/row-probe")
+    local.mkdir(parents=True, exist_ok=True)
+    shell(adb, f"mkdir -p '{REMOTE_DIR}'")
+
+    call_patch = jump_patch(PLAY_OPEN_JUMP, PLAY_OPEN_PROBE)
+    actual = read_memory_bytes(adb, pid, PLAY_OPEN_JUMP, len(PLAY_OPEN_ORIGINAL), REMOTE_DIR, local, "play_open_pre", "bin")
+    if actual == call_patch:
+        print("play-open probe already armed")
+        return
+    if actual != PLAY_OPEN_ORIGINAL:
+        raise RuntimeError(
+            f"play-open function is not stock/probeable at 0x{PLAY_OPEN_JUMP:x}: "
+            f"expected {PLAY_OPEN_ORIGINAL.hex()} or {call_patch.hex()}, got {actual.hex()}"
+        )
+
+    probe = assemble(
+        PLAY_OPEN_PROBE,
+        f"""
+        {li('t0', PLAY_OPEN_SCRATCH)}
+        {li('t1', 0xC0DE49E2)}
+        sw $t1, 0($t0)
+        sw $ra, 4($t0)
+        sw $a0, 8($t0)
+        sw $a1, 12($t0)
+        sw $a2, 16($t0)
+        sw $a3, 20($t0)
+        sw $sp, 24($t0)
+        sw $s0, 28($t0)
+        sw $s1, 32($t0)
+        sw $s2, 36($t0)
+        sw $s3, 40($t0)
+        sw $s4, 44($t0)
+        sw $s5, 48($t0)
+        sw $s6, 52($t0)
+        sw $s7, 56($t0)
+        sw $gp, 60($t0)
+        lw $t2, 64($t0)
+        addiu $t2, $t2, 1
+        sw $t2, 64($t0)
+        addiu $sp, $sp, -3296
+        sw $s7, 3284($sp)
+        j 0x{PLAY_OPEN_CONTINUE:x}
+        nop
+        """,
+    )
+    probe = probe + b"\x00" * ((len(probe) + 3) // 4 * 4 - len(probe))
+    ptrace_write(
+        adb,
+        pid,
+        REMOTE_DIR,
+        local,
+        "arm_play_open",
+        [
+            ("play_open_scratch_clear", PLAY_OPEN_SCRATCH, bytes(0x120)),
+            ("play_open_probe", PLAY_OPEN_PROBE, probe),
+            ("play_open_jump", PLAY_OPEN_JUMP, call_patch),
+        ],
+    )
+    print(f"armed play-open probe in pid {pid}")
+
+
+def restore_play_open(adb: str) -> None:
+    verify_known_player_binary(adb)
+    pid = find_stock_player_pid(adb)
+    local = Path("work/row-probe")
+    local.mkdir(parents=True, exist_ok=True)
+    shell(adb, f"mkdir -p '{REMOTE_DIR}'")
+    call_patch = jump_patch(PLAY_OPEN_JUMP, PLAY_OPEN_PROBE)
+    actual = read_memory_bytes(adb, pid, PLAY_OPEN_JUMP, len(PLAY_OPEN_ORIGINAL), REMOTE_DIR, local, "play_open_restore_pre", "bin")
+    if actual == PLAY_OPEN_ORIGINAL:
+        print("play-open probe already restored")
+        return
+    if actual != call_patch:
+        raise RuntimeError(
+            f"play-open probe is not in a known state at 0x{PLAY_OPEN_JUMP:x}: "
+            f"expected {call_patch.hex()} or {PLAY_OPEN_ORIGINAL.hex()}, got {actual.hex()}"
+        )
+    ptrace_write(
+        adb,
+        pid,
+        REMOTE_DIR,
+        local,
+        "restore_play_open",
+        [("play_open_restore", PLAY_OPEN_JUMP, PLAY_OPEN_ORIGINAL)],
+    )
+    print("restored play-open probe")
+
+
 def read_utf16(data: bytes) -> str:
     try:
         end = data.find(b"\x00\x00")
@@ -234,8 +383,22 @@ def dump_ptr(adb: str, pid: str, local: Path, label: str, addr: int, size: int =
         print("utf16:", safe_text(repr(utf16[:120])))
 
 
+def dump_nested_words(adb: str, pid: str, local: Path, label: str, addr: int, *, words: int = 48) -> None:
+    if not (0x1000 <= addr < 0x80000000):
+        return
+    try:
+        data = read_memory_bytes(adb, pid, addr, words * 4, REMOTE_DIR, local, f"{label}_{addr:x}_nested", "bin")
+    except Exception as exc:
+        print(f"{label}@0x{addr:08x}: nested read failed: {exc}")
+        return
+    values = struct.unpack("<" + "I" * words, data)
+    for index, value in enumerate(values):
+        if 0x1000 <= value < 0x80000000:
+            dump_ptr(adb, pid, local, f"{label}[0x{index * 4:02x}]", value, 0x160)
+
+
 def read_probe(adb: str) -> None:
-    verify_stock_binary(adb)
+    verify_known_player_binary(adb)
     pid = find_stock_player_pid(adb)
     local = Path("work/row-probe")
     local.mkdir(parents=True, exist_ok=True)
@@ -248,10 +411,12 @@ def read_probe(adb: str) -> None:
         print(f"{label}=0x{value:08x} ({value})")
     for label, value in zip(labels[2:], vals[2:]):
         dump_ptr(adb, pid, local, label, value)
+    album_ptr = vals[6] if len(vals) > 6 else 0
+    dump_nested_words(adb, pid, local, "album_ptr", album_ptr)
 
 
 def read_album_probe(adb: str) -> None:
-    verify_stock_binary(adb)
+    verify_known_player_binary(adb)
     pid = find_stock_player_pid(adb)
     local = Path("work/row-probe")
     local.mkdir(parents=True, exist_ok=True)
@@ -283,18 +448,74 @@ def read_album_probe(adb: str) -> None:
         print(f"{label}=0x{value:08x} ({value})")
     for label, value in zip(labels[2:], vals[2:]):
         dump_ptr(adb, pid, local, label, value)
+    album_ptr = vals[6] if len(vals) > 6 else 0
+    dump_nested_words(adb, pid, local, "album_ptr", album_ptr, words=64)
+
+
+def read_play_open_probe(adb: str) -> None:
+    verify_known_player_binary(adb)
+    pid = find_stock_player_pid(adb)
+    local = Path("work/row-probe")
+    local.mkdir(parents=True, exist_ok=True)
+    shell(adb, f"mkdir -p '{REMOTE_DIR}'")
+
+    data = read_memory_bytes(adb, pid, PLAY_OPEN_SCRATCH, 0x120, REMOTE_DIR, local, "play_open_scratch", "bin")
+    vals = struct.unpack("<" + "I" * (len(data) // 4), data)
+    labels = [
+        "magic",
+        "ra",
+        "a0",
+        "a1",
+        "a2",
+        "a3",
+        "sp",
+        "s0",
+        "s1",
+        "s2",
+        "s3",
+        "s4",
+        "s5",
+        "s6",
+        "s7",
+        "gp",
+        "seq",
+    ]
+    for label, value in zip(labels, vals):
+        print(f"{label}=0x{value:08x} ({value})")
+    for label, value in zip(labels[2:16], vals[2:16]):
+        dump_ptr(adb, pid, local, label, value)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--adb", default=DEFAULT_ADB)
-    parser.add_argument("action", choices=["arm-music", "arm-album", "read", "read-album"])
+    parser.add_argument(
+        "action",
+        choices=[
+            "arm-music",
+            "restore-music",
+            "arm-album",
+            "arm-play-open",
+            "restore-play-open",
+            "read",
+            "read-album",
+            "read-play-open",
+        ],
+    )
     args = parser.parse_args()
 
     if args.action == "arm-music":
         arm_music(args.adb)
+    elif args.action == "restore-music":
+        restore_music(args.adb)
     elif args.action == "arm-album":
         arm_album(args.adb)
+    elif args.action == "arm-play-open":
+        arm_play_open(args.adb)
+    elif args.action == "restore-play-open":
+        restore_play_open(args.adb)
+    elif args.action == "read-play-open":
+        read_play_open_probe(args.adb)
     elif args.action == "read-album":
         read_album_probe(args.adb)
     else:

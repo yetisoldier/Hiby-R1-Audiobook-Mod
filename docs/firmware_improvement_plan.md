@@ -1,26 +1,26 @@
 # Firmware Improvement Plan
 
-This plan keeps `1.6.4-audiobook` as the stable public baseline while preparing
-and validating incremental changes for the next release candidate.
+This plan originally tracked post-`1.6.4-audiobook` work and now records which
+items have landed in the `1.6.11-audiobook` release.
 
 ## Current Stable Baseline
 
-- Public release: `v1.0.0`, firmware marker `1.6.4-audiobook`.
+- Public release: `v1.3.0`, firmware marker `1.6.11-audiobook`.
 - Based on stock HiBy R1 firmware 1.6 for the normal R1.
 - Audiobooks are separated from Music albums/genres/search, have a launcher
   entry, use the stock Now Playing screen, and keep per-book resume state.
 - The installed DB watcher/helper can rebuild catalogs from `/Music` and
   `/Audiobooks` after the user runs Music -> Update Database.
 
-## Current Verified Candidate
+## Current Verified Release
 
-- `1.6.7-audiobook` is installed and verified on the test R1.
-- It keeps the self-contained `1.6.4` DB/catalog path, adds the guarded
-  audiobook play-mode correction, and adds a narrow near-miss transport fallback
-  for multipart resume.
-- Post-flash testing selected a multipart Sedaris book from the Audiobooks
-  title list, landed near the saved track, stepped from `13/30` to `15/30` with
-  two Next events, and restored to the saved `15/30` position.
+- `1.6.11-audiobook` is installed and verified on the test R1.
+- It keeps the self-contained DB/catalog path, guarded audiobook play-mode
+  correction, near-miss transport fallback, row-tap verification for title-list
+  resume, selected-title memscan helper, and capped runtime logs.
+- Post-flash testing opened Audiobooks, selected `Ice Like Fire`, restored to
+  the saved position around 17 minutes, and paused playback afterward. A short
+  runtime monitor showed no reboot or daemon duplication.
 
 ## Useful New Information From hiby-modding
 

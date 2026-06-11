@@ -85,9 +85,12 @@ if ([string]::IsNullOrWhiteSpace($daemonText)) {
 }
 Write-Host "OK   resume daemon is running"
 
+$runtimeDaemonScript = Invoke-AdbText "cat /usr/data/audiobooks/bin/r1_audiobook_resume_daemon.sh 2>/dev/null || cat /usr/bin/r1_audiobook_resume_daemon.sh 2>/dev/null"
+Set-Content -LiteralPath (Join-Path $verifyDir "runtime_resume_daemon.sh") -Value $runtimeDaemonScript
+Assert-Contains $runtimeDaemonScript 'LOG_MAX_BYTES=${AUDIOBOOK_RESUME_LOG_MAX_BYTES:-524288}' "runtime resume daemon"
+Assert-Contains $runtimeDaemonScript "rotate_log_if_needed" "runtime resume daemon"
+
 if ($RequirePlayModeGuard) {
-    $runtimeDaemonScript = Invoke-AdbText "cat /usr/data/audiobooks/bin/r1_audiobook_resume_daemon.sh 2>/dev/null || cat /usr/bin/r1_audiobook_resume_daemon.sh 2>/dev/null"
-    Set-Content -LiteralPath (Join-Path $verifyDir "runtime_resume_daemon.sh") -Value $runtimeDaemonScript
     Assert-Contains $runtimeDaemonScript 'PLAY_MODE_TARGET=${AUDIOBOOK_PLAY_MODE_TARGET:-3}' "runtime resume daemon"
     Assert-Contains $runtimeDaemonScript "PLAY_MODE_USER_INI_OFFSET=" "runtime resume daemon"
     Assert-Contains $runtimeDaemonScript "ensure_audiobook_play_mode" "runtime resume daemon"
@@ -114,6 +117,11 @@ if ($RequireDbMaintenance) {
     Set-Content -LiteralPath (Join-Path $verifyDir "db_maint_files.txt") -Value $dbMaintFiles
     Assert-Contains $dbMaintFiles "r1_audiobook_db_maint" "DB maintenance helper files"
     Assert-Contains $dbMaintFiles "r1_audiobook_db_watch.sh" "DB maintenance watcher files"
+
+    $dbWatchScript = Invoke-AdbText "cat /usr/data/audiobooks/bin/r1_audiobook_db_watch.sh 2>/dev/null || cat /usr/bin/r1_audiobook_db_watch.sh 2>/dev/null"
+    Set-Content -LiteralPath (Join-Path $verifyDir "runtime_db_watch.sh") -Value $dbWatchScript
+    Assert-Contains $dbWatchScript 'LOG_MAX_BYTES=${AUDIOBOOK_DB_MAINT_LOG_MAX_BYTES:-524288}' "runtime DB watcher"
+    Assert-Contains $dbWatchScript "rotate_log_if_needed" "runtime DB watcher"
 }
 
 $uptText = Invoke-AdbText "if [ -e /usr/data/mnt/sd_0/r1.upt ]; then ls -l /usr/data/mnt/sd_0/r1.upt; else echo no-r1.upt; fi"
@@ -174,6 +182,9 @@ Set-Content -LiteralPath (Join-Path $verifyDir "hashes.txt") -Value $hashLines
 $devArtifactCommand = @'
 for n in debug-daemon.out debug-daemon.pid dmr-probe.out helper-current.out helper-current.strace mem-pos-near.bin player-restart.out player-restart2.out position-watch-holidays-on-ice-2008.nohup.log position-watch-holidays-on-ice-2008.pid position-watch-holidays.loop.log position-watch-holidays.nohup.log position-watch-holidays.pid ptrwins r1_audiobook_resume_daemon.syntax-test.sh resume-daemon.testpid resume-daemon.trace scan_skip_runtime_patch.json tracklist-window.bin user.ini.before-stock-audiobook-last-clear; do
   [ -e "/usr/data/audiobooks/$n" ] && echo "$n"
+done
+for n in r1_audiobook_position_watch.sh r1_audiobook_resume.sh r1_audiobook_resume_daemon.sh.syntaxcheck r1_dmr_probe_helper r1_unix_socket_write r1_utf16_root_scan_probe.sh; do
+  [ -e "/usr/data/audiobooks/bin/$n" ] && echo "bin/$n"
 done
 '@
 $devArtifactCheck = Invoke-AdbText $devArtifactCommand
