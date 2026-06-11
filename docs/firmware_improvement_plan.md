@@ -56,6 +56,9 @@ incremental changes that can be tested off-device before a new firmware build.
   on author plus book title when available. New resume records include the same
   key so future builds can survive simple audiobook folder renames or rebuilds
   more gracefully while still reading existing root-path records.
+- The catalog also carries optional `series` and `series_part` columns derived
+  from Seanap/Plex-style folders. Books without a series folder keep those
+  fields blank.
 - Multipart title-tap resume now has a pre-play direct-start path. When the
   daemon can identify the selected book from the stock track-list memory, it
   reads the saved resume record and taps the saved track row before playback
@@ -164,7 +167,8 @@ When the R1 is available again, the most useful tests are:
 - Author/Title/Series audiobook subviews are tracked in
   `docs\audiobook_views_research.md`. Title is the current stable route;
   Author may be testable through stock artist routes but needs catalog isolation;
-  Series needs a reliable metadata source and probably custom UI/query work.
+  Series now has catalog data when Seanap/Plex-style folders are present, but
+  still needs custom UI/query work.
 - Better metadata parsing inside the on-device helper: possible for simple ID3
   tags, but higher risk and more code size. The current safer path is still to
   let the stock scanner provide metadata when possible and use folder/file

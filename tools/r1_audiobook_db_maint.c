@@ -387,6 +387,77 @@ static char *book_key_for_catalog(const MediaRow *row, const char *root) {
     return key;
 }
 
+static char *audiobook_author_from_root(const char *root) {
+    const char *rel = root;
+    if (starts_ci(rel, HIBY_PREFIX)) rel += strlen(HIBY_PREFIX);
+    const char *slash = strchr(rel, '\\');
+    if (slash && slash > rel) {
+        char *author = xstrndup0(rel, (size_t)(slash - rel));
+        char *clean = trim_copy(author);
+        free(author);
+        if (*clean) return clean;
+        free(clean);
+    }
+    return parent_component(root);
+}
+
+static char *catalog_series_from_root(const char *root) {
+    const char *rel = root;
+    if (starts_ci(rel, HIBY_PREFIX)) rel += strlen(HIBY_PREFIX);
+    const char *first = strchr(rel, '\\');
+    if (!first) return xstrdup("");
+    const char *second = strchr(first + 1, '\\');
+    if (!second || second <= first + 1) return xstrdup("");
+    char *series = xstrndup0(first + 1, (size_t)(second - first - 1));
+    char *clean = trim_copy(series);
+    free(series);
+    return clean;
+}
+
+static char *catalog_series_part_from_root(const char *root, const char *series) {
+    if (!series || !*series) return xstrdup("");
+    char *book_dir = last_component(root);
+    char *open = strrchr(book_dir, '[');
+    char *close = open ? strchr(open + 1, ']') : NULL;
+    if (!open || !close || close <= open + 1) {
+        free(book_dir);
+        return xstrdup("");
+    }
+    char *inside = xstrndup0(open + 1, (size_t)(close - open - 1));
+    char *trimmed = trim_copy(inside);
+    free(inside);
+    char *part = xstrdup("");
+    if (starts_ci(trimmed, series)) {
+        const char *p = trimmed + strlen(series);
+        while (*p && (isspace((unsigned char)*p) || *p == '-' || *p == ':' || *p == '#')) p++;
+        free(part);
+        part = trim_copy(p);
+    }
+    free(trimmed);
+    free(book_dir);
+    return part;
+}
+
+static char *strip_matching_series_suffix(const char *text, const char *series) {
+    if (!series || !*series) return trim_copy(text);
+    char *trimmed = trim_copy(text);
+    size_t len = strlen(trimmed);
+    if (len <= 2 || trimmed[len - 1] != ']') return trimmed;
+    char *open = strrchr(trimmed, '[');
+    if (!open || open <= trimmed) return trimmed;
+    size_t inside_len = (size_t)((trimmed + len - 1) - (open + 1));
+    char *inside = xstrndup0(open + 1, inside_len);
+    char *clean_inside = trim_copy(inside);
+    free(inside);
+    int matches = starts_ci(clean_inside, series);
+    free(clean_inside);
+    if (!matches) return trimmed;
+    *open = '\0';
+    char *clean = trim_copy(trimmed);
+    free(trimmed);
+    return clean;
+}
+
 static int make_dir(const char *path) {
 #ifdef _WIN32
     return mkdir(path);
@@ -707,7 +778,12 @@ static void normalize_row_after_copy(MediaRow *row, const char *hiby_path, const
     char *root = book_root_for_hiby_path(hiby_path);
     char *book_dir = last_component(root);
     char *parent = parent_component(root);
+    char *author_dir = audiobook_author_from_root(root);
     char *album = clean_album_title(book_dir);
+    char *series_dir = catalog_series_from_root(root);
+    char *album_without_series = strip_matching_series_suffix(album, series_dir);
+    free(album);
+    album = album_without_series;
     char *stem = hiby_file_stem(hiby_path);
     int year = parse_year_prefix(book_dir);
 
@@ -724,11 +800,11 @@ static void normalize_row_after_copy(MediaRow *row, const char *hiby_path, const
     }
     if (!row->artist || !*row->artist || equals_ci(row->artist, "Unknown")) {
         free(row->artist);
-        row->artist = xstrdup(*parent ? parent : "Unknown");
+        row->artist = xstrdup(*author_dir ? author_dir : (*parent ? parent : "Unknown"));
     }
     if (!row->album_artist || !*row->album_artist || equals_ci(row->album_artist, "Unknown")) {
         free(row->album_artist);
-        row->album_artist = xstrdup(*parent ? parent : row->artist);
+        row->album_artist = xstrdup(*author_dir ? author_dir : (*parent ? parent : row->artist));
     }
     free(row->genre);
     row->genre = xstrdup("Audiobook");
@@ -755,6 +831,8 @@ static void normalize_row_after_copy(MediaRow *row, const char *hiby_path, const
     free(root);
     free(book_dir);
     free(parent);
+    free(author_dir);
+    free(series_dir);
     free(album);
     free(stem);
 }
@@ -1299,7 +1377,7 @@ static void write_catalog_files(const Options *opts, RowVec *rows) {
     }
 
     qsort(rows->items, rows->len, sizeof(MediaRow), cmp_catalog);
-    fprintf(catalog, "root_hiby_path\ttrack_index\ttrack_count\tmedia_id\tpath\ttitle\talbum\tauthor\tbook_key\n");
+    fprintf(catalog, "root_hiby_path\ttrack_index\ttrack_count\tmedia_id\tpath\ttitle\talbum\tauthor\tbook_key\tseries\tseries_part\n");
     char *current_root = NULL;
     char *last_album = NULL;
     size_t group_start = 0;
@@ -1315,6 +1393,8 @@ static void write_catalog_files(const Options *opts, RowVec *rows) {
             group_end++;
         }
         int track_count = (int)(group_end - group_start);
+        char *series = catalog_series_from_root(current_root);
+        char *series_part = catalog_series_part_from_root(current_root, series);
         for (size_t i = group_start; i < group_end; i++) {
             int index = (int)(i - group_start + 1);
             fprintf(catalog, "%s\t%d\t%d\t%d\t", current_root, index, track_count, rows->items[i].id);
@@ -1329,6 +1409,10 @@ static void write_catalog_files(const Options *opts, RowVec *rows) {
             char *book_key = book_key_for_catalog(&rows->items[i], current_root);
             write_field(catalog, book_key);
             free(book_key);
+            fputc('\t', catalog);
+            write_field(catalog, series);
+            fputc('\t', catalog);
+            write_field(catalog, series_part);
             fputc('\n', catalog);
             if (rows->items[i].album && *rows->items[i].album &&
                 (!last_album || !equals_ci(last_album, rows->items[i].album))) {
@@ -1337,6 +1421,8 @@ static void write_catalog_files(const Options *opts, RowVec *rows) {
                 last_album = xstrdup(rows->items[i].album);
             }
         }
+        free(series);
+        free(series_part);
         group_start = group_end;
     }
     free(current_root);

@@ -110,9 +110,10 @@ def load_catalog(path: Path) -> tuple[dict[str, list[tuple[int, int, str]]], dic
             "author",
         ]
         expected_with_key = expected + ["book_key"]
-        if header not in (expected, expected_with_key):
+        expected_with_series = expected_with_key + ["series", "series_part"]
+        if header not in (expected, expected_with_key, expected_with_series):
             raise ValueError(f"unexpected catalog header: {header}")
-        has_book_key = header == expected_with_key
+        has_book_key = len(header) >= len(expected_with_key) and header[8] == "book_key"
         for line_number, raw in enumerate(handle, 2):
             line = raw.rstrip("\n")
             if not line:

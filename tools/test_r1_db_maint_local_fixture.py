@@ -52,13 +52,21 @@ def run_helper(helper: Path, work_dir: Path, runner: list[str] | None = None) ->
     shutil.copy2(SEED_DB, db)
 
     music_dir = sd_root / "Music" / "Test Artist" / "Test Album"
-    book_dir = sd_root / "Audiobooks" / "Test Author" / "2020 - Test Book"
+    book_dir = (
+        sd_root
+        / "Audiobooks"
+        / "Test Author"
+        / "Test Series"
+        / "2020 - Test Book [Test Series 02]"
+    )
+    standalone_dir = sd_root / "Audiobooks" / "Test Author" / "2021 - Standalone Book"
     write_text(music_dir / "01 - SACD.iso", "placeholder iso")
     write_text(music_dir / "cover.jpg", "fake jpg")
     write_text(book_dir / "01 - Opening.mp3", "placeholder mp3")
     write_text(book_dir / "02 - Continued.m4b", "placeholder m4b")
     write_text(book_dir / "cover.jpg", "fake jpg")
     write_text(book_dir / "01 - Opening.lrc", "[00:00.00]Opening")
+    write_text(standalone_dir / "01 - Standalone.mp3", "placeholder standalone mp3")
 
     cmd = [
         *(runner or []),
@@ -97,14 +105,16 @@ def verify_db(db: Path, catalog: Path) -> None:
             denul(path): {
                 "name": denul(name),
                 "album": denul(album),
+                "artist": denul(artist),
+                "album_artist": denul(album_artist),
                 "album_pic_path": denul(album_pic_path),
                 "lrc_path": denul(lrc_path),
                 "format": int(format_code or 0),
                 "quality": denul(quality),
             }
-            for path, name, album, album_pic_path, lrc_path, format_code, quality in conn.execute(
+            for path, name, album, artist, album_artist, album_pic_path, lrc_path, format_code, quality in conn.execute(
                 """
-                SELECT path, name, album, album_pic_path, lrc_path, format, quality
+                SELECT path, name, album, artist, album_artist, album_pic_path, lrc_path, format, quality
                   FROM MEDIA_TABLE
                  ORDER BY path COLLATE NOCASE
                 """
@@ -113,16 +123,23 @@ def verify_db(db: Path, catalog: Path) -> None:
     finally:
         conn.close()
 
-    first = r"a:\Audiobooks\Test Author\2020 - Test Book\01 - Opening.mp3"
-    second = r"a:\Audiobooks\Test Author\2020 - Test Book\02 - Continued.m4b"
+    first = r"a:\Audiobooks\Test Author\Test Series\2020 - Test Book [Test Series 02]\01 - Opening.mp3"
+    second = r"a:\Audiobooks\Test Author\Test Series\2020 - Test Book [Test Series 02]\02 - Continued.m4b"
+    standalone = r"a:\Audiobooks\Test Author\2021 - Standalone Book\01 - Standalone.mp3"
     music_iso = r"a:\Music\Test Artist\Test Album\01 - SACD.iso"
-    cover = r"a:\Audiobooks\Test Author\2020 - Test Book\cover.jpg"
-    lrc = r"a:\Audiobooks\Test Author\2020 - Test Book\01 - Opening.lrc"
+    cover = r"a:\Audiobooks\Test Author\Test Series\2020 - Test Book [Test Series 02]\cover.jpg"
+    lrc = r"a:\Audiobooks\Test Author\Test Series\2020 - Test Book [Test Series 02]\01 - Opening.lrc"
     music_cover = r"a:\Music\Test Artist\Test Album\cover.jpg"
 
     assert_true(first in rows, "first audiobook row generated")
     assert_true(second in rows, "m4b audiobook row generated")
+    assert_true(standalone in rows, "standalone audiobook row generated")
     assert_true(music_iso in rows, "iso music row generated")
+    assert_equal(rows[first]["album"], "Test Book", "guide folder fallback book title")
+    assert_equal(rows[first]["artist"], "Test Author", "guide folder fallback artist")
+    assert_equal(rows[first]["album_artist"], "Test Author", "guide folder fallback album artist")
+    assert_equal(rows[standalone]["album"], "Standalone Book", "standalone folder fallback book title")
+    assert_equal(rows[standalone]["artist"], "Test Author", "standalone folder fallback artist")
     assert_equal(rows[first]["album_pic_path"], cover, "audiobook cover sidecar")
     assert_equal(rows[first]["lrc_path"], lrc, "audiobook lrc sidecar")
     assert_equal(rows[second]["format"], 255, "m4b format code")
@@ -132,6 +149,23 @@ def verify_db(db: Path, catalog: Path) -> None:
     assert_true(catalog.exists() and catalog.stat().st_size > 0, "catalog written")
     header = catalog.read_text(encoding="utf-8").splitlines()[0].split("\t")
     assert_true("book_key" in header, "catalog book_key column")
+    assert_true("series" in header and "series_part" in header, "catalog guide series columns")
+    catalog_rows = {
+        fields[4]: fields
+        for fields in (
+            line.split("\t")
+            for line in catalog.read_text(encoding="utf-8").splitlines()[1:]
+            if line
+        )
+    }
+    assert_equal(catalog_rows[first][header.index("series")], "Test Series", "catalog guide series")
+    assert_equal(catalog_rows[first][header.index("series_part")], "02", "catalog guide series part")
+    assert_equal(catalog_rows[standalone][header.index("series")], "", "standalone catalog series blank")
+    assert_equal(
+        catalog_rows[standalone][header.index("series_part")],
+        "",
+        "standalone catalog series part blank",
+    )
 
     check = subprocess.run(
         [

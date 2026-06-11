@@ -68,6 +68,25 @@ def book_key_for_row(row: CatalogRow) -> str:
     return f"root_{fallback}"
 
 
+def guide_series_for_root(root: str) -> tuple[str, str]:
+    rel = root
+    if rel.lower().startswith(PREFIX.lower()):
+        rel = rel[len(PREFIX) :]
+    parts = [part for part in rel.split("\\") if part]
+    if len(parts) < 3:
+        return "", ""
+    series = parts[1].strip()
+    book_folder = parts[-1]
+    series_part = ""
+    if series:
+        matches = re.findall(r"\[([^\]]+)\]", book_folder)
+        if matches:
+            inside = matches[-1].strip()
+            if inside.lower().startswith(series.lower()):
+                series_part = inside[len(series) :].strip(" -:#\t")
+    return series, series_part
+
+
 def load_rows(db: Path) -> list[CatalogRow]:
     conn = sqlite3.connect(db)
     try:
@@ -107,7 +126,7 @@ def write_catalog(rows: list[CatalogRow], output: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(
-            "root_hiby_path\ttrack_index\ttrack_count\tmedia_id\tpath\ttitle\talbum\tauthor\tbook_key\n"
+            "root_hiby_path\ttrack_index\ttrack_count\tmedia_id\tpath\ttitle\talbum\tauthor\tbook_key\tseries\tseries_part\n"
         )
         for root in sorted(groups, key=natural_key):
             group = sorted(
@@ -120,6 +139,7 @@ def write_catalog(rows: list[CatalogRow], output: Path) -> None:
                 ),
             )
             track_count = len(group)
+            series, series_part = guide_series_for_root(root)
             for index, row in enumerate(group, 1):
                 handle.write(
                     "\t".join(
@@ -133,6 +153,8 @@ def write_catalog(rows: list[CatalogRow], output: Path) -> None:
                             row.album,
                             row.author,
                             book_key_for_row(row),
+                            clean_field(series),
+                            clean_field(series_part),
                         ]
                     )
                     + "\n"

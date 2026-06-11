@@ -14,8 +14,22 @@ albums/genres/search clean, but it does not provide a custom Audiobooks submenu.
   A plain stock artist route may therefore show normal music artists, no
   audiobook authors, or otherwise behave globally.
 - Series: not currently available as a stock media view. We would need a
-  reliable series source, such as a tag parser, sidecar metadata, or a stricter
-  folder convention, plus a custom view or query path.
+  reliable series source plus a custom view or query path. The Seanap/Plex
+  folder convention now gives us a useful source for future experiments when a
+  book is stored as `Audiobooks\Author\Series\Book Folder`; standalone books at
+  `Audiobooks\Author\Book Folder` intentionally keep blank series fields.
+
+## Seanap/Plex Layout Support
+
+The DB helper now writes optional `series` and `series_part` columns to
+`catalog.tsv`. These are derived from Seanap/Plex-style folders when present:
+
+```text
+Audiobooks\Author\Series\2020 - Book Title [Series 02]\01 - Chapter.mp3
+```
+
+This is catalog metadata only. It does not change playback behavior yet, and it
+does not require every book to be in a series.
 
 ## Safe Test Tool
 
@@ -54,4 +68,5 @@ The safest route is to keep the current title view for release builds and test
 route variants in RAM. If an author route proves usable, the next problem is
 database isolation: audiobook authors must be visible to Audiobooks without
 leaking into Music. If stock routes cannot do that, a true Author / Title /
-Series submenu will require deeper `hiby_player` UI/query patching.
+Series submenu will require deeper `hiby_player` UI/query patching. The
+extended catalog gives that future work author/title/series data to build on.

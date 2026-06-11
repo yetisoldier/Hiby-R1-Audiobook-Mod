@@ -102,7 +102,18 @@ Metadata expectations:
 - `TCOM` / Composer may be narrator.
 - Track numbers or numbered filenames are strongly recommended for multipart books.
 
-The firmware does not require perfect audiobook tags. If metadata is missing, the on-device helper derives basic author, book title, chapter/title, and order from folder and filename structure. Better tags and numbered files make the book list and multipart resume more reliable. MP3Tag works well for this; Plex-style audiobook tagging, with album as the book title and album artist as the author, is a good fit.
+The firmware does not require perfect audiobook tags. If metadata is missing, the on-device helper derives basic author, book title, chapter/title, and order from folder and filename structure. Better tags and numbered files make the book list and multipart resume more reliable. MP3Tag works well for this; the Seanap/Plex-style convention, with album as the book title and album artist as the author, is a good fit.
+
+For best results, especially if you want future series support, this folder
+shape is recommended but not required:
+
+```text
+/Audiobooks/Author/Series/2020 - Book Title [Series 02]/01 - Chapter.mp3
+/Audiobooks/Author/2021 - Standalone Book/01 - Chapter.mp3
+```
+
+The second form intentionally has no series folder. The catalog leaves its
+series fields blank, so standalone books are not forced into a fake series.
 
 ## After Installing
 
@@ -469,8 +480,9 @@ Information and techniques used while building this mod came from:
 - [SuperTaiyaki/hiby-firmware-tools](https://github.com/SuperTaiyaki/hiby-firmware-tools) - reference for HiBy firmware unpacking/repacking concepts.
 - [hiby-modding/hiby-mods](https://github.com/hiby-modding/hiby-mods) - broader HiBy custom firmware research, OTA format notes, database ideas, and recovery cautions.
 - [hiby-modding/hiby_os_crack](https://github.com/hiby-modding/hiby_os_crack) - additional HiBy OS firmware cracking and tooling reference.
+- [seanap/Plex-Audiobook-Guide](https://github.com/seanap/Plex-Audiobook-Guide) - audiobook tagging and folder-structure convention used to improve fallback author/title handling and to add optional series fields to the internal audiobook catalog.
 
-The audiobook-specific behavior in this repository was developed and tested on a personal normal HiBy R1 through local reverse engineering, live ADB testing, and repeated stock-firmware recovery tests. The audiobook metadata recommendations are based on common audiobook tagging practice and the user-supplied Audible/MP3Tag mapping used during development: album as the book title, album artist as the author, and numbered tracks/files for multipart books.
+The audiobook-specific behavior in this repository was developed and tested on a personal normal HiBy R1 through local reverse engineering, live ADB testing, and repeated stock-firmware recovery tests. The audiobook metadata recommendations are based on common audiobook tagging practice, the Seanap/Plex guide, and the user-supplied Audible/MP3Tag mapping used during development: album as the book title, album artist as the author, and numbered tracks/files for multipart books.
 
 ## What Is Here
 
