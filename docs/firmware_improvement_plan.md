@@ -56,6 +56,12 @@ incremental changes that can be tested off-device before a new firmware build.
   on author plus book title when available. New resume records include the same
   key so future builds can survive simple audiobook folder renames or rebuilds
   more gracefully while still reading existing root-path records.
+- Multipart title-tap resume now has a pre-play direct-start path. When the
+  daemon can identify the selected book from the stock track-list memory, it
+  reads the saved resume record and taps the saved track row before playback
+  starts. This should avoid briefly playing each earlier file; if the memory
+  scan fails, the daemon falls back to the current first-track-plus-correction
+  behavior.
 - `tools/test_r1_db_maint_qemu_wsl.ps1` runs the same DB helper fixture through
   WSL and `qemu-mipsel-static`, executing the real MIPS helper binary instead
   of the Windows test executable.
