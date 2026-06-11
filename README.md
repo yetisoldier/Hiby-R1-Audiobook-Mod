@@ -522,6 +522,7 @@ The audiobook-specific behavior in this repository was developed and tested on a
 
 - `docs/investigation.md` - current findings about stock R1 firmware 1.6, databases, Books, resume settings, and patch ideas.
 - `docs/release_recovery_notes.md` - compact install, verification, and stock-recovery notes for the current audiobook release candidate.
+- `docs/release_draft_1.6.7.md` - draft GitHub release notes for the verified `1.6.7-audiobook` candidate.
 - `docs/production_release_checklist.md` - remaining checks before treating the current candidate as production instead of beta.
 - `docs/firmware_improvement_plan.md` - forward plan for post-1.6.4 improvements based on new hiby-modding references and local test strategy.
 - `docs/adb_control_tools.md` - live ADB control notes for screenshots, taps, drags, playback keys, and screenshot-assisted Audiobooks flows.
