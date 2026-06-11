@@ -14,6 +14,15 @@ These notes are for the normal HiBy R1 on stock firmware 1.6, not the R1 MIDI.
 
 Local verification on 2026-06-11 passed with `--require-db-maintenance`. This candidate keeps the self-contained DB maintenance path from `1.6.4-audiobook` and adds guarded Now Playing play-mode correction for audiobooks, targeting the observed list-loop/sequential byte value `3` at `/usr/data/user.ini` offset `0x250`. A live runtime-only test on the device restored the multipart Sedaris test book to track `15/30` and about `4:31` after a title-list tap, with the daemon running from `/usr/data` before this package was flashed.
 
+After flashing this candidate, run installed-device verification with:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\adb_verify_installed_audiobook_release.ps1 `
+  -ExpectedVersion 1.6.6-audiobook `
+  -RequirePlayModeGuard `
+  -CaptureFramebuffer
+```
+
 ## Current Shareable Candidate
 
 - Custom version marker: `1.6.4-audiobook`

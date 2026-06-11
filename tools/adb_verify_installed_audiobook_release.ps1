@@ -16,6 +16,8 @@ param(
 
     [switch]$RequireDbMaintenance = $true,
 
+    [switch]$RequirePlayModeGuard,
+
     [switch]$CaptureFramebuffer
 )
 
@@ -82,6 +84,23 @@ if ([string]::IsNullOrWhiteSpace($daemonText)) {
     throw "resume daemon is not running"
 }
 Write-Host "OK   resume daemon is running"
+
+if ($RequirePlayModeGuard) {
+    $runtimeDaemonScript = Invoke-AdbText "cat /usr/data/audiobooks/bin/r1_audiobook_resume_daemon.sh 2>/dev/null || cat /usr/bin/r1_audiobook_resume_daemon.sh 2>/dev/null"
+    Set-Content -LiteralPath (Join-Path $verifyDir "runtime_resume_daemon.sh") -Value $runtimeDaemonScript
+    Assert-Contains $runtimeDaemonScript 'PLAY_MODE_TARGET=${AUDIOBOOK_PLAY_MODE_TARGET:-3}' "runtime resume daemon"
+    Assert-Contains $runtimeDaemonScript "PLAY_MODE_USER_INI_OFFSET=" "runtime resume daemon"
+    Assert-Contains $runtimeDaemonScript "ensure_audiobook_play_mode" "runtime resume daemon"
+    Assert-Contains $runtimeDaemonScript "play-mode skipped screen-not-ready" "runtime resume daemon"
+
+    $daemonLogTail = Invoke-AdbText "tail -80 /usr/data/audiobooks/resume-daemon.log 2>/dev/null || true"
+    Set-Content -LiteralPath (Join-Path $verifyDir "resume_daemon_log_tail.txt") -Value $daemonLogTail
+    Assert-Contains $daemonLogTail "play_mode_target=3" "resume daemon log"
+
+    $playModeByte = Invoke-AdbText "dd if=/usr/data/user.ini bs=1 skip=592 count=1 2>/dev/null | od -An -tu1 2>/dev/null || true"
+    Set-Content -LiteralPath (Join-Path $verifyDir "play_mode_byte.txt") -Value $playModeByte
+    Write-Host "OK   captured current play-mode byte: $($playModeByte.Trim())"
+}
 
 if ($RequireDbMaintenance) {
     $dbMaintText = Invoke-AdbText "ps | grep '[r]1_audiobook_db_watch' 2>/dev/null || true"
