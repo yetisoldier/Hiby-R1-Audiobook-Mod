@@ -47,6 +47,15 @@ This is a safer foundation for Author / Title / Series experiments than trying
 to infer books from per-track rows at runtime. Standalone books keep blank
 `series` and `series_part` fields.
 
+To inspect that sidecar during development:
+
+```powershell
+python tools\audiobook_catalog_report.py path\to\catalog-books.tsv
+```
+
+The report groups the same book-level catalog by author, series, and title and
+keeps standalone books separate from series entries.
+
 ## Safe Test Tool
 
 `tools\adb_test_audiobook_launcher_route_variant.py` can temporarily change the
