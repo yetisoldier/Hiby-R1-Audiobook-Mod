@@ -116,7 +116,11 @@ def ensure_adb(adb: str) -> None:
 def check_device(adb: str) -> str:
     proc = run([adb, "devices", "-l"])
     assert isinstance(proc.stdout, str)
-    lines = [line for line in proc.stdout.splitlines() if "\tdevice" in line]
+    lines = []
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == "device":
+            lines.append(line)
     if not lines:
         raise RuntimeError(f"No ADB device is connected or authorized.\n{proc.stdout}")
     return proc.stdout

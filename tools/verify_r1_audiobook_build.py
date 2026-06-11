@@ -346,6 +346,12 @@ def verify(
         for relative, expected_mode in BOOT_ADB_FILE_MODE_CHECKS.items():
             actual_mode = entries.get(relative, SquashfsEntry("", "")).mode
             require(actual_mode == expected_mode, f"{relative} mode {actual_mode}", failures)
+        boot_adb_script = root / "etc/init.d/S90adb"
+        if boot_adb_script.exists():
+            text = boot_adb_script.read_text(errors="replace")
+            require("skip=1856" in text, "boot ADB wrapper reads USB working mode offset", failures)
+            require('mode" != "1"' in text, "boot ADB wrapper requires Device USB working mode", failures)
+            require("/etc/init.d/T90adb start" in text, "boot ADB wrapper delegates to stock helper", failures)
     else:
         for relative in BOOT_ADB_FILE_MODE_CHECKS:
             actual_mode = entries.get(relative, SquashfsEntry("", "")).mode

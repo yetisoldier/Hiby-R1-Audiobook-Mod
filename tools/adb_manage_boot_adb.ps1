@@ -27,10 +27,12 @@ function Invoke-AdbText([string]$Command) {
 function Read-BootAdbStatus {
     $statusCommand = @'
 echo "s90adb=$(if [ -x /etc/init.d/S90adb ]; then echo yes; elif [ -e /etc/init.d/S90adb ]; then echo present-not-exec; else echo no; fi)"
+echo "s90adb_wrapper=$(if grep -q skip=1856 /etc/init.d/S90adb 2>/dev/null; then echo yes; elif [ -e /etc/init.d/S90adb ]; then echo no; else echo missing; fi)"
 echo "t90adb=$(if [ -x /etc/init.d/T90adb ]; then echo yes; elif [ -e /etc/init.d/T90adb ]; then echo present-not-exec; else echo no; fi)"
 echo "disableadb=$(if [ -e /usr/data/disableadb ]; then echo yes; else echo no; fi)"
 echo "adbd=$(ps | grep '[a]dbd' >/dev/null && echo running || echo stopped)"
 echo "adb_gadget=$(if [ -d /sys/kernel/config/usb_gadget/adb_demo ]; then echo yes; else echo no; fi)"
+echo "usb_working_mode=$(set -- $(dd if=/usr/data/user.ini bs=1 skip=1856 count=1 2>/dev/null | od -An -t u1 2>/dev/null); echo ${1:-unknown})"
 echo "version=$(sed -n 's/^version=//p' /etc/r1_audiobook_version 2>/dev/null | head -1)"
 echo "boot_adb_marker=$(sed -n 's/^boot_adb=//p' /etc/r1_audiobook_version 2>/dev/null | head -1)"
 '@
@@ -51,8 +53,16 @@ function Write-BootAdbAdvice($Status) {
     $values = $Status.Values
     Write-Host $Status.Raw
     Write-Host ""
-    if ($values["s90adb"] -eq "yes" -and $values["disableadb"] -eq "no") {
+    if ($values["s90adb"] -eq "yes" -and $values["s90adb_wrapper"] -eq "yes" -and $values["disableadb"] -eq "no" -and $values["usb_working_mode"] -eq "1") {
         Write-Host "OK   ADB should be allowed to start on the next boot."
+    }
+    elseif ($values["s90adb"] -eq "yes" -and $values["s90adb_wrapper"] -eq "yes" -and $values["disableadb"] -eq "no") {
+        Write-Host "INFO Firmware has /etc/init.d/S90adb, but USB working mode is not Device."
+        Write-Host "     Set System -> USB working mode -> Device for boot ADB in dev builds."
+    }
+    elseif ($values["s90adb"] -eq "yes" -and $values["s90adb_wrapper"] -eq "no" -and $values["disableadb"] -eq "no") {
+        Write-Host "INFO Firmware has /etc/init.d/S90adb, but it is not the USB-mode-gated wrapper."
+        Write-Host "     New dev builds use the stock System -> USB working mode setting as the guard."
     }
     elseif ($values["s90adb"] -eq "yes" -and $values["disableadb"] -eq "yes") {
         Write-Host "INFO Firmware has /etc/init.d/S90adb, but /usr/data/disableadb blocks boot ADB."

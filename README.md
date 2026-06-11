@@ -320,7 +320,7 @@ The current offline development package is intentionally conservative:
 - Rootfs MD5: `0574354b74af722a8d359d755c8957d6`
 - `/usr/bin/hiby_player` MD5: `ad69fa8377fb85b01ed5d65fe976b19a` (stock bytes)
 
-This package only applies English Audiobooks labels and installs the stock ADB startup helper as `/etc/init.d/S90adb` for development. On the current test device, ADB still has to be manually enabled after reboot/update, so this is not treated as persistent ADB. It is still not a final flash candidate because the audiobook-only media view and DB generation path are not complete.
+This package only applies English Audiobooks labels and was kept as an early development reference. Newer development builds can install `/etc/init.d/S90adb` as a wrapper around the stock ADB helper, gated by the stock `System -> USB working mode` setting. Public release builds still leave boot ADB out by default.
 
 Default local binary patcher behavior is safe and applies no binary patches:
 
@@ -487,9 +487,10 @@ RAM patch status from the first live test:
 
 Development firmware builds can opt into boot ADB with
 `tools\build_r1_audiobook_firmware.ps1 -EnableBootAdb`, which installs
-`/etc/init.d/S90adb` as a copy of stock `/etc/init.d/T90adb`. Stock `rcS` only
-runs `S??*` scripts, which is why ADB does not survive a normal stock reboot
-even when `/usr/data/disableadb` is absent.
+`/etc/init.d/S90adb` as a wrapper around stock `/etc/init.d/T90adb`. Stock
+`rcS` only runs `S??*` scripts, and the wrapper only starts ADB when
+`System -> USB working mode` is set to `Device`, using `/usr/data/user.ini`
+offset `0x740`.
 
 ## Attribution And Sources
 
@@ -526,9 +527,9 @@ The audiobook-specific behavior in this repository was developed and tested on a
 - `tools/adb_verify_installed_audiobook_release.ps1` - post-reboot installed-release verifier for version markers, daemon status, update-trigger hygiene, free space, DB/catalog invariants, and optional framebuffer capture.
 - `tools/adb_collect_r1_state.ps1` - read-only ADB collection script for device state and databases.
 - `tools/r1_adb_control.py` - unified non-persistent R1 control console for framebuffer screenshots, named tap presets, drags, playback keys, seek-bar taps, and screenshot-assisted macros.
-- `tools/adb_probe_usb_mode_toggle.ps1` - guided before/after ADB snapshot workflow for discovering where the stock USB/Dock mode UI setting is saved.
+- `tools/adb_probe_usb_mode_toggle.ps1` - guided before/after ADB snapshot workflow for discovering where the stock USB working mode UI setting is saved.
 - `tools/adb_manage_boot_adb.ps1` - development helper for checking and toggling the `/usr/data/disableadb` marker used by opt-in boot-ADB builds.
-- `tools/adb_snapshot_r1_settings.ps1` - read-only before/after snapshot helper for finding where stock UI settings, such as USB/Dock mode, are persisted.
+- `tools/adb_snapshot_r1_settings.ps1` - read-only before/after snapshot helper for finding where stock UI settings, such as USB working mode, are persisted.
 - `tools/compare_r1_settings_snapshots.ps1` - local comparison helper that summarizes changed writable state and pulled settings files between two R1 snapshots.
 - `tools/compare_binary_settings.py` - byte-level diff helper for small binary settings files such as `/data/user.ini`.
 - `tools/build_r1_db_maint_helper.ps1` - reproducibly builds the static MIPS audiobook DB maintenance helper from Zig and SQLite upstream sources.

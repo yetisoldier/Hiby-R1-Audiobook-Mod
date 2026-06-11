@@ -40,18 +40,37 @@ function Read-Manifest([string]$SnapshotPath) {
         if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith("##")) {
             continue
         }
-        $parts = $line -split "`t", 4
-        if ($parts.Count -ne 4) {
-            continue
+        if ($line.Contains("|")) {
+            $parts = $line -split "\|", 4
+            if ($parts.Count -ne 4) {
+                continue
+            }
+            $path = $parts[3].Trim()
+            $listing = $parts[2].Trim()
         }
-        $path = $parts[3].Trim()
+        elseif ($line.Contains("`t")) {
+            $parts = $line -split "`t", 4
+            if ($parts.Count -ne 4) {
+                continue
+            }
+            $path = $parts[3].Trim()
+            $listing = $parts[2].Trim()
+        }
+        else {
+            $parts = $line -split "\s+", 3
+            if ($parts.Count -ne 3) {
+                continue
+            }
+            $path = $parts[2].Trim()
+            $listing = ""
+        }
         if ([string]::IsNullOrWhiteSpace($path)) {
             continue
         }
         $entries[$path] = [pscustomobject]@{
             Size = $parts[0].Trim()
             Hash = $parts[1].Trim()
-            Listing = $parts[2].Trim()
+            Listing = $listing
             Path = $path
         }
     }

@@ -20,8 +20,9 @@ power cost while plugged into USB.
 
 Stock firmware includes `/etc/init.d/T90adb`, but the boot script only runs
 `/etc/init.d/S??*`. Development firmware can opt into boot ADB by building with
-`-EnableBootAdb`, which copies the stock helper to `/etc/init.d/S90adb` and adds
-`boot_adb=enabled` to `/etc/r1_audiobook_version`.
+`-EnableBootAdb`, which installs `/etc/init.d/S90adb` as a wrapper around the
+stock helper and adds `boot_adb=enabled` to `/etc/r1_audiobook_version`. The
+wrapper starts ADB only when `System -> USB working mode` is set to `Device`.
 
 Check the currently connected device:
 
@@ -53,10 +54,8 @@ with `-EnableBootAdb`.
 
 ## Finding A UI Toggle
 
-The stock resources already expose `System -> USB device mode`, with a `Dock`
-choice that appears to be the UI side of ADB/dock mode. That is the preferred
-place for a user-facing toggle if live testing confirms where the selection is
-persisted.
+The stock resources expose `System -> USB working mode`. Live testing confirmed
+that this is a usable stock UI toggle for development boot ADB.
 
 Capture a before snapshot:
 
@@ -66,7 +65,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -Label before-usb-mode
 ```
 
-Change `System -> USB device mode` on the R1, then capture the after snapshot
+Change `System -> USB working mode` on the R1, then capture the after snapshot
 and compare it with the folder printed by the first command:
 
 ```powershell
@@ -95,7 +94,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -After work\settings-snapshots\YYYYMMDD-HHMMSS-after-usb-mode
 ```
 
-If the diff identifies the saved USB/Dock setting, a development boot script can
+If the diff identifies the saved USB working mode setting, a development boot script can
 honor that same value so the existing UI setting becomes the boot-ADB toggle.
 A brand-new settings menu item is possible in theory, but it would require
 deeper `hiby_player` UI binary patching and carries more black-screen risk than
@@ -105,7 +104,7 @@ Static firmware notes that narrow the live test:
 
 - `hiby_player` embeds `/data/user.ini`, `usb_mode`, `usb_working_mode`,
   `VG_LISTVIEW_USB_MODE`, `/usr/bin/adbon`, and `/usr/bin/adboff`.
-- The resource route for `USB device mode` is `hl_usb_mode_d` from
+- The resource route for `USB working mode` is `hl_usb_mode_d` from
   `usr/resource/hl_json/hl_sys_set_a.json`.
 - `set_functions.json` enables `usb_working_mode` and lists `usb_mode`, so both
   should be watched in settings snapshots.
@@ -115,6 +114,10 @@ Static firmware notes that narrow the live test:
   `/usr/bin/adboff` stops ADB and restarts mass storage.
 - Both stock ADB backends, `S310adb` and `S440adb`, refuse to start when
   `/usr/data/disableadb` exists.
+- Live testing found `USB working mode` in `/usr/data/user.ini` at offset
+  `0x740` (`1856` decimal): Auto is byte value `0`, Device is byte value `1`.
+  The opt-in development `S90adb` wrapper uses that byte so boot ADB only starts
+  when the stock UI setting is `Device`.
 
 For binary settings files such as `/data/user.ini`, the snapshot comparison
 report includes byte-level detail from `tools\compare_binary_settings.py`.

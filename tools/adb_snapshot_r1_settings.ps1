@@ -76,36 +76,25 @@ mount 2>/dev/null || true
 Invoke-AdbShellCapture "device-info.txt" $deviceInfoCommand
 
 $manifestCommand = @'
-for base in /usr/data /data; do
-    if [ -d "$base" ]; then
-        echo "## $base"
-        find "$base" -maxdepth 4 -type f 2>/dev/null | sort | while IFS= read -r f; do
-            size=$(wc -c < "$f" 2>/dev/null | tr -d " ")
-            hash=$(md5sum "$f" 2>/dev/null | awk "{print \$1}")
-            lsline=$(ls -l "$f" 2>/dev/null)
-            printf "%s\t%s\t%s\t%s\n" "$size" "$hash" "$lsline" "$f"
-        done
-    else
-        echo "## missing $base"
-    fi
+echo "## targeted /usr/data settings"
+for f in /usr/data/user.ini /usr/data/menu_cfg /usr/data/*.ini /usr/data/*.conf /usr/data/*cfg /usr/data/bluetooth/*/settings; do
+    [ -f $f ] || continue
+    set -- $(wc -c $f 2>/dev/null)
+    size=${1:-}
+    set -- $(md5sum $f 2>/dev/null)
+    hash=${1:-}
+    echo $size $hash $f
 done
 '@
 Invoke-AdbShellCapture "settings-manifest.tsv" $manifestCommand
 
 $candidateCommand = @'
-for base in /usr/data /data; do
-    if [ -d "$base" ]; then
-        find "$base" -maxdepth 4 -type f 2>/dev/null | while IFS= read -r f; do
-            lower=$(echo "$f" | tr "A-Z" "a-z")
-            size=$(wc -c < "$f" 2>/dev/null | tr -d " ")
-            case "$lower" in
-                *setting*|*config*|*cfg|*.ini|*.conf|*.json|*usb*|*adb*|*dev*|*mode*|*user*|*sys*)
-                    if [ -n "$size" ] && [ "$size" -le 262144 ]; then
-                        printf "%s\t%s\n" "$size" "$f"
-                    fi
-                    ;;
-            esac
-        done
+for f in /usr/data/user.ini /usr/data/menu_cfg /usr/data/*.ini /usr/data/*.conf /usr/data/*cfg /usr/data/bluetooth/*/settings; do
+    [ -f $f ] || continue
+    set -- $(wc -c $f 2>/dev/null)
+    size=${1:-}
+    if [ -n "$size" ] && [ "$size" -le 262144 ]; then
+        echo $size $f
     fi
 done
 '@
@@ -118,21 +107,41 @@ foreach ($line in $candidates) {
     if ([string]::IsNullOrWhiteSpace($line)) {
         continue
     }
-    $parts = $line -split "`t", 2
+    if ($line.Contains("|")) {
+        $parts = $line -split "\|", 2
+    }
+    elseif ($line.Contains("`t")) {
+        $parts = $line -split "`t", 2
+    }
+    else {
+        $parts = $line -split "\s+", 2
+    }
     if ($parts.Count -ne 2) {
         continue
     }
+    $sizeText = $parts[0].Trim()
+    if ($sizeText -notmatch "^\d+$") {
+        continue
+    }
     $remotePath = $parts[1].Trim()
-    if ([string]::IsNullOrWhiteSpace($remotePath)) {
+    if ([string]::IsNullOrWhiteSpace($remotePath) -or !$remotePath.StartsWith("/")) {
         continue
     }
     $trimmed = $remotePath.TrimStart([char[]]"/")
     $localName = $trimmed -replace '[\\/:*?"<>| ]+', "_"
     $destPath = Join-Path $filesDir $localName
     "PULL $remotePath -> $destPath" | Add-Content -LiteralPath $pullLog
-    $pullOutput = & $adbPath pull $remotePath $destPath 2>&1
+    $oldErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $pullOutput = & $adbPath pull $remotePath $destPath 2>&1
+        $pullExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $oldErrorActionPreference
+    }
     $pullOutput | Add-Content -LiteralPath $pullLog
-    if ($LASTEXITCODE -ne 0) {
+    if ($pullExitCode -ne 0) {
         "WARN pull failed for $remotePath" | Add-Content -LiteralPath $pullLog
     }
 }

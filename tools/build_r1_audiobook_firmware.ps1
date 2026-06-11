@@ -133,9 +133,48 @@ boot_adb=$bootAdbMarker
 # /etc/init.d/S??* scripts. Keep boot ADB opt-in so shareable release builds do
 # not silently expose a debug bridge after reboot.
 if ($EnableBootAdb) {
-    $adbBootScript = Join-Path $rootTree "etc\init.d\T90adb"
     $persistentAdbBootScript = Join-Path $rootTree "etc\init.d\S90adb"
-    Copy-Item -Force -LiteralPath $adbBootScript -Destination $persistentAdbBootScript
+    @'
+#!/bin/sh
+#
+# Development-only boot ADB wrapper.
+# The stock helper is T90adb, but rcS only starts S??* scripts. This wrapper
+# starts ADB only when the stock UI setting System -> USB working mode is Device.
+#
+
+read_usb_working_mode() {
+    if [ ! -f /usr/data/user.ini ]; then
+        echo ""
+        return
+    fi
+
+    set -- $(dd if=/usr/data/user.ini bs=1 skip=1856 count=1 2>/dev/null | od -An -t u1 2>/dev/null)
+    echo "${1:-}"
+}
+
+case "$1" in
+  start)
+    mode=$(read_usb_working_mode)
+    if [ "$mode" != "1" ]; then
+        echo "Skip boot adb: usb_working_mode=$mode"
+        exit 0
+    fi
+    /etc/init.d/T90adb start
+    ;;
+  stop)
+    /etc/init.d/T90adb stop
+    ;;
+  restart|reload)
+    /etc/init.d/T90adb stop
+    /etc/init.d/T90adb start
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart}"
+    exit 1
+esac
+
+exit $?
+'@ | Set-Content -LiteralPath $persistentAdbBootScript -Encoding ASCII
 }
 
 if ($IncludeAudiobookResumeRuntime) {
