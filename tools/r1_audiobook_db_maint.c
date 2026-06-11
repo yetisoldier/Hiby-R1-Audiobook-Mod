@@ -697,6 +697,17 @@ static void delete_audiobook_rows(sqlite3 *db, const char *table) {
     sqlite3_finalize(stmt);
 }
 
+static void delete_non_audiobook_rows(sqlite3 *db, const char *table) {
+    if (!table_exists(db, table)) return;
+    char sql[256];
+    snprintf(sql, sizeof(sql), "DELETE FROM %s WHERE path NOT LIKE ? COLLATE NOCASE", table);
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) die_sql(db, "prepare delete non-audiobook rows");
+    bind_text_plain(stmt, 1, HIBY_PREFIX_LIKE);
+    if (sqlite3_step(stmt) != SQLITE_DONE) die_sql(db, "delete non-audiobook rows");
+    sqlite3_finalize(stmt);
+}
+
 static RowVec load_existing_audiobook_rows(sqlite3 *db) {
     RowVec rows = {0};
     const char *sql =
@@ -756,13 +767,18 @@ static int max_media_id(sqlite3 *db) {
     return max_id;
 }
 
-static int count_media_like(sqlite3 *db, const char *pattern) {
+static int count_real_music_rows(sqlite3 *db) {
     sqlite3_stmt *stmt = NULL;
     int count = 0;
-    if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM MEDIA_TABLE WHERE path LIKE ? COLLATE NOCASE", -1, &stmt, NULL) != SQLITE_OK) {
-        die_sql(db, "prepare count media like");
+    const char *sql =
+        "SELECT COUNT(*) FROM MEDIA_TABLE "
+        "WHERE path LIKE ? COLLATE NOCASE "
+        "AND path NOT LIKE ? COLLATE NOCASE";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        die_sql(db, "prepare count real music rows");
     }
-    bind_text_plain(stmt, 1, pattern);
+    bind_text_plain(stmt, 1, HIBY_MUSIC_PREFIX_LIKE);
+    bind_text_plain(stmt, 2, "%*");
     if (sqlite3_step(stmt) == SQLITE_ROW) count = sqlite3_column_int(stmt, 0);
     sqlite3_finalize(stmt);
     return count;
@@ -1491,10 +1507,12 @@ static void maintain_database(const Options *opts) {
     int next_id = max_media_id(db) + 1;
     RowVec music_rows = {0};
     RowVec audiobook_rows = {0};
-    int existing_music_rows = count_media_like(db, HIBY_MUSIC_PREFIX_LIKE);
+    int existing_music_rows = count_real_music_rows(db);
+    int replacing_music_rows = 0;
     struct stat music_st;
     if (existing_music_rows == 0 && stat(opts->music_dir, &music_st) == 0 && S_ISDIR(music_st.st_mode)) {
         scan_music_dir(opts->music_dir, opts->sd_root, &music_rows, &next_id);
+        if (music_rows.len > 0) replacing_music_rows = 1;
     }
     struct stat ab_st;
     if (stat(opts->audiobooks_dir, &ab_st) == 0 && S_ISDIR(ab_st.st_mode)) {
@@ -1505,6 +1523,12 @@ static void maintain_database(const Options *opts) {
 
     if (exec_sql(db, "PRAGMA foreign_keys=OFF") != SQLITE_OK) die_sql(db, "set foreign_keys");
     if (exec_sql(db, "BEGIN IMMEDIATE") != SQLITE_OK) die_sql(db, "begin transaction");
+    if (replacing_music_rows) {
+        delete_non_audiobook_rows(db, "MEDIA_TABLE");
+        delete_non_audiobook_rows(db, "MEDIA2_TABLE");
+        delete_non_audiobook_rows(db, "MEDIA3_TABLE");
+        delete_non_audiobook_rows(db, "SEARCH_TABLE");
+    }
     delete_audiobook_rows(db, "MEDIA_TABLE");
     delete_audiobook_rows(db, "MEDIA2_TABLE");
     delete_audiobook_rows(db, "MEDIA3_TABLE");
@@ -1518,6 +1542,7 @@ static void maintain_database(const Options *opts) {
 
     write_catalog_files(opts, &audiobook_rows);
     if (opts->verbose) {
+        fprintf(stderr, "music tracks existing: %d\n", existing_music_rows);
         fprintf(stderr, "music tracks generated: %lu\n", (unsigned long)music_rows.len);
         fprintf(stderr, "audiobook tracks: %lu\n", (unsigned long)audiobook_rows.len);
         fprintf(stderr, "catalog: %s\n", opts->catalog_path);

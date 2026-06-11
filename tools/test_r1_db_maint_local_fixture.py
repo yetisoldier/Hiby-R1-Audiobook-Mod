@@ -134,6 +134,37 @@ def seed_problematic_stock_audiobook_rows(db: Path) -> None:
     )
     rows = [
         (
+            900,
+            r"a:\Music\*",
+            "Music",
+            "Unknown",
+            "Unknown",
+            "Unknown",
+            0,
+            0,
+            0,
+            0,
+            0,
+            -1,
+            -1,
+            "M",
+            12,
+            0,
+            0,
+            0,
+            0,
+            0,
+            "",
+            "",
+            "",
+            0.0,
+            0.0,
+            1,
+            1,
+            "MUSIC",
+            "",
+        ),
+        (
             1001,
             r"a:\Audiobooks\Test Author\Test Series\2020 - Test Book [Test Series 02]\02 - Continued.m4b",
             "Continued",
@@ -278,6 +309,7 @@ def verify_db(db: Path, catalog: Path) -> None:
     assert_true(second in rows, "m4b audiobook row generated")
     assert_true(standalone in rows, "standalone audiobook row generated")
     assert_true(music_iso in rows, "iso music row generated")
+    assert_true(r"a:\Music\*" not in rows, "stock placeholder music row replaced")
     assert_equal(rows[first]["album"], "Test Book", "guide folder fallback book title")
     assert_equal(rows[first]["artist"], "Test Author", "guide folder fallback artist")
     assert_equal(rows[first]["album_artist"], "Test Author", "guide folder fallback album artist")
