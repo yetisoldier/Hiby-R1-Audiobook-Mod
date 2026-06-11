@@ -1,24 +1,24 @@
 # Production Release Checklist
 
-This checklist tracks what must be true before calling the HiBy R1 audiobook firmware a production release instead of a beta/release-candidate.
+This checklist tracks what was verified for the current HiBy R1 audiobook firmware release and what remains useful for follow-up validation.
 
 ## Current Public Release
 
-- Public release: GitHub `v1.0.0`, firmware marker `1.6.4-audiobook`.
+- Public release: GitHub `v1.1.0`, firmware marker `1.6.7-audiobook`.
 - Base firmware: stock HiBy R1 1.6 for the normal R1, not R1 MIDI.
-- Package MD5: `71c8d0d94bf50529a06aa9a31350f595`.
-- Package SHA256: `02b286676d93ec683307820e1ef40288f34ef21a42a24f5cbda361f2d3733b7b`.
-- Installed verification passed on 2026-06-10 under `work\installed-release-verification\20260610-153805`.
+- Package MD5: `7a5b0267811de7198039aa96144f3f8c`.
+- Package SHA256: `2ac14cdd858f91af99cff8365c5d0664ca3d01233a89bc82e8ba010c7dfcbd78`.
+- Installed verification passed on 2026-06-11 under `work\installed-release-verification\20260611-094702`.
 - Self-contained DB maintenance passed live seed-rebuild testing under `work\watcher-seed-rebuild-test-20260610-152923`.
 
-## Verified Next Candidate
+## Verified Release Build
 
-- Candidate version marker: `1.6.7-audiobook`.
-- Candidate package: `work\audiobook-firmware-1.6.7-candidate\r1-audiobooks-1.6.7-audiobook.upt`.
-- Candidate package MD5: `7a5b0267811de7198039aa96144f3f8c`.
-- Candidate package SHA256: `2ac14cdd858f91af99cff8365c5d0664ca3d01233a89bc82e8ba010c7dfcbd78`.
-- Candidate rootfs MD5: `c6346d46b2927d8719425117a5d0dd17`.
-- Candidate rootfs SHA256: `1f059947f8150d9c750b2bae896efff24026876b8abaaff8b5bbe4ce7159fd1f`.
+- Version marker: `1.6.7-audiobook`.
+- Package: `work\audiobook-firmware-1.6.7-candidate\r1-audiobooks-1.6.7-audiobook.upt`.
+- Package MD5: `7a5b0267811de7198039aa96144f3f8c`.
+- Package SHA256: `2ac14cdd858f91af99cff8365c5d0664ca3d01233a89bc82e8ba010c7dfcbd78`.
+- Rootfs MD5: `c6346d46b2927d8719425117a5d0dd17`.
+- Rootfs SHA256: `1f059947f8150d9c750b2bae896efff24026876b8abaaff8b5bbe4ce7159fd1f`.
 - Visible About version is expected to render as a truncated `HiBy R1 1.6.7-a` style string because the stock UI truncates the longer suffix.
 - Local package verifier passed on 2026-06-11 with `--require-db-maintenance`.
 - Installed release-clean verifier passed on 2026-06-11 under `work\installed-release-verification\20260611-094702`.
@@ -28,14 +28,14 @@ This checklist tracks what must be true before calling the HiBy R1 audiobook fir
 - Installed book catalog report from `work\installed-release-verification\20260611-094702\catalog-books.tsv`: six books, two authors, two series, four standalone books, and three multipart books.
 - Two-minute paused runtime monitor after the smoke test under `work\runtime-monitor\post-1.6.7-paused-20260611-0958`: CPU samples were about 90% idle, battery reported full on USB, and the resume daemon plus DB watcher stayed resident.
 
-## Required Before Promoting 1.6.7
+## Recommended Follow-Up After Publishing
 
-- Real-world listening: use `1.6.7-audiobook` for normal music plus audiobook sessions, including switching between music and at least two books, and watch for freezes, random reboots, battery drain, or failed resume.
+- Real-world listening: continue using `1.6.7-audiobook` for normal music plus audiobook sessions, including switching between music and at least two books, and watch for freezes, random reboots, battery drain, or failed resume.
 - Reboot behavior: repeat a reboot after normal listening and confirm the player returns to the launcher, starts the daemon/watcher, and keeps Audiobooks responsive.
 - Fresh-card behavior: if practical, test a second SD card or a renamed `/Audiobooks` tree, run Music -> Update Database, and confirm the watcher rebuilds catalogs without PC/ADB DB installation.
 - Music separation: installed verifier already passed DB/catalog checks; optionally repeat UI checks in Music Albums, Genres, Search, and Files after longer use.
-- Recovery package: keep stock HiBy R1 1.6 `r1.upt`, the `1.6.7` candidate, hashes, and recovery instructions together before publishing.
-- Release packaging: if promoted, upload `r1-audiobooks-1.6.7-audiobook.upt`, update README install text, create release notes that call out the play-mode guard and near-miss multipart resume fallback, and keep `1.6.4` available as the previous stable release.
+- Recovery package: keep stock HiBy R1 1.6 `r1.upt`, the `1.6.7` release, hashes, and recovery instructions together.
+- Release packaging: upload `r1-audiobooks-1.6.7-audiobook.upt`, update README install text, create release notes that call out the play-mode guard and near-miss multipart resume fallback, and keep `1.6.4` available as the previous stable release.
 - Device cleanup: development-only files have been archived to SD. Future cleanup runs should still dry-run first and preserve `catalog.tsv`, `catalog-books.tsv`, `catalog-albums.txt`, `resume.d`, and logs.
 
 ## Known Limitations

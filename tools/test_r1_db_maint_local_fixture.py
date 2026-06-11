@@ -68,6 +68,7 @@ def run_helper(helper: Path, work_dir: Path, runner: list[str] | None = None) ->
     write_text(book_dir / "cover.jpg", "fake jpg")
     write_text(book_dir / "01 - Opening.lrc", "[00:00.00]Opening")
     write_text(standalone_dir / "01 - Standalone.mp3", "placeholder standalone mp3")
+    seed_problematic_stock_audiobook_rows(db)
 
     cmd = [
         *(runner or []),
@@ -98,6 +99,122 @@ def run_helper(helper: Path, work_dir: Path, runner: list[str] | None = None) ->
     return db, catalog
 
 
+def seed_problematic_stock_audiobook_rows(db: Path) -> None:
+    """Simulate stock scanner rows whose genre tags would otherwise break routing."""
+    columns = (
+        "id",
+        "path",
+        "name",
+        "album",
+        "artist",
+        "genre",
+        "year",
+        "dis_id",
+        "ck_id",
+        "has_child_file",
+        "begin_time",
+        "end_time",
+        "cue_id",
+        "character",
+        "size",
+        "sample_rate",
+        "bit_rate",
+        "bit",
+        "channel",
+        "format",
+        "quality",
+        "album_pic_path",
+        "lrc_path",
+        "track_gain",
+        "track_peak",
+        "ctime",
+        "mtime",
+        "pinyin_charater",
+        "album_artist",
+    )
+    rows = [
+        (
+            1001,
+            r"a:\Audiobooks\Test Author\Test Series\2020 - Test Book [Test Series 02]\02 - Continued.m4b",
+            "Continued",
+            "Tagged Tolkien Book",
+            "Tagged Author",
+            "Tolkien Audiobook",
+            2020,
+            0,
+            2,
+            0,
+            0,
+            -1,
+            -1,
+            "",
+            12,
+            0,
+            0,
+            0,
+            0,
+            255,
+            "Lossy",
+            "",
+            "",
+            0.0,
+            0.0,
+            1,
+            1,
+            "",
+            "Tagged Author",
+        ),
+        (
+            1002,
+            r"a:\Audiobooks\Test Author\2021 - Standalone Book\01 - Standalone.mp3",
+            "Standalone",
+            "",
+            "",
+            "",
+            2021,
+            0,
+            1,
+            0,
+            0,
+            -1,
+            -1,
+            "",
+            12,
+            0,
+            0,
+            0,
+            0,
+            1,
+            "Lossy",
+            "",
+            "",
+            0.0,
+            0.0,
+            1,
+            1,
+            "",
+            "",
+        ),
+    ]
+    placeholders = ",".join("?" for _ in columns)
+    column_list = ",".join(columns)
+    conn = sqlite3.connect(db)
+    try:
+        conn.executemany(f"INSERT INTO MEDIA_TABLE ({column_list}) VALUES ({placeholders})", rows)
+        conn.executemany(f"INSERT INTO MEDIA2_TABLE ({column_list}) VALUES ({placeholders})", rows)
+        conn.execute(
+            "INSERT INTO GENRE_TABLE (id, genre, character, cn, ctime, mtime, pinyin_charater) "
+            "VALUES (1, 'Tolkien Audiobook', '', 1, 1, 1, '')"
+        )
+        conn.execute(
+            "INSERT INTO GENRE2_TABLE (id, genre, character, cn, ctime, mtime, pinyin_charater) "
+            "VALUES (1, 'Tolkien Audiobook', '', 1, 1, 1, '')"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def verify_db(db: Path, catalog: Path) -> None:
     conn = sqlite3.connect(db)
     try:
@@ -110,19 +227,29 @@ def verify_db(db: Path, catalog: Path) -> None:
                 "album": denul(album),
                 "artist": denul(artist),
                 "album_artist": denul(album_artist),
+                "genre": denul(genre),
                 "album_pic_path": denul(album_pic_path),
                 "lrc_path": denul(lrc_path),
                 "format": int(format_code or 0),
                 "quality": denul(quality),
             }
-            for path, name, album, artist, album_artist, album_pic_path, lrc_path, format_code, quality in conn.execute(
+            for path, name, album, artist, album_artist, genre, album_pic_path, lrc_path, format_code, quality in conn.execute(
                 """
-                SELECT path, name, album, artist, album_artist, album_pic_path, lrc_path, format, quality
+                SELECT path, name, album, artist, album_artist, genre, album_pic_path, lrc_path, format, quality
                   FROM MEDIA_TABLE
                  ORDER BY path COLLATE NOCASE
                 """
             )
         }
+        normal_genres = {
+            denul(genre)
+            for (genre,) in conn.execute(
+                "SELECT genre FROM GENRE_TABLE UNION SELECT genre FROM GENRE2_TABLE"
+            )
+        }
+        search_audiobooks = conn.execute(
+            "SELECT COUNT(*) FROM SEARCH_TABLE WHERE path LIKE 'a:\\Audiobooks\\%' COLLATE NOCASE"
+        ).fetchone()[0]
     finally:
         conn.close()
 
@@ -141,6 +268,10 @@ def verify_db(db: Path, catalog: Path) -> None:
     assert_equal(rows[first]["album"], "Test Book", "guide folder fallback book title")
     assert_equal(rows[first]["artist"], "Test Author", "guide folder fallback artist")
     assert_equal(rows[first]["album_artist"], "Test Author", "guide folder fallback album artist")
+    assert_equal(rows[second]["genre"], "Audiobook", "custom m4b genre normalized")
+    assert_equal(rows[standalone]["genre"], "Audiobook", "blank audiobook genre normalized")
+    assert_true("Tolkien Audiobook" not in normal_genres, "custom audiobook genre removed from music genres")
+    assert_equal(search_audiobooks, 0, "audiobooks excluded from search table")
     assert_equal(rows[standalone]["album"], "Standalone Book", "standalone folder fallback book title")
     assert_equal(rows[standalone]["artist"], "Test Author", "standalone folder fallback artist")
     assert_equal(rows[first]["album_pic_path"], cover, "audiobook cover sidecar")

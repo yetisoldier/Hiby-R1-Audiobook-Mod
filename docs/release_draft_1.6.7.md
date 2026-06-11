@@ -1,6 +1,6 @@
-# Draft Release Notes: 1.6.7-audiobook
+# Release Notes: 1.6.7-audiobook
 
-Status: draft. Do not publish until the `1.6.7-audiobook` build has had more normal listening time.
+Status: published as GitHub release `v1.1.0`.
 
 This build is for the normal HiBy R1 only. It is based on stock HiBy R1 firmware 1.6, not the R1 MIDI.
 
@@ -16,6 +16,7 @@ This build is for the normal HiBy R1 only. It is based on stock HiBy R1 firmware
 - Keeps all `1.6.4-audiobook` behavior: Audiobooks launcher tile, separated audiobook catalog, normal Now Playing screen, per-book resume, and self-contained on-device catalog rebuild after Music -> Update Database.
 - Adds guarded audiobook play-mode correction. When an audiobook is active on Now Playing, the daemon can switch the player back to the observed sequential/list-loop mode so multipart books advance in order.
 - Improves multipart resume when the stock title-list route lands near the saved file but not exactly on it. The daemon now has a narrow near-miss fallback that can step a few tracks with the R1's own Next/Previous transport instead of giving up.
+- Normalizes files under `/Audiobooks` to the internal `Audiobook` route regardless of the original genre tag, including custom genres such as `Tolkien Audiobook` or blank genre tags, after the on-device database helper runs.
 - Keeps exact resume by default. The optional smart-rewind setting is present internally, but it is off unless deliberately enabled for testing.
 - Keeps lower-power idle polling when playback is not on an audiobook path.
 
@@ -27,6 +28,7 @@ Installed-device verification passed on 2026-06-11:
 - Resume daemon and DB watcher start from boot.
 - SD-root `r1.upt` was removed after installation.
 - No audiobook rows leak into normal Music search, album, or genre catalog tables.
+- Regression fixtures pass for custom audiobook genre tags and blank audiobook genre tags under `/Audiobooks`.
 - The installed DB has 135 audiobook rows and six audiobook books on the test SD card.
 - No known development artifacts remained active under `/usr/data/audiobooks`.
 
