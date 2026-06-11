@@ -794,6 +794,12 @@ book_title_autostart_active_now() {
   return 1
 }
 
+direct_track_max_swipes() {
+  max_swipes=$BOOK_TITLE_DIRECT_TRACK_MAX_SWIPES
+  case "$max_swipes" in ''|*[!0-9]*) max_swipes=20 ;; esac
+  printf '%s\n' "$max_swipes"
+}
+
 direct_track_geometry() {
   saved_index=$1
   case "$saved_index" in ''|*[!0-9]*) return 1 ;; esac
@@ -801,6 +807,7 @@ direct_track_geometry() {
 
   visible_rows=$BOOK_TITLE_DIRECT_TRACK_VISIBLE_ROWS
   rows_per_swipe=$BOOK_TITLE_DIRECT_TRACK_ROWS_PER_SWIPE
+  max_swipes=$(direct_track_max_swipes)
   case "$visible_rows" in ''|*[!0-9]*|0) visible_rows=5 ;; esac
   case "$rows_per_swipe" in ''|*[!0-9]*|0) rows_per_swipe=4 ;; esac
   [ "$visible_rows" -le 5 ] || visible_rows=5
@@ -809,7 +816,7 @@ direct_track_geometry() {
   if [ "$saved_index" -gt "$visible_rows" ]; then
     swipes=$(( (saved_index - visible_rows + rows_per_swipe - 1) / rows_per_swipe ))
   fi
-  [ "$swipes" -le "$BOOK_TITLE_DIRECT_TRACK_MAX_SWIPES" ] || return 1
+  [ "$swipes" -le "$max_swipes" ] || return 1
 
   row=$((saved_index - (swipes * rows_per_swipe)))
   while [ "$row" -lt 1 ] && [ "$swipes" -gt 0 ]; do
@@ -857,7 +864,7 @@ book_title_direct_track_select() {
   [ "$saved_index" -gt 1 ] || return 1
 
   geometry=$(direct_track_geometry "$saved_index") || {
-    log "direct-track-select too many swipes saved=$saved_index max=$BOOK_TITLE_DIRECT_TRACK_MAX_SWIPES"
+    log "direct-track-select too many swipes saved=$saved_index max=$(direct_track_max_swipes)"
     return 1
   }
   set -- $geometry
@@ -868,16 +875,8 @@ book_title_direct_track_select() {
   touch_back_to_track_list || return 1
   sleep "$BOOK_TITLE_DIRECT_TRACK_RETURN_DELAY_SECONDS"
 
-  count=0
-  while [ "$count" -lt "$swipes" ]; do
-    count=$((count + 1))
-    touch_track_swipe_up || return 1
-    sleep "$BOOK_TITLE_DIRECT_TRACK_SWIPE_SETTLE_SECONDS"
-    log "direct-track-select swipe=$count/$swipes"
-  done
-
   path_before_select=$(current_path)
-  touch_track_row "$row" || return 1
+  tap_track_list_index "$saved_index" "direct-track-select" || return 1
   ticks=$(track_switch_settle_ticks)
   while [ "$ticks" -gt 0 ]; do
     sleep_track_switch_poll
@@ -1213,6 +1212,7 @@ should_skip_failed_restore_save() {
 }
 
 book_title_direct_start_saved_track() {
+  [ "$BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED" = 1 ] || return 1
   [ "$BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED" = 1 ] || return 1
   [ "$RESTORE_ENABLED" = 1 ] || return 1
 
@@ -1251,7 +1251,7 @@ book_title_direct_start_saved_track() {
   case "$saved_index" in ''|*[!0-9]*) return 1 ;; esac
 
   geometry=$(direct_track_geometry "$saved_index") || {
-    log "book-title direct-start too many swipes saved=$saved_index max=$BOOK_TITLE_DIRECT_TRACK_MAX_SWIPES path=$saved_path"
+    log "book-title direct-start too many swipes saved=$saved_index max=$(direct_track_max_swipes) path=$saved_path"
     return 1
   }
   set -- $geometry

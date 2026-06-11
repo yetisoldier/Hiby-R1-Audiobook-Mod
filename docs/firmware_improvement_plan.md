@@ -111,6 +111,41 @@ incremental changes that can be tested off-device before a new firmware build.
 6. If runtime-only testing passes, build a new `1.6.5-audiobook` candidate and
    run the full pre-flash verifier before staging.
 
+## Next Live Tests
+
+When the R1 is available again, the most useful tests are:
+
+1. Install the latest resume runtime without flashing:
+
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass `
+     -File tools\adb_install_audiobook_resume_runtime.ps1 `
+     -CatalogSource work\audiobook-resume-catalog.tsv `
+     -RestoreEnabled
+   ```
+
+2. From the Audiobooks title list, tap a multipart book with a saved position
+   on a later file. Expected result: the track list may appear briefly, but the
+   daemon should tap the saved track directly instead of audibly playing each
+   earlier track.
+
+3. If the result is odd, collect a debug bundle before rebooting:
+
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass `
+     -File tools\adb_collect_audiobook_resume_debug.ps1
+   ```
+
+4. Repeat once with pre-play direct start disabled to compare fallback behavior:
+
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass `
+     -File tools\adb_install_audiobook_resume_runtime.ps1 `
+     -CatalogSource work\audiobook-resume-catalog.tsv `
+     -RestoreEnabled `
+     -DisableBookTitleDirectTrackPreplay
+   ```
+
 ## Longer-Term Research
 
 - Real `hiby_player` UI work: a native Audiobooks page would be cleaner than the

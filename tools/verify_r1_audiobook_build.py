@@ -386,6 +386,8 @@ def verify(
         require("00003a005c0041007500640069006f0062006f006f006b007300" in resume_init_text, "resume init also clears partially nulled audiobook path", failures)
         require("AUDIOBOOK_INTERVAL_SECONDS=1" in resume_init_text, "resume init script uses tuned 1s polling", failures)
         require("AUDIOBOOK_BOOK_TITLE_AUTOSTART_DELAY_SECONDS=1" in resume_init_text, "resume init script uses tuned title autostart delay", failures)
+        require("AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED=1" in resume_init_text, "resume init enables pre-play direct track selection", failures)
+        require("AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_ROWS_PER_SWIPE=4" in resume_init_text, "resume init sets direct track list geometry", failures)
         require("AUDIOBOOK_NEW_TRACK_COMMIT_MS=15000" in resume_init_text, "resume init script uses 15s new-track commit guard", failures)
         require("AUDIOBOOK_UI_SEEK_SCREEN_GUARD_ENABLED=1" in resume_init_text, "resume init script enables UI seek screen guard", failures)
     else:
@@ -446,6 +448,8 @@ def verify(
         require("should_skip_failed_restore_save" in daemon_text, "daemon includes failed-restore bookmark save guard", failures)
         require("close_inherited_socket_fds" in daemon_text, "daemon closes inherited socket fds on startup", failures)
         require("book_title_direct_track_select" in daemon_text, "daemon includes title-list direct track selection", failures)
+        require("book_title_direct_start_saved_track" in daemon_text, "daemon includes pre-play saved-track direct start", failures)
+        require("pid_mem_first_catalog_path" in daemon_text, "daemon can identify selected track list from catalog paths", failures)
         require("TOUCH_TRACK_SWIPE_MOVE6_EVENT_FILE" in daemon_text, "daemon includes timed track-list swipe packets", failures)
         require("RESTORE_RETRY_MAX_AFTER_FAILURE_SECONDS" in daemon_text, "daemon backs off repeated failed seek restores", failures)
         require("FAILED_RESTORE_SKIP_LOG_BUCKET_MS" in daemon_text, "daemon throttles failed-restore save guard logging", failures)
