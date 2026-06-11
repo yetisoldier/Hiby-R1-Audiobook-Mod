@@ -117,9 +117,11 @@ def main() -> int:
 
     if args.preset:
         route_text, selected_text = ROUTE_PRESETS[args.preset]
-    else:
-        route_text = args.route or ROUTE_PRESETS["title"][0]
+    elif args.route:
+        route_text = args.route
         selected_text = ""
+    else:
+        route_text, selected_text = ROUTE_PRESETS["title"]
     if args.selected is not None:
         selected_text = args.selected
 
