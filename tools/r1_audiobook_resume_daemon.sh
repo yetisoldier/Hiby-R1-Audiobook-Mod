@@ -16,6 +16,7 @@ IDLE_INTERVAL_SECONDS=${AUDIOBOOK_IDLE_INTERVAL_SECONDS:-3}
 MIN_SAVE_MS=${AUDIOBOOK_MIN_SAVE_MS:-3000}
 RESTORE_ONLY_BEFORE_MS=${AUDIOBOOK_RESTORE_ONLY_BEFORE_MS:-15000}
 RESTORE_MIN_MS=${AUDIOBOOK_RESTORE_MIN_MS:-10000}
+RESTORE_REWIND_MS=${AUDIOBOOK_RESTORE_REWIND_MS:-0}
 RESTORE_RETRY_AFTER_FAILURE_SECONDS=${AUDIOBOOK_RESTORE_RETRY_AFTER_FAILURE_SECONDS:-30}
 RESTORE_RETRY_MAX_AFTER_FAILURE_SECONDS=${AUDIOBOOK_RESTORE_RETRY_MAX_AFTER_FAILURE_SECONDS:-300}
 FAILED_RESTORE_SKIP_LOG_BUCKET_MS=${AUDIOBOOK_FAILED_RESTORE_SKIP_LOG_BUCKET_MS:-30000}
@@ -143,6 +144,22 @@ note_seek_restore_failure() {
   restore_failed_at=$(date '+%s' 2>/dev/null || echo 0)
   retry_delay=$(restore_retry_delay_seconds)
   log "restore failed path=$path saved_ms=$saved_pos count=$restore_seek_failed_count retry_in=${retry_delay}s"
+}
+
+restore_target_ms() {
+  saved_pos=$1
+  case "$saved_pos:$RESTORE_REWIND_MS" in
+    *[!0-9:]* | :* | *:) printf '%s\n' "$saved_pos"; return ;;
+  esac
+  [ "$RESTORE_REWIND_MS" -gt 0 ] || {
+    printf '%s\n' "$saved_pos"
+    return
+  }
+  if [ "$saved_pos" -gt "$RESTORE_REWIND_MS" ]; then
+    printf '%s\n' $((saved_pos - RESTORE_REWIND_MS))
+  else
+    printf '0\n'
+  fi
 }
 
 note_track_restore_failure() {
@@ -1161,15 +1178,20 @@ maybe_restore() {
     [ "$saved_pos" -gt "$guard_pos" ] || return 0
     log "late restore path=$path pos_ms=$pos saved_ms=$saved_pos"
   fi
-  seconds=$((saved_pos / 1000))
-  log "restore path=$path saved_ms=$saved_pos"
+  target_pos=$(restore_target_ms "$saved_pos")
+  seconds=$((target_pos / 1000))
+  if [ "$target_pos" = "$saved_pos" ]; then
+    log "restore path=$path saved_ms=$saved_pos"
+  else
+    log "restore path=$path saved_ms=$saved_pos target_ms=$target_pos rewind_ms=$RESTORE_REWIND_MS"
+  fi
   if run_helper seek --seconds "$seconds" --verify-delay-ms 1500 --verify-tolerance 8 >>"$LOG" 2>&1; then
     return 0
   fi
-  if ui_seek_restore "$path" "$saved_pos"; then
+  if ui_seek_restore "$path" "$target_pos"; then
     return 0
   fi
-  note_seek_restore_failure "$path" "$saved_pos"
+  note_seek_restore_failure "$path" "$target_pos"
   return 1
 }
 
@@ -1535,7 +1557,7 @@ main() {
   close_inherited_socket_fds
   refresh_catalog_album_patterns
   echo "$$" >"$PID_FILE"
-  log "start interval=${INTERVAL_SECONDS}s idle_interval=${IDLE_INTERVAL_SECONDS}s new_track_commit_ms=$NEW_TRACK_COMMIT_MS backward_save_guard_ms=$BACKWARD_SAVE_GUARD_MS closed_inherited_socket_fds=$CLOSED_INHERITED_SOCKET_FDS position_source=$POSITION_SOURCE duration_addr=$PLAYER_DURATION_ADDR restore_enabled=$RESTORE_ENABLED track_restore_enabled=$TRACK_RESTORE_ENABLED track_key_fallback=$TRACK_RESTORE_KEY_FALLBACK_ENABLED ui_seek_fallback=$UI_SEEK_FALLBACK_ENABLED ui_seek_screen_guard=$UI_SEEK_SCREEN_GUARD_ENABLED ui_seek_touch_frames=$UI_SEEK_TOUCH_FRAMES play_mode_enforce=$PLAY_MODE_ENFORCE_ENABLED play_mode_target=$PLAY_MODE_TARGET play_mode_offset=$PLAY_MODE_USER_INI_OFFSET book_title_autostart=$BOOK_TITLE_AUTOSTART_ENABLED book_title_direct_track_select=$BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED book_title_direct_track_preplay=$BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED book_title_require_path=$BOOK_TITLE_AUTOSTART_REQUIRE_PATH book_title_context_seconds=$BOOK_TITLE_CONTEXT_SECONDS catalog_albums=$CATALOG_ALBUM_PATTERNS"
+  log "start interval=${INTERVAL_SECONDS}s idle_interval=${IDLE_INTERVAL_SECONDS}s new_track_commit_ms=$NEW_TRACK_COMMIT_MS backward_save_guard_ms=$BACKWARD_SAVE_GUARD_MS restore_rewind_ms=$RESTORE_REWIND_MS closed_inherited_socket_fds=$CLOSED_INHERITED_SOCKET_FDS position_source=$POSITION_SOURCE duration_addr=$PLAYER_DURATION_ADDR restore_enabled=$RESTORE_ENABLED track_restore_enabled=$TRACK_RESTORE_ENABLED track_key_fallback=$TRACK_RESTORE_KEY_FALLBACK_ENABLED ui_seek_fallback=$UI_SEEK_FALLBACK_ENABLED ui_seek_screen_guard=$UI_SEEK_SCREEN_GUARD_ENABLED ui_seek_touch_frames=$UI_SEEK_TOUCH_FRAMES play_mode_enforce=$PLAY_MODE_ENFORCE_ENABLED play_mode_target=$PLAY_MODE_TARGET play_mode_offset=$PLAY_MODE_USER_INI_OFFSET book_title_autostart=$BOOK_TITLE_AUTOSTART_ENABLED book_title_direct_track_select=$BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED book_title_direct_track_preplay=$BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED book_title_require_path=$BOOK_TITLE_AUTOSTART_REQUIRE_PATH book_title_context_seconds=$BOOK_TITLE_CONTEXT_SECONDS catalog_albums=$CATALOG_ALBUM_PATTERNS"
 
   last_path=
   last_saved_bucket=

@@ -17,8 +17,8 @@ Latest local development candidate, not released or flashed yet:
 
 - Version marker: `1.6.6-audiobook`
 - Package: `work\audiobook-firmware-1.6.6-candidate\r1-audiobooks-1.6.6-audiobook.upt`
-- UPT MD5: `60369ba2fdd431013cce941d3223b817`
-- UPT SHA256: `020081183bc9a98f87cd35a8d0f17551d40d69179f679cf67a2b34cd397c265d`
+- UPT MD5: `2936e72639ad6464ebfd9c117ce7812b`
+- UPT SHA256: `49447d092343ade4c5c2a048ee9807065f89ad2d087c43315897dfdb036d06fe`
 - Adds guarded audiobook play-mode correction and the latest multipart resume recovery fixes.
 
 Before flashing, keep a known-good stock 1.6 `r1.upt` available for recovery. This mod has only been tested on one normal HiBy R1. Reinstalling stock firmware should reverse it, but it is still unofficial firmware, so use it at your own risk. Do not use it on the R1 MIDI or other HiBy players unless you are prepared to recover the device yourself.

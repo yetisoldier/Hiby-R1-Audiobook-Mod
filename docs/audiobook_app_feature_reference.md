@@ -26,8 +26,8 @@ organization. On the R1, the realistic split is:
 ## Good Next Candidates
 
 - Smart rewind on resume: optionally seek a few seconds before the saved point.
-  This should be feasible in the resume daemon because it already owns seek
-  restore. Keep it configurable, since exact resume is also valuable.
+  Development builds expose this as `AUDIOBOOK_RESTORE_REWIND_MS`, defaulting to
+  `0` so exact resume remains the release behavior until a value is chosen.
 - Sleep timer by configuration file: feasible as a daemon feature, but awkward
   without a UI. A first version could read a small file from
   `/usr/data/audiobooks` or the SD card and stop/pause after a fixed number of

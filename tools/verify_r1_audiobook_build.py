@@ -472,6 +472,8 @@ def verify(
         require("completion_state_for_path_position" in daemon_text, "daemon can mark final-track playback as completed", failures)
         require('"completed": %s' in daemon_text, "daemon persists completed flag in resume records", failures)
         require("completed book start-over" in daemon_text, "daemon starts completed books from the beginning", failures)
+        require("RESTORE_REWIND_MS=${AUDIOBOOK_RESTORE_REWIND_MS:-0}" in daemon_text, "daemon exposes optional smart rewind", failures)
+        require("restore_target_ms" in daemon_text, "daemon applies smart rewind to restore target", failures)
         require("TOUCH_FIRST_TRACK_EVENT_FILE" in daemon_text, "daemon includes first-track autostart touch", failures)
         require("pid_mem_contains_catalog_album" in daemon_text, "daemon includes catalog-title autostart guard", failures)
         require("BOOK_TITLE_CONTEXT_SECONDS" in daemon_text, "daemon includes context-aware title autostart guard", failures)

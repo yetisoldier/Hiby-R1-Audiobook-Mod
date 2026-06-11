@@ -290,6 +290,16 @@ pid_mem_first_catalog_path() {
 }
 assert_false "preplay direct start obeys select disable switch" book_title_direct_start_saved_track 123 456 789
 
+RESTORE_REWIND_MS=0
+assert_eq "restore target exact by default" "270200" "$(restore_target_ms 270200)"
+RESTORE_REWIND_MS=5000
+assert_eq "restore target applies smart rewind" "265200" "$(restore_target_ms 270200)"
+RESTORE_REWIND_MS=999999
+assert_eq "restore target clamps before zero" "0" "$(restore_target_ms 270200)"
+RESTORE_REWIND_MS=bad
+assert_eq "restore target ignores bad rewind setting" "270200" "$(restore_target_ms 270200)"
+RESTORE_REWIND_MS=0
+
 RESTORE_ENABLED=1
 TRACK_RESTORE_ENABLED=1
 TRACK_RESTORE_KEY_FALLBACK_ENABLED=0

@@ -6,13 +6,13 @@ These notes are for the normal HiBy R1 on stock firmware 1.6, not the R1 MIDI.
 
 - Custom version marker: `1.6.6-audiobook`
 - Firmware package: `work\audiobook-firmware-1.6.6-candidate\r1-audiobooks-1.6.6-audiobook.upt`
-- Firmware MD5: `60369ba2fdd431013cce941d3223b817`
-- Firmware SHA256: `020081183bc9a98f87cd35a8d0f17551d40d69179f679cf67a2b34cd397c265d`
-- Rootfs MD5: `7a7b50edfa089e9a89b1574611835435`
-- Rootfs SHA256: `d07f8cb7ca0e3653d575ed229b3733b412d66c61ce75ab645191d2d1027d98fd`
+- Firmware MD5: `2936e72639ad6464ebfd9c117ce7812b`
+- Firmware SHA256: `49447d092343ade4c5c2a048ee9807065f89ad2d087c43315897dfdb036d06fe`
+- Rootfs MD5: `01997dbb8986ad3e8bf21498e3e8192d`
+- Rootfs SHA256: `8aaa05d9a215a8775b3e5660cb74d00a26f7be4cd5ece8f98fcdddfa116badcd`
 - `hiby_player` MD5: `09997a636c94112ff76c85a6d4a8d0ff`
 
-Local verification on 2026-06-11 passed with `--require-db-maintenance`. This candidate keeps the self-contained DB maintenance path from `1.6.4-audiobook` and adds guarded Now Playing play-mode correction for audiobooks, targeting the observed list-loop/sequential byte value `3` at `/usr/data/user.ini` offset `0x250`. A live runtime-only test on the device restored the multipart Sedaris test book to track `15/30` and about `4:31` after a title-list tap, with the daemon running from `/usr/data` before this package was flashed.
+Local verification on 2026-06-11 passed with `--require-db-maintenance`. This candidate keeps the self-contained DB maintenance path from `1.6.4-audiobook` and adds guarded Now Playing play-mode correction for audiobooks, targeting the observed list-loop/sequential byte value `3` at `/usr/data/user.ini` offset `0x250`. It also includes optional smart-rewind scaffolding via `AUDIOBOOK_RESTORE_REWIND_MS`, defaulted to exact resume. A live runtime-only test on the device restored the multipart Sedaris test book to track `15/30` and about `4:31` after a title-list tap, with the daemon running from `/usr/data` before this package was flashed.
 
 After flashing this candidate, run installed-device verification with:
 
