@@ -18,13 +18,17 @@ from pathlib import Path
 
 
 EXPECTED_CURRENT_HASHES = {
+    "r1-audiobooks-1.6.9-audiobook.upt": {
+        "md5": "3c3b3f05724acc474fb349e6378fc351",
+        "sha256": "f78e67089ff84021b18d69a4af2cb01be6f872bc59d187bf9cba256f8cd792aa",
+    },
     "r1-audiobooks-1.6.4-audiobook.upt": {
         "md5": "71c8d0d94bf50529a06aa9a31350f595",
         "sha256": "02b286676d93ec683307820e1ef40288f34ef21a42a24f5cbda361f2d3733b7b",
     },
     "rootfs.squashfs": {
-        "md5": "2d88686810d7b6782b56386776af7a52",
-        "sha256": "2da94366031bdaeac8c0908fccf3988d29e4296ed10776c54b5cd2504e88d3da",
+        "md5": "67b5dc7345d3289e32af4ec451075004",
+        "sha256": "821643d96a2a3742955ba636480b7754eb5d9ba7ff63e1aa3061915f0d51bfcb",
     },
     "r1-audiobooks-1.6.3-audiobook.upt": {
         "md5": "1954b92ae7a394a0dc450c2d5f70f3d2",
@@ -548,10 +552,10 @@ def verify(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--out-dir", type=Path, default=Path("work/audiobook-firmware-1.6.4"))
-    parser.add_argument("--upt-name", default="r1-audiobooks-1.6.4-audiobook.upt")
-    parser.add_argument("--expected-version", default="1.6.4-audiobook")
-    parser.add_argument("--expected-label", default="HiBy R1 Audiobook FW 1.6.4")
+    parser.add_argument("--out-dir", type=Path, default=Path("work/audiobook-firmware-1.6.9-scanfix-candidate"))
+    parser.add_argument("--upt-name", default="r1-audiobooks-1.6.9-audiobook.upt")
+    parser.add_argument("--expected-version", default="1.6.9-audiobook")
+    parser.add_argument("--expected-label", default="HiBy R1 Audiobook FW 1.6.9")
     parser.add_argument(
         "--stock-rootfs",
         type=Path,

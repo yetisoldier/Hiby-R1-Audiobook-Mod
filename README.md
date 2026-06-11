@@ -6,20 +6,20 @@ This workspace is for investigating and prototyping audiobook support on the HiB
 
 Current shareable package:
 
-- Version marker: `1.6.7-audiobook`
-- Download page: <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v1.1.0>
-- Package: `r1-audiobooks-1.6.7-audiobook.upt`
-- UPT MD5: `7a5b0267811de7198039aa96144f3f8c`
-- UPT SHA256: `2ac14cdd858f91af99cff8365c5d0664ca3d01233a89bc82e8ba010c7dfcbd78`
+- Version marker: `1.6.9-audiobook`
+- Download page: <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v1.2.0>
+- Package: `r1-audiobooks-1.6.9-audiobook.upt`
+- UPT MD5: `3c3b3f05724acc474fb349e6378fc351`
+- UPT SHA256: `f78e67089ff84021b18d69a4af2cb01be6f872bc59d187bf9cba256f8cd792aa`
 - Base firmware: stock HiBy R1 1.6 for the normal R1, not the R1 MIDI
 
 Previous public release:
 
-- Version marker: `1.6.4-audiobook`
-- Download page: <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v1.0.0>
-- Package: `r1-audiobooks-1.6.4-audiobook.upt`
+- Version marker: `1.6.7-audiobook`
+- Download page: <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v1.1.0>
+- Package: `r1-audiobooks-1.6.7-audiobook.upt`
 
-New in `1.6.7-audiobook`: guarded audiobook play-mode correction, lower-power idle polling outside audiobook playback, genre-tag normalization for files under `/Audiobooks`, and a narrow near-miss transport fallback for multipart resume. Post-flash verification passed on 2026-06-11, and a live title-list smoke test moved Sedaris `13/30 -> 15/30` with two Next events before restoring to the saved `15/30` position.
+New in `1.6.9-audiobook`: fixes the post-flash "no tracks found" case when the stock DB only contains placeholder Music rows, reduces resume-daemon work during normal music playback, and indexes the Audiobooks title-list by book title so the right-side alphabet jump behaves correctly. Post-flash verification passed on 2026-06-11, including Music list smoke testing, Audiobooks playback, progress-bar movement, and a resume restore on the installed device.
 
 Before flashing, keep a known-good stock 1.6 `r1.upt` available for recovery. This mod has only been tested on one normal HiBy R1. Reinstalling stock firmware should reverse it, but it is still unofficial firmware, so use it at your own risk. Do not use it on the R1 MIDI or other HiBy players unless you are prepared to recover the device yourself.
 
@@ -36,7 +36,7 @@ The R1 updater expects the firmware file at the SD-card root as `r1.upt`.
 
 Manual install:
 
-1. Download `r1-audiobooks-1.6.7-audiobook.upt` from the release page.
+1. Download `r1-audiobooks-1.6.9-audiobook.upt` from the release page.
 2. Rename the copied file to exactly `r1.upt`. This is important; the R1 will not recognize the update otherwise.
 3. Safely eject/remount the SD card if you copied it outside the player.
 4. On the R1, run the normal firmware update from the device UI.
@@ -64,12 +64,13 @@ From a UI and day-to-day use perspective:
 - Opening `Audiobooks` goes directly to an audiobook book-title list instead of the old text-book menu.
 - Tapping a book title starts playback through the stock audio player path and switches to the Now Playing screen.
 - The firmware remembers a separate resume point for each audiobook, including multipart books, across listening to music and across reboots.
+- An audiobook must play for at least 15 seconds before the current position is saved. Very quick starts, wrong taps, and short previews are intentionally ignored.
 - If a multipart book resumes from a later file, the runtime attempts to select the saved file and seek to the saved position.
 - If playback reaches within 45 seconds of the end of the whole book, the book is treated as completed; the next title tap starts it from the beginning.
 - Audiobook files are kept out of normal Music Albums, Genres, and Search catalog tables.
 - Folder browsing still works, so files under `/Audiobooks` can still be found through file/explorer style views.
 - The old text-file Books/TXT reader launcher flow is replaced by Audiobooks.
-- The About/version strings show the custom build, although the R1 UI may truncate the visible suffix to something like `1.6.7-a`.
+- The About/version strings show the custom build, although the R1 UI may truncate the visible suffix to something like `1.6.9-a`.
 
 The stock Music player behavior is otherwise intentionally preserved: normal music playback, Now Playing, progress bar, physical controls, and the file explorer remain stock-style.
 
@@ -148,9 +149,10 @@ If the media database is missing or empty, the firmware can seed a valid empty D
 
 - Back navigation from the Audiobooks title list is not perfectly custom: pressing Back once lands on the stock Genres page, and pressing Back again returns to the launcher.
 - Title selection can take a second or two. Multipart resume may briefly show the track list or advance through tracks while it lands on the saved file and position.
+- Resume saves are intentionally delayed until at least 15 seconds of audiobook playback, so a position change shorter than that may not be remembered.
 - There is currently no audiobook search UI; browse by scrolling through the title list.
 - The old TXT reader is no longer available from the launcher because the Books section is repurposed as Audiobooks.
-- The visible About screen version is truncated by the stock UI, even though `/etc/r1_audiobook_version` and `/usr/resource/config.json` contain the full `1.6.7-audiobook` marker.
+- The visible About screen version is truncated by the stock UI, even though `/etc/r1_audiobook_version` and `/usr/resource/config.json` contain the full `1.6.9-audiobook` marker.
 - ADB does not persist in practice on the test R1; it must be manually re-enabled after reboot or update.
 - The DB helper provides practical fallback metadata but is not a full audiobook tag parser. Clean folder structure and numbered multipart files matter.
 - If the SD card is replaced, the player should still boot and Music should still work. Run the on-device Music scan/update and wait or reboot so the watcher can rebuild catalogs for the new card.
@@ -161,7 +163,7 @@ If the media database is missing or empty, the firmware can seed a valid empty D
 
 ## Current Status
 
-The current shareable release is `1.6.7-audiobook`. It is still based on stock HiBy R1 firmware 1.6 for the normal R1, not the R1 MIDI, and it does not require a PC/ADB database install for normal use.
+The current shareable release is `1.6.9-audiobook`. It is still based on stock HiBy R1 firmware 1.6 for the normal R1, not the R1 MIDI, and it does not require a PC/ADB database install for normal use.
 
 Shareable SD-card workflow:
 
@@ -174,13 +176,13 @@ The stock scanner can still build the base media database. A firmware-installed 
 
 Local verified package:
 
-- UPT: `work\audiobook-firmware-1.6.7-candidate\r1-audiobooks-1.6.7-audiobook.upt`
-- UPT MD5: `7a5b0267811de7198039aa96144f3f8c`
-- UPT SHA256: `2ac14cdd858f91af99cff8365c5d0664ca3d01233a89bc82e8ba010c7dfcbd78`
-- Rootfs MD5: `c6346d46b2927d8719425117a5d0dd17`
-- Rootfs SHA256: `1f059947f8150d9c750b2bae896efff24026876b8abaaff8b5bbe4ce7159fd1f`
+- UPT: `work\audiobook-firmware-1.6.9-scanfix-candidate\r1-audiobooks-1.6.9-audiobook.upt`
+- UPT MD5: `3c3b3f05724acc474fb349e6378fc351`
+- UPT SHA256: `f78e67089ff84021b18d69a4af2cb01be6f872bc59d187bf9cba256f8cd792aa`
+- Rootfs MD5: `67b5dc7345d3289e32af4ec451075004`
+- Rootfs SHA256: `821643d96a2a3742955ba636480b7754eb5d9ba7ff63e1aa3061915f0d51bfcb`
 - Player MD5 inside rootfs: `09997a636c94112ff76c85a6d4a8d0ff`
-- Helper SHA256: `de40a30fda504366a137f4c6fa57670d05039108355c7f85a4a6199c7d280377`
+- Helper SHA256: `46883272e2d8924dffb292af431eba46f262017615ef1367c37fe2af0b582f87`
 - Seed DB MD5: `7dc472d4d9d086d22efbff24ab2fce13`
 
 Verified locally on 2026-06-11 with:
@@ -188,6 +190,8 @@ Verified locally on 2026-06-11 with:
 ```powershell
 python tools\verify_r1_audiobook_build.py --require-db-maintenance --expect-current-hashes
 ```
+
+Installed-device verification also passed on 2026-06-11 with artifacts under `work\installed-release-verification\20260611-152156`: the installed device reports `1.6.9-audiobook`, the resume daemon and DB watcher are running, the DB integrity check is `ok`, Music contains 114 rows, Audiobooks contains 135 rows across six books, and there is no audiobook leakage into Music search, album, or genre tables.
 
 For development builds after the WSL/QEMU setup, the real MIPS DB helper can
 also be tested locally without flashing:
@@ -522,9 +526,10 @@ The audiobook-specific behavior in this repository was developed and tested on a
 
 - `docs/investigation.md` - current findings about stock R1 firmware 1.6, databases, Books, resume settings, and patch ideas.
 - `docs/release_recovery_notes.md` - compact install, verification, and stock-recovery notes for the current audiobook release.
-- `docs/release_draft_1.6.7.md` - GitHub release notes source for the verified `1.6.7-audiobook` release.
+- `firmware/releases/v1.2.0/` - release notes, checksums, and package for the verified `1.6.9-audiobook` release.
+- `docs/release_draft_1.6.7.md` - GitHub release notes source for the previous `1.6.7-audiobook` release.
 - `docs/production_release_checklist.md` - release and verification checklist for the current firmware line.
-- `docs/firmware_improvement_plan.md` - forward plan for post-1.6.7 improvements based on new hiby-modding references and local test strategy.
+- `docs/firmware_improvement_plan.md` - forward plan for post-1.6.9 improvements based on new hiby-modding references and local test strategy.
 - `docs/adb_control_tools.md` - live ADB control notes for screenshots, taps, drags, playback keys, and screenshot-assisted Audiobooks flows.
 - `docs/safe_prototype.md` - older non-flash ADB/database-filter prototype workflow, kept for developers and recovery-minded tinkerers.
 - `docs/images/` - README screenshots captured from the test R1.
