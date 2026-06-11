@@ -349,6 +349,7 @@ def verify(
         boot_adb_script = root / "etc/init.d/S90adb"
         if boot_adb_script.exists():
             text = boot_adb_script.read_text(errors="replace")
+            require("\r" not in text, "boot ADB wrapper uses LF line endings", failures)
             require("skip=1856" in text, "boot ADB wrapper reads USB working mode offset", failures)
             require('mode" != "1"' in text, "boot ADB wrapper requires Device USB working mode", failures)
             require("/etc/init.d/T90adb start" in text, "boot ADB wrapper delegates to stock helper", failures)

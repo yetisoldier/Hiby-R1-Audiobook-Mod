@@ -134,7 +134,7 @@ boot_adb=$bootAdbMarker
 # not silently expose a debug bridge after reboot.
 if ($EnableBootAdb) {
     $persistentAdbBootScript = Join-Path $rootTree "etc\init.d\S90adb"
-    @'
+    $persistentAdbBootScriptText = @'
 #!/bin/sh
 #
 # Development-only boot ADB wrapper.
@@ -174,7 +174,10 @@ case "$1" in
 esac
 
 exit $?
-'@ | Set-Content -LiteralPath $persistentAdbBootScript -Encoding ASCII
+'@
+    $persistentAdbBootScriptText = $persistentAdbBootScriptText -replace "`r`n", "`n"
+    $persistentAdbBootScriptText = $persistentAdbBootScriptText -replace "`r", "`n"
+    [System.IO.File]::WriteAllText($persistentAdbBootScript, $persistentAdbBootScriptText, [System.Text.Encoding]::ASCII)
 }
 
 if ($IncludeAudiobookResumeRuntime) {
