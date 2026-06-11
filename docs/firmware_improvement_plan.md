@@ -38,6 +38,11 @@ incremental changes that can be tested off-device before a new firmware build.
 
 ## Implemented For Next Test Build
 
+- Multipart title-tap resume no longer relies on stock hardware Next/Previous
+  fallback by default. Live testing showed that those buttons can move through
+  tracks in a non-linear database order for at least one multipart audiobook.
+  The daemon now prefers direct visible-row selection and stops safely if that
+  cannot prove it reached the saved track.
 - The native DB helper now recognizes `.iso` files during fallback scans,
   matching the broader HiBy format table used by the hiby-modding database
   updater.
@@ -59,6 +64,11 @@ incremental changes that can be tested off-device before a new firmware build.
 - The catalog also carries optional `series` and `series_part` columns derived
   from Seanap/Plex-style folders. Books without a series folder keep those
   fields blank.
+- The DB helper now writes `/usr/data/audiobooks/catalog-books.tsv`, a
+  one-row-per-book sidecar with author, title, stable book key, optional series,
+  optional series part, track count, and first media ID. This prepares the data
+  layer for Author / Title / Series view experiments without changing the
+  release UI yet.
 - The resume daemon now uses a slower idle polling interval when playback is not
   on an audiobook path. Active audiobook resume still uses the tuned fast
   interval, but normal music playback does less background work.
@@ -74,6 +84,18 @@ incremental changes that can be tested off-device before a new firmware build.
 - `tools/test_r1_db_maint_qemu_wsl.ps1` runs the same DB helper fixture through
   WSL and `qemu-mipsel-static`, executing the real MIPS helper binary instead
   of the Windows test executable.
+- `tools/r1_adb_control.py macro edge-back` wraps the reliable left-edge swipe
+  back gesture used during live testing.
+
+## Audible-Inspired Feature Notes
+
+Audible-style audiobook players commonly emphasize reliable resume, chapter
+navigation, sleep timers, bookmarks/notes, narration speed, offline playback,
+and simple driving/car controls. On the R1, reliable resume and chapter/file
+navigation are the best immediate fit because they can ride the stock playback
+engine. Bookmarks, notes, speed control, and a dedicated sleep-timer UI would
+require deeper UI work or a new input convention, so they should wait until the
+current resume and browsing path is production-stable.
 
 ## Test Path Before Any Firmware Build
 

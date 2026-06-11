@@ -31,6 +31,22 @@ Audiobooks\Author\Series\2020 - Book Title [Series 02]\01 - Chapter.mp3
 This is catalog metadata only. It does not change playback behavior yet, and it
 does not require every book to be in a series.
 
+Development builds after `1.6.4-audiobook` also write a book-level sidecar:
+
+```text
+/usr/data/audiobooks/catalog-books.tsv
+```
+
+That file has one row per book with:
+
+```text
+root_hiby_path, album, author, book_key, series, series_part, track_count, first_media_id
+```
+
+This is a safer foundation for Author / Title / Series experiments than trying
+to infer books from per-track rows at runtime. Standalone books keep blank
+`series` and `series_part` fields.
+
 ## Safe Test Tool
 
 `tools\adb_test_audiobook_launcher_route_variant.py` can temporarily change the

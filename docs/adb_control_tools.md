@@ -164,6 +164,13 @@ Back arrow:
 python tools\r1_adb_control.py preset soft-back --after-screenshot
 ```
 
+Edge-swipe back, which is more reliable on Now Playing and some grid/list
+screens:
+
+```powershell
+python tools\r1_adb_control.py macro edge-back --after-screenshot
+```
+
 Scroll a list upward:
 
 ```powershell
