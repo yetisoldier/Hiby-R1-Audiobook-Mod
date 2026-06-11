@@ -93,6 +93,11 @@ python tools\adb_test_audiobook_launcher_route_variant.py `
 If the R1 glitches, crashes, or shows the wrong list, reboot to return to the
 flashed route.
 
+The `artist\` route was tested in RAM on 2026-06-11. It patched and reverted
+cleanly, but opening Audiobooks landed on the global stock Genres list, not an
+audiobook-author list. That makes the plain stock artist route unsuitable as an
+author-view shortcut.
+
 `tools\adb_test_audiobook_direct_filter_route.py` tested a more direct filtered
 album route in RAM on 2026-06-11. The patch applied and reverted cleanly, but
 opening Audiobooks showed `No music found` instead of the title list. That route
