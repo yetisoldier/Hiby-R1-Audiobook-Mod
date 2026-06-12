@@ -462,8 +462,8 @@ def verify(
             require("AUDIOBOOK_DB_MAINT_LOG_MAX_BYTES=524288" in db_init_text, "db maint init caps DB watcher log growth", failures)
             require("AUDIOBOOK_DB_RUN_ON_MTIME_ONLY=0" in db_init_text, "db maint init ignores mtime-only DB churn by default", failures)
             require(
-                "AUDIOBOOK_DB_MTIME_ONLY_MIN_RERUN_SECONDS=900" in db_init_text,
-                "db maint init keeps a long mtime-only rerun guard",
+                "AUDIOBOOK_DB_MTIME_ONLY_MIN_RERUN_SECONDS=0" in db_init_text,
+                "db maint init disables mtime-only reruns by default",
                 failures,
             )
             require("r1_usrlocal_media_seed.db" in db_init_text, "db maint init installs media DB seed", failures)

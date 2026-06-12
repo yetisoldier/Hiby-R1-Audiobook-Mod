@@ -20,7 +20,7 @@ INTERVAL_SECONDS=${AUDIOBOOK_DB_INTERVAL_SECONDS:-30}
 STABLE_SECONDS=${AUDIOBOOK_DB_STABLE_SECONDS:-15}
 FULL_REFRESH_INTERVAL_SECONDS=${AUDIOBOOK_DB_FULL_REFRESH_INTERVAL_SECONDS:-0}
 RUN_ON_MTIME_ONLY=${AUDIOBOOK_DB_RUN_ON_MTIME_ONLY:-0}
-MTIME_ONLY_MIN_RERUN_SECONDS=${AUDIOBOOK_DB_MTIME_ONLY_MIN_RERUN_SECONDS:-900}
+MTIME_ONLY_MIN_RERUN_SECONDS=${AUDIOBOOK_DB_MTIME_ONLY_MIN_RERUN_SECONDS:-0}
 
 rotate_log_if_needed() {
   case "$LOG_MAX_BYTES" in ''|*[!0-9]*|0) return 0 ;; esac
@@ -111,7 +111,7 @@ run_maint() {
 echo $$ >"$PID_FILE"
 mkdir -p "$BASE" "$BASE/bin" "$BASE/resume.d"
 case "$RUN_ON_MTIME_ONLY" in 1|true|yes) RUN_ON_MTIME_ONLY=1 ;; *) RUN_ON_MTIME_ONLY=0 ;; esac
-case "$MTIME_ONLY_MIN_RERUN_SECONDS" in ''|*[!0-9]*) MTIME_ONLY_MIN_RERUN_SECONDS=900 ;; esac
+case "$MTIME_ONLY_MIN_RERUN_SECONDS" in ''|*[!0-9]*) MTIME_ONLY_MIN_RERUN_SECONDS=0 ;; esac
 
 log "start interval=${INTERVAL_SECONDS}s stable=${STABLE_SECONDS}s full_refresh=${FULL_REFRESH_INTERVAL_SECONDS}s run_on_mtime_only=${RUN_ON_MTIME_ONLY} mtime_only_min_rerun=${MTIME_ONLY_MIN_RERUN_SECONDS}s helper=$HELPER seed=$SEED_DB"
 
@@ -164,17 +164,24 @@ while :; do
         run_reason=periodic-mtime
       elif [ "$MTIME_ONLY_MIN_RERUN_SECONDS" -gt 0 ] && [ "$since_run" -ge "$MTIME_ONLY_MIN_RERUN_SECONDS" ]; then
         should_run=1
+        run_reason=periodic-mtime
       fi
     fi
     if [ "$should_run" = 1 ]; then
       run_maint "$run_reason" || true
       last_sig=$(db_signature 2>/dev/null || echo "$sig")
       last_size=$(db_size_signature 2>/dev/null || echo "$size")
+      last_seen_sig=$last_sig
+      last_seen_size=$last_size
+      last_seen_at=$now
       last_run_at=$now
     else
       log "skip reason=mtime-only sig=$sig size=${size:-?} since_run=${since_run}s"
       last_sig=$sig
       last_size=$size
+      last_seen_sig=$last_sig
+      last_seen_size=$last_size
+      last_seen_at=$now
     fi
     continue
   fi
