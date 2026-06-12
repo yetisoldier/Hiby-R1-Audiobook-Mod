@@ -50,6 +50,7 @@ $psFiles = @(
     "tools\extract_r1_firmware.ps1",
     "tools\install_mips_binutils_wsl.ps1",
     "tools\mips_objdump_wsl.ps1",
+    "tools\publish_github_release.ps1",
     "tools\test_r1_db_maint_qemu_wsl.ps1",
     "tools\test_r1_resume_daemon_logic_wsl.ps1"
 )

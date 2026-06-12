@@ -116,3 +116,26 @@ Dry-run development artifact archive:
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\adb_archive_audiobook_dev_artifacts.ps1 `
   -RemoteArchiveRoot /usr/data/mnt/sd_0/.r1-audiobook-backups/dev-artifacts
 ```
+
+Publish the GitHub Release and assets:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\publish_github_release.ps1 `
+  -Tag v1.4.0 `
+  -Name "HiBy R1 Audiobook Mod v1.4.0" `
+  -BodyFile firmware\releases\v1.4.0\README.md `
+  -Assets "firmware\releases\v1.4.0\r1-audiobooks-1.6.15-audiobook.upt,firmware\releases\v1.4.0\MD5SUMS.txt,firmware\releases\v1.4.0\SHA256SUMS.txt"
+```
+
+Verify the GitHub Release API object and assets:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\publish_github_release.ps1 `
+  -Tag v1.4.0 `
+  -VerifyOnly `
+  -Assets "firmware\releases\v1.4.0\r1-audiobooks-1.6.15-audiobook.upt,firmware\releases\v1.4.0\MD5SUMS.txt,firmware\releases\v1.4.0\SHA256SUMS.txt"
+```
+
+Release publishing notes are in `docs\github_release_process.md`. The important
+gotcha is that a pushed tag or a working browser tag page is not proof that the
+GitHub Release object or `.upt` asset exists.

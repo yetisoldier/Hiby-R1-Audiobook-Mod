@@ -533,6 +533,7 @@ The audiobook-specific behavior in this repository was developed and tested on a
 - `CHANGELOG.md` - human-readable release history.
 - `docs/release_draft_1.6.7.md` - GitHub release notes source for the previous `1.6.7-audiobook` release.
 - `docs/production_release_checklist.md` - release and verification checklist for the current firmware line.
+- `docs/github_release_process.md` - GitHub Release publishing runbook, including the Git Credential Manager token workaround used when `gh` is unavailable.
 - `docs/firmware_improvement_plan.md` - forward plan for post-1.6.9 improvements based on hiby-modding references and local test strategy.
 - `docs/adb_control_tools.md` - live ADB control notes for screenshots, taps, drags, playback keys, and screenshot-assisted Audiobooks flows.
 - `docs/safe_prototype.md` - older non-flash ADB/database-filter prototype workflow, kept for developers and recovery-minded tinkerers.
@@ -565,6 +566,7 @@ The audiobook-specific behavior in this repository was developed and tested on a
 - `tools/adb_install_audiobook_resume_runtime.ps1` - installs and starts the live per-book resume daemon over ADB.
 - `tools/adb_test_audiobook_ui_seek_fallback.py` - guarded live test for the daemon's progress-bar seek fallback; it requires an explicit flag because it changes playback position.
 - `tools/adb_stage_verified_firmware.ps1` - stages a verified `.upt` to the SD card as `r1.upt`, running the local verifier first, refusing known-bad or suspiciously small packages, backing up an existing different target file, and verifying both the temp-copy and final byte count, MD5, and SHA-256 when the device provides `sha256sum`.
+- `tools/publish_github_release.ps1` - creates or verifies the GitHub Release object and uploads the `.upt` plus checksum assets using Git Credential Manager or a GitHub token environment variable.
 - `tools/adb_test_audiobook_direct_filter_route.py` - RAM-only experiment for a direct filtered Audiobooks album route; it is useful for investigation but not part of the release route because live testing did not improve the back stack.
 - `tools/adb_archive_audiobook_dev_artifacts.ps1` - dry-run-first helper for moving known development leftovers under `/usr/data/audiobooks` into a timestamped archive directory.
 - `tools/r1_audiobook_resume_daemon.sh` - on-device shell daemon that saves/restores audiobook positions.
