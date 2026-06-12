@@ -4,37 +4,37 @@ These notes are for the normal HiBy R1 on stock firmware 1.6, not the R1 MIDI.
 
 ## Current Release
 
-- GitHub release: `v1.3.0`
-- Custom version marker: `1.6.11-audiobook`
-- Firmware package: `work\audiobook-firmware-1.6.11-logcap-candidate\r1-audiobooks-1.6.11-audiobook.upt`
-- Firmware MD5: `208b7312800e4c26af79d9af7cd5570d`
-- Firmware SHA256: `bd353cd343d9968c532b2df8a9fd6ee74cb2e8dff66531bbb10a55bb5734abad`
-- Rootfs MD5: `34ac94a36a27ab32a082f340e2db260c`
-- Rootfs SHA256: `85bab0efbeb3f6931195a968eae02d3576b6edb2b0bb4f85682c5408b6a9c15c`
-- `hiby_player` MD5: `09997a636c94112ff76c85a6d4a8d0ff`
+- GitHub release: `v1.4.0`
+- Custom version marker: `1.6.15-audiobook`
+- Firmware package: `work\audiobook-firmware-1.6.15-dbwatch-lock-candidate\r1-audiobooks-1.6.15-audiobook.upt`
+- Firmware MD5: `8f3ecb1f377493b84dbe80d947c89ecd`
+- Firmware SHA256: `fa637ed2e4d6f21bf77014f6fc9bbcb9aed10aa6b3b58b8c52dd387465f639dc`
+- Rootfs MD5: `6570f9b846ae9a7756b2bef7d3b83212`
+- Rootfs SHA256: `359ca24ddace9de794af82b589ebb75c2adb6e5b53630222d00fe8a5ba7240d3`
+- `hiby_player` MD5: `dac7b58717097ef2a75ae5887478ef16`
 
-Local verification on 2026-06-11 passed with `--require-db-maintenance`. This release keeps the self-contained DB maintenance path from `1.6.4-audiobook`, guarded Now Playing play-mode correction, title-list near-miss transport fallback, and exact resume by default. It adds row-tap verification for title-list resume, a small selected-title memscan helper, and capped resume/DB maintenance logs to avoid internal storage creep.
+Local verification on 2026-06-11 passed with `--require-db-maintenance`. This release keeps the self-contained DB maintenance path from `1.6.4-audiobook`, guarded Now Playing play-mode correction, title-list near-miss transport fallback, exact resume by default, row-tap verification, selected-title memscan, and capped runtime logs from `1.6.11-audiobook`. It adds a DB watcher duplicate-process lock and improved same-size DB signature handling so music/audiobook playback timestamp churn is skipped instead of triggering extra maintenance.
 
-This candidate was staged to the SD card as `/usr/data/mnt/sd_0/r1.upt` on 2026-06-11 with matching byte count, MD5, and SHA-256. After flashing, the SD-root updater trigger was archived as `/usr/data/mnt/sd_0/r1-audiobooks-1.6.11-audiobook-installed-20260611.upt`.
+This candidate was staged to the SD card as `/usr/data/mnt/sd_0/r1.upt` on 2026-06-11 with matching byte count, MD5, and SHA-256. After flashing, the SD-root updater trigger was removed.
 
-Post-flash installed-device verification passed on 2026-06-11 with artifacts under `work\installed-release-verification\20260611-180112`: `/etc/r1_audiobook_version` and `/usr/resource/config.json` report `1.6.11-audiobook`, the resume daemon and DB watcher are running with log rotation, play-mode byte `3` is active, SD-root `r1.upt` is absent, `/usr/data` has about 27 MB free, DB integrity is `ok`, both media tables contain 135 audiobook rows, six audiobook books were cataloged, and there is no audiobook leakage into Music search, album, or genre tables. No known development artifacts remained in active `/usr/data/audiobooks`.
+Post-flash installed-device verification passed on 2026-06-11 with artifacts under `work\installed-release-verification\20260611-200902`: `/etc/r1_audiobook_version` and `/usr/resource/config.json` report `1.6.15-audiobook`, the resume daemon and DB watcher are running, the DB watcher runtime contains the duplicate-process lock and mtime-only signature comparison, play-mode byte `3` is active, SD-root `r1.upt` is absent, `/usr/data` has about 27 MB free, DB integrity is `ok`, both media tables contain 135 audiobook rows, six audiobook books were cataloged, and there is no audiobook leakage into Music search, album, or genre tables. No known development artifacts remained in active `/usr/data/audiobooks`.
 
-A short post-flash runtime monitor under `work\runtime-monitor\post-1.6.11-flash-short` showed no reboot, one resume daemon, one DB watcher, stable internal free space, and small capped logs. A live ADB smoke test opened Audiobooks, selected `Ice Like Fire`, restored to the saved position around 17 minutes, and was paused afterward.
+Post-flash ADB smoke testing played normal music with zero audiobook position reads/saves, confirmed the DB watcher skipped same-size mtime-only churn, opened Audiobooks, selected `Holidays on Ice`, restored to the saved point around 12 minutes, and paused afterward.
 
 After flashing this candidate, run installed-device verification with:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\adb_verify_installed_audiobook_release.ps1 `
-  -ExpectedVersion 1.6.11-audiobook `
+  -ExpectedVersion 1.6.15-audiobook `
   -RequirePlayModeGuard `
   -CaptureFramebuffer
 ```
 
 ## Previous Development Candidate
 
-The previous public release was `v1.2.0`, firmware marker `1.6.9-audiobook`.
+The previous public release was `v1.3.0`, firmware marker `1.6.11-audiobook`.
 
-## Current Shareable Candidate
+## Older 1.6.4 Candidate Notes
 
 - Custom version marker: `1.6.4-audiobook`
 - Expected visible About version: truncated `HiBy R1 1.6.4-a` style string.

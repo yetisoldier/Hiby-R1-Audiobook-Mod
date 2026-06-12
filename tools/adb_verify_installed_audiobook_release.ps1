@@ -9,7 +9,7 @@ param(
     [string]$OutDir = "work\installed-release-verification",
 
     [Parameter(Mandatory=$false)]
-    [string]$ExpectedVersion = "1.6.4-audiobook",
+    [string]$ExpectedVersion = "1.6.15-audiobook",
 
     [Parameter(Mandatory=$false)]
     [int]$MinUsrDataFreeKb = 4096,
@@ -122,6 +122,9 @@ if ($RequireDbMaintenance) {
     Set-Content -LiteralPath (Join-Path $verifyDir "runtime_db_watch.sh") -Value $dbWatchScript
     Assert-Contains $dbWatchScript 'LOG_MAX_BYTES=${AUDIOBOOK_DB_MAINT_LOG_MAX_BYTES:-524288}' "runtime DB watcher"
     Assert-Contains $dbWatchScript "rotate_log_if_needed" "runtime DB watcher"
+    Assert-Contains $dbWatchScript 'LOCK_DIR=${AUDIOBOOK_DB_MAINT_LOCK:-$BASE/db-maint.lock}' "runtime DB watcher"
+    Assert-Contains $dbWatchScript "exit reason=already-running" "runtime DB watcher"
+    Assert-Contains $dbWatchScript 'compare_last_size=$(signature_size "$last_sig")' "runtime DB watcher"
 }
 
 $uptText = Invoke-AdbText "if [ -e /usr/data/mnt/sd_0/r1.upt ]; then ls -l /usr/data/mnt/sd_0/r1.upt; else echo no-r1.upt; fi"

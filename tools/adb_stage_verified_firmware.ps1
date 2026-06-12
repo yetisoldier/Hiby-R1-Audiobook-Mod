@@ -3,7 +3,7 @@ param(
     [string]$Adb = "C:\Program Files\Software Fix\adb.exe",
 
     [Parameter(Mandatory=$false)]
-    [string]$Package = "work\audiobook-firmware-1.6.11-logcap-candidate\r1-audiobooks-1.6.11-audiobook.upt",
+    [string]$Package = "work\audiobook-firmware-1.6.15-dbwatch-lock-candidate\r1-audiobooks-1.6.15-audiobook.upt",
 
     [Parameter(Mandatory=$false)]
     [string]$BuildOutDir = "",
@@ -15,10 +15,10 @@ param(
     [string]$StockRootfs = "work\original\rootfs.squashfs",
 
     [Parameter(Mandatory=$false)]
-    [string]$ExpectedVersion = "1.6.11-audiobook",
+    [string]$ExpectedVersion = "1.6.15-audiobook",
 
     [Parameter(Mandatory=$false)]
-    [string]$ExpectedLabel = "HiBy R1 Audiobook FW 1.6.11",
+    [string]$ExpectedLabel = "HiBy R1 Audiobook FW 1.6.15",
 
     [Parameter(Mandatory=$false)]
     [string]$RemoteFinal = "/usr/data/mnt/sd_0/r1.upt",
@@ -60,6 +60,38 @@ function Get-RemoteSha256OrEmpty([string]$RemotePath) {
         return $Matches[0].ToLowerInvariant()
     }
     return ""
+}
+
+function Get-RemoteSizeOrEmpty([string]$RemotePath) {
+    $output = & $adbPath shell "wc -c < '$RemotePath' 2>/dev/null || true"
+    if ($LASTEXITCODE -eq 0) {
+        $joined = $output -join "`n"
+        if ($joined -match "([0-9]+)") {
+            return $Matches[1]
+        }
+    }
+
+    $output = & $adbPath shell "stat -c %s '$RemotePath' 2>/dev/null || true"
+    if ($LASTEXITCODE -eq 0) {
+        $joined = $output -join "`n"
+        if ($joined -match "([0-9]+)") {
+            return $Matches[1]
+        }
+    }
+
+    $output = & $adbPath shell "ls -l '$RemotePath' 2>/dev/null || true"
+    if ($LASTEXITCODE -eq 0) {
+        foreach ($line in $output) {
+            if ($line -match "^\S+\s+\S+\s+\S+\s+\S+\s+([0-9]+)\s+") {
+                return $Matches[1]
+            }
+        }
+    }
+    return ""
+}
+
+function Remove-RemoteIfExists([string]$RemotePath) {
+    & $adbPath shell "rm -f '$RemotePath' 2>/dev/null || true" | Out-Null
 }
 
 if (!$IUnderstandThisStagesFirmware) {
@@ -132,30 +164,31 @@ if ($LASTEXITCODE -ne 0) {
 
 & $adbPath push $packagePath $remoteTmp | Out-Host
 if ($LASTEXITCODE -ne 0) {
+    Remove-RemoteIfExists $remoteTmp
     throw "adb push failed"
 }
 
-$remoteSizeOutput = & $adbPath shell "wc -c < '$remoteTmp'"
-if ($LASTEXITCODE -ne 0) {
-    throw "remote temp size check failed"
-}
-$remoteSize = (($remoteSizeOutput -join "`n") -replace '[^0-9]', '')
+$remoteSize = Get-RemoteSizeOrEmpty $remoteTmp
 if ($remoteSize -ne "$($packageInfo.Length)") {
+    Remove-RemoteIfExists $remoteTmp
     throw "remote temp size mismatch: local=$($packageInfo.Length) remote=$remoteSize"
 }
 
 $remoteMd5Output = & $adbPath shell "sync; md5sum '$remoteTmp'"
 if ($LASTEXITCODE -ne 0) {
+    Remove-RemoteIfExists $remoteTmp
     throw "remote temp md5sum failed"
 }
 $remoteMd5 = ($remoteMd5Output -join "`n").Split()[0].ToLowerInvariant()
 if ($remoteMd5 -ne $localMd5) {
+    Remove-RemoteIfExists $remoteTmp
     throw "remote temp MD5 mismatch: local=$localMd5 remote=$remoteMd5"
 }
 
 $remoteSha256 = Get-RemoteSha256OrEmpty $remoteTmp
 if ($remoteSha256) {
     if ($remoteSha256 -ne $localSha256) {
+        Remove-RemoteIfExists $remoteTmp
         throw "remote temp SHA256 mismatch: local=$localSha256 remote=$remoteSha256"
     }
 } else {
@@ -196,14 +229,11 @@ if ($remoteFinalExists -and !$NoBackupExistingFinal) {
 
 & $adbPath shell "mv '$remoteTmp' '$RemoteFinal'; sync"
 if ($LASTEXITCODE -ne 0) {
+    Remove-RemoteIfExists $remoteTmp
     throw "remote final rename failed"
 }
 
-$remoteFinalSizeOutput = & $adbPath shell "wc -c < '$RemoteFinal'"
-if ($LASTEXITCODE -ne 0) {
-    throw "remote final size check failed"
-}
-$remoteFinalSize = (($remoteFinalSizeOutput -join "`n") -replace '[^0-9]', '')
+$remoteFinalSize = Get-RemoteSizeOrEmpty $RemoteFinal
 if ($remoteFinalSize -ne "$($packageInfo.Length)") {
     throw "remote final size mismatch: local=$($packageInfo.Length) remote=$remoteFinalSize"
 }

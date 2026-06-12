@@ -13,6 +13,7 @@ CATALOG_BOOKS=${AUDIOBOOK_CATALOG_BOOKS:-$BASE/catalog-books.tsv}
 SEED_DB=${AUDIOBOOK_DB_SEED:-$BASE/bin/r1_usrlocal_media_seed.db}
 LOG=${AUDIOBOOK_DB_MAINT_LOG:-$BASE/db-maint.log}
 PID_FILE=${AUDIOBOOK_DB_MAINT_PID:-$BASE/db-maint.pid}
+LOCK_DIR=${AUDIOBOOK_DB_MAINT_LOCK:-$BASE/db-maint.lock}
 LOG_MAX_BYTES=${AUDIOBOOK_DB_MAINT_LOG_MAX_BYTES:-524288}
 
 BOOT_DELAY_SECONDS=${AUDIOBOOK_DB_BOOT_DELAY_SECONDS:-20}
@@ -85,6 +86,39 @@ ensure_db_seeded() {
   return 1
 }
 
+remove_own_lock() {
+  lock_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+  if [ "$lock_pid" = "$$" ]; then
+    rm -rf "$LOCK_DIR" 2>/dev/null || true
+  fi
+}
+
+claim_lock() {
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    echo $$ >"$LOCK_DIR/pid" 2>/dev/null || true
+    return 0
+  fi
+
+  old_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+  case "$old_pid" in
+    ''|*[!0-9]*) old_pid= ;;
+  esac
+  if [ -n "$old_pid" ] && [ -d "/proc/$old_pid" ]; then
+    log "exit reason=already-running pid=$old_pid lock=$LOCK_DIR"
+    exit 0
+  fi
+
+  rm -rf "$LOCK_DIR" 2>/dev/null || true
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    echo $$ >"$LOCK_DIR/pid" 2>/dev/null || true
+    log "recovered-stale-lock lock=$LOCK_DIR"
+    return 0
+  fi
+
+  log "exit reason=lock-unavailable lock=$LOCK_DIR"
+  exit 0
+}
+
 run_maint() {
   reason=$1
   [ -x "$HELPER" ] || {
@@ -116,8 +150,10 @@ run_maint() {
   return "$rc"
 }
 
-echo $$ >"$PID_FILE"
 mkdir -p "$BASE" "$BASE/bin" "$BASE/resume.d"
+claim_lock
+trap 'remove_own_lock; rm -f "$PID_FILE"' EXIT HUP INT TERM
+echo $$ >"$PID_FILE"
 case "$RUN_ON_MTIME_ONLY" in 1|true|yes) RUN_ON_MTIME_ONLY=1 ;; *) RUN_ON_MTIME_ONLY=0 ;; esac
 case "$MTIME_ONLY_MIN_RERUN_SECONDS" in ''|*[!0-9]*) MTIME_ONLY_MIN_RERUN_SECONDS=0 ;; esac
 
@@ -164,8 +200,8 @@ while :; do
   if [ "$sig" != "$last_sig" ] && [ "$age" -ge "$STABLE_SECONDS" ]; then
     run_reason=db-stable
     should_run=1
-    compare_last_size=$last_size
-    [ -n "$compare_last_size" ] || compare_last_size=$(signature_size "$last_sig")
+    compare_last_size=$(signature_size "$last_sig")
+    [ -n "$compare_last_size" ] || compare_last_size=$last_size
     if [ -n "$size" ] && [ -n "$compare_last_size" ] && [ "$size" = "$compare_last_size" ]; then
       run_reason=db-stable-mtime
       should_run=0

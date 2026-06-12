@@ -19,9 +19,9 @@ from pathlib import Path
 
 
 EXPECTED_CURRENT_HASHES = {
-    "r1-audiobooks-1.6.11-audiobook.upt": {
-        "md5": "208b7312800e4c26af79d9af7cd5570d",
-        "sha256": "bd353cd343d9968c532b2df8a9fd6ee74cb2e8dff66531bbb10a55bb5734abad",
+    "r1-audiobooks-1.6.15-audiobook.upt": {
+        "md5": "8f3ecb1f377493b84dbe80d947c89ecd",
+        "sha256": "fa637ed2e4d6f21bf77014f6fc9bbcb9aed10aa6b3b58b8c52dd387465f639dc",
     },
     "r1-audiobooks-1.6.9-audiobook.upt": {
         "md5": "3c3b3f05724acc474fb349e6378fc351",
@@ -32,8 +32,8 @@ EXPECTED_CURRENT_HASHES = {
         "sha256": "02b286676d93ec683307820e1ef40288f34ef21a42a24f5cbda361f2d3733b7b",
     },
     "rootfs.squashfs": {
-        "md5": "34ac94a36a27ab32a082f340e2db260c",
-        "sha256": "85bab0efbeb3f6931195a968eae02d3576b6edb2b0bb4f85682c5408b6a9c15c",
+        "md5": "6570f9b846ae9a7756b2bef7d3b83212",
+        "sha256": "359ca24ddace9de794af82b589ebb75c2adb6e5b53630222d00fe8a5ba7240d3",
     },
     "r1-audiobooks-1.6.3-audiobook.upt": {
         "md5": "1954b92ae7a394a0dc450c2d5f70f3d2",
@@ -44,8 +44,8 @@ EXPECTED_CURRENT_HASHES = {
         "sha256": "9138fd1e91c008205f81857095c50341898d535fae11cc42edec6ed12556e519",
     },
     "squashfs-root/usr/bin/hiby_player": {
-        "md5": "09997a636c94112ff76c85a6d4a8d0ff",
-        "sha256": "f49ea55a48c1bdf1398a2a6672b1d596516650f7ebe77846ba7c33a5cfee329c",
+        "md5": "dac7b58717097ef2a75ae5887478ef16",
+        "sha256": "0f7622d5674a1ecdb00c228251e29be543c3a6eb1d4cfdd86f74c8eb8e30d782",
     },
 }
 
@@ -489,6 +489,9 @@ def verify(
             require("seeded-db reason=" in db_watch_text, "db watch seeds missing media DB", failures)
             require("LOG_MAX_BYTES=${AUDIOBOOK_DB_MAINT_LOG_MAX_BYTES:-524288}" in db_watch_text, "db watch defaults to capped log growth", failures)
             require("rotate_log_if_needed" in db_watch_text, "db watch rotates logs when capped", failures)
+            require("LOCK_DIR=${AUDIOBOOK_DB_MAINT_LOCK:-$BASE/db-maint.lock}" in db_watch_text, "db watch has a duplicate-process lock", failures)
+            require("exit reason=already-running" in db_watch_text, "db watch exits when another watcher is active", failures)
+            require('compare_last_size=$(signature_size "$last_sig")' in db_watch_text, "db watch compares signature sizes for mtime-only churn", failures)
         else:
             require(False, "db watch script exists", failures)
 
@@ -592,10 +595,10 @@ def verify(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--out-dir", type=Path, default=Path("work/audiobook-firmware-1.6.11-logcap-candidate"))
-    parser.add_argument("--upt-name", default="r1-audiobooks-1.6.11-audiobook.upt")
-    parser.add_argument("--expected-version", default="1.6.11-audiobook")
-    parser.add_argument("--expected-label", default="HiBy R1 Audiobook FW 1.6.11")
+    parser.add_argument("--out-dir", type=Path, default=Path("work/audiobook-firmware-1.6.15-dbwatch-lock-candidate"))
+    parser.add_argument("--upt-name", default="r1-audiobooks-1.6.15-audiobook.upt")
+    parser.add_argument("--expected-version", default="1.6.15-audiobook")
+    parser.add_argument("--expected-label", default="HiBy R1 Audiobook FW 1.6.15")
     parser.add_argument(
         "--stock-rootfs",
         type=Path,
