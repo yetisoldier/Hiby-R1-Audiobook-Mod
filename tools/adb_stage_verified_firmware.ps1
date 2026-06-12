@@ -107,7 +107,12 @@ if (!$SkipLocalVerification) {
     }
 }
 
-$remoteTmp = "$RemoteFinal.uploading"
+$remoteFinalDir = ($RemoteFinal -replace '/[^/]+$', '')
+if ([string]::IsNullOrWhiteSpace($remoteFinalDir) -or $remoteFinalDir -eq $RemoteFinal) {
+    throw "RemoteFinal must be an absolute path with a parent directory: $RemoteFinal"
+}
+$remoteTmpDir = "$remoteFinalDir/.r1-audiobook-staging"
+$remoteTmp = "$remoteTmpDir/r1.upt.uploading"
 
 & $adbPath devices | Out-Host
 if ($LASTEXITCODE -ne 0) {
@@ -120,9 +125,9 @@ Write-Host "Local MD5:     $localMd5"
 Write-Host "Local SHA256:  $localSha256"
 Write-Host "Remote final:  $RemoteFinal"
 
-& $adbPath shell "rm -f '$remoteTmp'"
+& $adbPath shell "mkdir -p '$remoteTmpDir' && rm -f '$remoteTmp'"
 if ($LASTEXITCODE -ne 0) {
-    throw "failed to remove stale temp package"
+    throw "failed to prepare temp package path"
 }
 
 & $adbPath push $packagePath $remoteTmp | Out-Host

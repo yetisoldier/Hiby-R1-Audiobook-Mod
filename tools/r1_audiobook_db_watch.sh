@@ -54,6 +54,14 @@ db_size_signature() {
   wc -c <"$DB" 2>/dev/null | awk '{ print $1 }'
 }
 
+signature_size() {
+  sig_value=$1
+  case "$sig_value" in
+    *:*) printf '%s\n' "${sig_value%%:*}" ;;
+    *) printf '%s\n' "$sig_value" ;;
+  esac
+}
+
 ensure_db_seeded() {
   reason=$1
   if [ -s "$DB" ]; then
@@ -138,6 +146,8 @@ while :; do
   ensure_db_seeded loop || true
   sig=$(db_signature 2>/dev/null || true)
   size=$(db_size_signature 2>/dev/null || true)
+  sig_size=$(signature_size "$sig")
+  [ -n "$size" ] || size=$sig_size
   now=$(now_seconds)
   if [ -z "$sig" ]; then
     continue
@@ -154,7 +164,9 @@ while :; do
   if [ "$sig" != "$last_sig" ] && [ "$age" -ge "$STABLE_SECONDS" ]; then
     run_reason=db-stable
     should_run=1
-    if [ -n "$size" ] && [ -n "$last_size" ] && [ "$size" = "$last_size" ]; then
+    compare_last_size=$last_size
+    [ -n "$compare_last_size" ] || compare_last_size=$(signature_size "$last_sig")
+    if [ -n "$size" ] && [ -n "$compare_last_size" ] && [ "$size" = "$compare_last_size" ]; then
       run_reason=db-stable-mtime
       should_run=0
       if [ "$RUN_ON_MTIME_ONLY" = 1 ]; then
@@ -170,7 +182,8 @@ while :; do
     if [ "$should_run" = 1 ]; then
       run_maint "$run_reason" || true
       last_sig=$(db_signature 2>/dev/null || echo "$sig")
-      last_size=$(db_size_signature 2>/dev/null || echo "$size")
+      last_size=$(db_size_signature 2>/dev/null || true)
+      [ -n "$last_size" ] || last_size=$(signature_size "$last_sig")
       last_seen_sig=$last_sig
       last_seen_size=$last_size
       last_seen_at=$now
