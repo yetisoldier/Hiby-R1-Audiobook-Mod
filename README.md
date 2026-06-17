@@ -1,4 +1,4 @@
-# HiBy R1 Audiobook Firmware Workspace
+# HiBy R1 Audiobook Firmware 
 
 This workspace is for investigating and prototyping audiobook support on the HiBy R1 without taking unnecessary flashing risks.
 
@@ -44,7 +44,7 @@ Manual install:
 6. After a successful boot, delete or rename SD-root `r1.upt` so the updater does not keep offering the same update.
 7. On the R1, go into Music and run `Update Database`, then wait for the scan to complete.
 
-ADB-assisted install from this workspace:
+ADB-assisted install from this workspace (Ignore this if you did the manual install):
 
 ```powershell
 python tools\verify_r1_audiobook_build.py --require-db-maintenance --expect-current-hashes
