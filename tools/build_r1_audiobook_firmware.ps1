@@ -65,10 +65,10 @@ param(
     [string]$MediaDbSeed = "firmware\seed\usrlocal_media.seed.db",
 
     [Parameter(Mandatory=$false)]
-    [string]$CustomVersionId = "1.6.16-audiobook",
+    [string]$CustomVersionId = "1.6.16.1-audiobook",
 
     [Parameter(Mandatory=$false)]
-    [string]$CustomVersionLabel = "HiBy R1 Audiobook FW 1.6.16",
+    [string]$CustomVersionLabel = "HiBy R1 Audiobook FW 1.6.16.1",
 
     [Parameter(Mandatory=$false)]
     [int]$OtaVersion = 0,

@@ -5,6 +5,7 @@ BASE=${AUDIOBOOK_BASE_DIR:-/usr/data/audiobooks}
 HELPER=${AUDIOBOOK_DB_MAINT_HELPER:-$BASE/bin/r1_audiobook_db_maint}
 DB=${AUDIOBOOK_DB_PATH:-/usr/data/usrlocal_media.db}
 SD_ROOT=${AUDIOBOOK_SD_ROOT:-/usr/data/mnt/sd_0}
+AUDIOBOOK_DB_MIRROR_PATHS=${AUDIOBOOK_DB_MIRROR_PATHS:-/data/usrlocal_media.db $SD_ROOT/usrlocal_media.db}
 AUDIOBOOKS_DIR=${AUDIOBOOK_DB_AUDIOBOOKS_DIR:-$SD_ROOT/Audiobooks}
 MUSIC_DIR=${AUDIOBOOK_DB_MUSIC_DIR:-$SD_ROOT/Music}
 CATALOG=${AUDIOBOOK_CATALOG:-$BASE/catalog.tsv}
@@ -166,21 +167,22 @@ claim_lock() {
   exit 0
 }
 
-run_maint() {
+run_maint_one_db() {
   reason=$1
-  LAST_AUDIOBOOK_TRACKS=
+  target_db=$2
+  role=$3
   [ -x "$HELPER" ] || {
     log "skip reason=$reason helper-not-executable helper=$HELPER"
     return 1
   }
-  [ -s "$DB" ] || {
-    log "skip reason=$reason db-missing db=$DB"
+  [ -s "$target_db" ] || {
+    log "skip reason=$reason role=$role db-missing db=$target_db"
     return 1
   }
-  log "run reason=$reason db=$DB music=$MUSIC_DIR audiobooks=$AUDIOBOOKS_DIR"
-  helper_output="$BASE/db-maint-run.$$"
+  log "run reason=$reason role=$role db=$target_db music=$MUSIC_DIR audiobooks=$AUDIOBOOKS_DIR"
+  helper_output="$BASE/db-maint-run.$$.$role"
   "$HELPER" \
-    --db "$DB" \
+    --db "$target_db" \
     --sd-root "$SD_ROOT" \
     --music-dir "$MUSIC_DIR" \
     --audiobooks-dir "$AUDIOBOOKS_DIR" \
@@ -200,11 +202,37 @@ run_maint() {
   fi
   rotate_log_if_needed
   if [ "$rc" -eq 0 ]; then
-    log "done reason=$reason audiobook_tracks=${LAST_AUDIOBOOK_TRACKS:-unknown}"
+    log "done reason=$reason role=$role db=$target_db audiobook_tracks=${LAST_AUDIOBOOK_TRACKS:-unknown}"
   else
-    log "failed reason=$reason rc=$rc"
+    log "failed reason=$reason role=$role db=$target_db rc=$rc"
   fi
   return "$rc"
+}
+
+run_maint() {
+  reason=$1
+  LAST_AUDIOBOOK_TRACKS=
+  primary_tracks=
+  run_maint_one_db "$reason" "$DB" primary
+  primary_rc=$?
+  primary_tracks=${LAST_AUDIOBOOK_TRACKS:-}
+
+  mirror_seen=" $DB "
+  for mirror_db in $AUDIOBOOK_DB_MIRROR_PATHS; do
+    [ -n "$mirror_db" ] || continue
+    case "$mirror_seen" in
+      *" $mirror_db "*) continue ;;
+    esac
+    mirror_seen="$mirror_seen$mirror_db "
+    if [ -s "$mirror_db" ]; then
+      run_maint_one_db "$reason" "$mirror_db" mirror || true
+    else
+      log "mirror-skip reason=$reason db=$mirror_db missing"
+    fi
+  done
+
+  LAST_AUDIOBOOK_TRACKS=$primary_tracks
+  return "$primary_rc"
 }
 
 retry_zero_audiobooks_if_needed() {

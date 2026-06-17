@@ -3,7 +3,7 @@ param(
     [string]$Adb = "",
 
     [Parameter(Mandatory=$false)]
-    [string]$Package = "work\audiobook-firmware-1.6.16-audiobook\r1-audiobooks-1.6.16-audiobook.upt",
+    [string]$Package = "work\audiobook-firmware-1.6.16.1-audiobook\r1-audiobooks-1.6.16.1-audiobook.upt",
 
     [Parameter(Mandatory=$false)]
     [string]$BuildOutDir = "",
@@ -15,10 +15,10 @@ param(
     [string]$StockRootfs = "work\original\rootfs.squashfs",
 
     [Parameter(Mandatory=$false)]
-    [string]$ExpectedVersion = "1.6.16-audiobook",
+    [string]$ExpectedVersion = "1.6.16.1-audiobook",
 
     [Parameter(Mandatory=$false)]
-    [string]$ExpectedLabel = "HiBy R1 Audiobook FW 1.6.16",
+    [string]$ExpectedLabel = "HiBy R1 Audiobook FW 1.6.16.1",
 
     [Parameter(Mandatory=$false)]
     [string]$RemoteFinal = "/usr/data/mnt/sd_0/r1.upt",

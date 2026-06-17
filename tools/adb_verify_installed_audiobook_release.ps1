@@ -9,7 +9,7 @@ param(
     [string]$OutDir = "work\installed-release-verification",
 
     [Parameter(Mandatory=$false)]
-    [string]$ExpectedVersion = "1.6.16-audiobook",
+    [string]$ExpectedVersion = "1.6.16.1-audiobook",
 
     [Parameter(Mandatory=$false)]
     [int]$MinUsrDataFreeKb = 4096,
@@ -219,6 +219,11 @@ if ($RequireDbMaintenance) {
         Assert-Contains $dbWatchScript 'STABLE_POLL_SECONDS=${AUDIOBOOK_DB_STABLE_POLL_SECONDS:-3}' "runtime DB watcher"
         Assert-Contains $dbWatchScript "wait_for_stable_db boot" "runtime DB watcher"
         Assert-Contains $dbWatchScript "wait-stable-timeout reason=" "runtime DB watcher"
+        Assert-Contains $dbWatchScript "AUDIOBOOK_DB_MIRROR_PATHS=" "runtime DB watcher"
+        Assert-Contains $dbWatchScript "/data/usrlocal_media.db" "runtime DB watcher"
+        Assert-Contains $dbWatchScript '$SD_ROOT/usrlocal_media.db' "runtime DB watcher"
+        Assert-Contains $dbWatchScript "run_maint_one_db" "runtime DB watcher"
+        Assert-Contains $dbWatchScript 'run_maint_one_db "$reason" "$mirror_db" mirror' "runtime DB watcher"
         Assert-Contains $dbWatchScript "boot_stable_timeout=" "runtime DB watcher"
         Assert-Contains $dbWatchScript "zero_audio_retry=" "runtime DB watcher"
         Assert-Contains $dbWatchScript "retry_zero_audiobooks_if_needed boot" "runtime DB watcher"

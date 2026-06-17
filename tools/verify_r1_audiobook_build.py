@@ -52,6 +52,10 @@ EXPECTED_CURRENT_HASHES = {
         "md5": "4938a5d3f74204995a1bb297175da463",
         "sha256": "ba3b16dc63e35abfc22cd0ac9e4324a5a2e3834ad894c42fd310f30f99c3f1e0",
     },
+    "r1-audiobooks-1.6.16.1-audiobook.upt": {
+        "md5": "d30527750a071602a67f1eceb462f8cc",
+        "sha256": "085495646039eafb496279d3ef2625671783552ad069150c3e959e5c219d7f3f",
+    },
     "r1-audiobooks-1.6.9-audiobook.upt": {
         "md5": "3c3b3f05724acc474fb349e6378fc351",
         "sha256": "f78e67089ff84021b18d69a4af2cb01be6f872bc59d187bf9cba256f8cd792aa",
@@ -61,8 +65,8 @@ EXPECTED_CURRENT_HASHES = {
         "sha256": "02b286676d93ec683307820e1ef40288f34ef21a42a24f5cbda361f2d3733b7b",
     },
     "rootfs.squashfs": {
-        "md5": "48abe53dc5e83e8eeb045dfd8f4a3d17",
-        "sha256": "adfdf99eefdeb2693aa8cf610780b05e60404f7d8e6dac33b0b5ef6b1c1d69ca",
+        "md5": "7a0b2a3d001ea53b079b79fbcf9c5933",
+        "sha256": "26c9b68e49a3761930dcae3c95b172905d8e88108c68f59be44ffe3c0a96d942",
     },
     "r1-audiobooks-1.6.3-audiobook.upt": {
         "md5": "1954b92ae7a394a0dc450c2d5f70f3d2",
@@ -737,6 +741,11 @@ def verify(
             require("wait_for_stable_db boot" in db_watch_text, "db watch waits for boot DB stability before first maint run", failures)
             require("wait-stable-timeout reason=" in db_watch_text, "db watch logs boot DB stability timeout", failures)
             require("stable reason=" in db_watch_text, "db watch logs stable DB signature", failures)
+            require("AUDIOBOOK_DB_MIRROR_PATHS=" in db_watch_text, "db watch tracks active media DB mirror paths", failures)
+            require("/data/usrlocal_media.db" in db_watch_text, "db watch includes /data media DB mirror", failures)
+            require("$SD_ROOT/usrlocal_media.db" in db_watch_text, "db watch includes SD-root media DB mirror", failures)
+            require("run_maint_one_db" in db_watch_text, "db watch can run helper per DB path", failures)
+            require('run_maint_one_db "$reason" "$mirror_db" mirror' in db_watch_text, "db watch runs helper for mirror DB paths", failures)
             require("boot_stable_timeout=" in db_watch_text, "db watch start log includes boot stability timeout", failures)
             require("zero_audio_retry=" in db_watch_text, "db watch start log includes zero-audiobook retry timeout", failures)
             require("run_maint boot" in db_watch_text, "db watch runs maintainer once after boot", failures)
@@ -901,10 +910,10 @@ def verify(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--out-dir", type=Path, default=Path("work/audiobook-firmware-1.6.16-audiobook"))
-    parser.add_argument("--upt-name", default="r1-audiobooks-1.6.16-audiobook.upt")
-    parser.add_argument("--expected-version", default="1.6.16-audiobook")
-    parser.add_argument("--expected-label", default="HiBy R1 Audiobook FW 1.6.16")
+    parser.add_argument("--out-dir", type=Path, default=Path("work/audiobook-firmware-1.6.16.1-audiobook"))
+    parser.add_argument("--upt-name", default="r1-audiobooks-1.6.16.1-audiobook.upt")
+    parser.add_argument("--expected-version", default="1.6.16.1-audiobook")
+    parser.add_argument("--expected-label", default="HiBy R1 Audiobook FW 1.6.16.1")
     parser.add_argument(
         "--stock-rootfs",
         type=Path,
