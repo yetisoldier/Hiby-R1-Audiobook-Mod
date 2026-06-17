@@ -54,9 +54,10 @@ def split_image(image: Path, out_dir: Path, prefix: str) -> tuple[int, str]:
     return image_size, overall_md5
 
 
-def prepare_ota_tree(ximage: Path, rootfs: Path, work_dir: Path) -> Path:
+def prepare_ota_tree(ximage: Path, rootfs: Path, work_dir: Path, ota_version: int = 0) -> Path:
     iso_root = work_dir / "iso_root"
-    ota_dir = iso_root / "ota_v0"
+    ota_dir_name = f"ota_v{ota_version}"
+    ota_dir = iso_root / ota_dir_name
     ota_dir.mkdir(parents=True)
 
     x_size, x_md5 = split_image(ximage, ota_dir, "xImage")
@@ -65,7 +66,7 @@ def prepare_ota_tree(ximage: Path, rootfs: Path, work_dir: Path) -> Path:
     (ota_dir / "ota_update.in").write_text(
         "\n".join(
             [
-                "ota_version=0",
+                f"ota_version={ota_version}",
                 "",
                 "img_type=kernel",
                 "img_name=xImage",
@@ -82,8 +83,10 @@ def prepare_ota_tree(ximage: Path, rootfs: Path, work_dir: Path) -> Path:
         encoding="ascii",
         newline="\n",
     )
-    (ota_dir / "ota_v0.ok").write_text("\n", encoding="ascii", newline="\n")
-    (iso_root / "ota_config.in").write_text("current_version=0\n", encoding="ascii", newline="\n")
+    (ota_dir / f"{ota_dir_name}.ok").write_text("\n", encoding="ascii", newline="\n")
+    (iso_root / "ota_config.in").write_text(
+        f"current_version={ota_version}\n", encoding="ascii", newline="\n"
+    )
     return iso_root
 
 
@@ -135,16 +138,24 @@ def main() -> None:
         type=Path,
         help="Optional directory where the generated ota tree should be copied for inspection.",
     )
+    parser.add_argument(
+        "--ota-version",
+        type=int,
+        default=0,
+        help="Numeric OTA version used in ota_config.in and ota_vN/ota_update.in.",
+    )
     args = parser.parse_args()
 
     if not args.ximage.exists():
         raise SystemExit(f"xImage not found: {args.ximage}")
     if not args.rootfs.exists():
         raise SystemExit(f"rootfs not found: {args.rootfs}")
+    if args.ota_version < 0:
+        raise SystemExit("--ota-version must be non-negative")
 
     with tempfile.TemporaryDirectory(prefix="r1-upt-") as tmp:
         tmp_path = Path(tmp)
-        iso_root = prepare_ota_tree(args.ximage, args.rootfs, tmp_path)
+        iso_root = prepare_ota_tree(args.ximage, args.rootfs, tmp_path, args.ota_version)
         if args.keep_tree:
             if args.keep_tree.exists():
                 shutil.rmtree(args.keep_tree)

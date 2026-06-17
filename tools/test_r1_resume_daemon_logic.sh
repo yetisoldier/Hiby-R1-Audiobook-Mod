@@ -46,6 +46,17 @@ assert_false() {
   fi
 }
 
+assert_file_contains() {
+  test_label=$1
+  file=$2
+  pattern=$3
+  if grep -F "$pattern" "$file" >/dev/null 2>&1; then
+    ok "$test_label"
+  else
+    fail "$test_label missing=[$pattern]"
+  fi
+}
+
 AUDIOBOOK_RESUME_DAEMON_SOURCE_ONLY=1
 . "$DAEMON"
 
@@ -87,11 +98,41 @@ book_title_context_until=0
 BOOK_TITLE_AUTOSTART_ENABLED=0
 assert_false "marker poll obeys autostart disable switch" should_poll_book_title_marker 'a:\Audiobooks\Book\01.mp3' 101
 BOOK_TITLE_AUTOSTART_ENABLED=1
+assert_false "preplay direct start skips launcher marker" book_title_should_preplay_direct_start launcher
+assert_true "preplay direct start allowed for path marker" book_title_should_preplay_direct_start path
+assert_true "preplay direct start allowed for catalog marker" book_title_should_preplay_direct_start catalog
+assert_false "preplay direct start skips context marker" book_title_should_preplay_direct_start context
+assert_false "preplay direct start skips relaxed marker" book_title_should_preplay_direct_start relaxed
+assert_eq "context preplay disables stale memscan root" "0" "$(book_title_preplay_allow_memscan_root context)"
+assert_eq "launcher preplay disables stale memscan root" "0" "$(book_title_preplay_allow_memscan_root launcher)"
+assert_eq "path preplay disables stale memscan root" "0" "$(book_title_preplay_allow_memscan_root path)"
+assert_true "restore attempt allowed after playback advances" should_attempt_restore_for_position 1 0
+assert_true "restore attempt allowed at zero during title autostart" should_attempt_restore_for_position 0 1
+assert_false "restore attempt waits at zero outside title autostart" should_attempt_restore_for_position 0 0
+assert_false "restore attempt rejects bad position" should_attempt_restore_for_position bad 1
 
 CURRENT_PATH_HEX_CACHE=
 CURRENT_PATH_VALUE_CACHE=
 assert_eq "path slot decodes audiobook path" 'a:\Audiobooks\Book\01.mp3' "$(current_path_from_hex "$audio_hex")"
 assert_eq "path slot normalizes rootless audiobook path" 'a:\Audiobooks\Book\01.mp3' "$(current_path_from_hex "$audio_rootless_hex")"
+
+old_catalog=$CATALOG
+catalog_exact_test=$(mktemp)
+CATALOG=$catalog_exact_test
+{
+  printf 'root_hiby_path\ttrack_index\ttrack_count\tmedia_id\tpath\ttitle\talbum\tauthor\tbook_key\tseries\tseries_part\n'
+  printf 'a:\\Audiobooks\\Author\\Book\t1\t1\t1\ta:\\Audiobooks\\Author\\Book\\01.mp3.backup\tWrong\tWrong\tAuthor\twrong\t\t\n'
+  printf 'a:\\Audiobooks\\Author\\Book\t1\t1\t2\ta:\\Audiobooks\\Author\\Book\\01.mp3\tRight\tRight\tAuthor\tright\t\t\n'
+} >"$CATALOG"
+assert_eq "catalog path lookup uses exact path field" "right" "$(catalog_field_for_path 9 'a:\Audiobooks\Author\Book\01.mp3')"
+{
+  printf 'root_hiby_path\ttrack_index\ttrack_count\tmedia_id\tpath\ttitle\talbum\tauthor\tbook_key\tseries\tseries_part\n'
+  printf 'a:\\Audiobooks\\Author\\Book Extra\t1\t1\t3\ta:\\Audiobooks\\Author\\Book Extra\\01.mp3\tExtra\tExtra\tAuthor\textra\t\t\n'
+  printf 'a:\\Audiobooks\\Author\\Book\t1\t1\t2\ta:\\Audiobooks\\Author\\Book\\01.mp3\tRight\tRight\tAuthor\tright\t\t\n'
+} >"$CATALOG"
+assert_eq "catalog first path lookup uses exact root field" 'a:\Audiobooks\Author\Book\01.mp3' "$(catalog_first_path_for_root 'a:\Audiobooks\Author\Book')"
+CATALOG=$old_catalog
+rm -f "$catalog_exact_test"
 
 sleep_track_switch_poll() {
   :
@@ -391,6 +432,147 @@ pid_mem_first_catalog_path() {
 }
 assert_false "preplay direct start obeys select disable switch" book_title_direct_start_saved_track 123 456 789
 
+RESTORE_ENABLED=1
+BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED=1
+BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED=1
+BOOK_TITLE_DIRECT_OPEN_ENABLED=1
+BOOK_TITLE_DIRECT_TRACK_CALIBRATE_ENABLED=0
+DIRECT_OPEN_ARM_DELAY_US=0
+direct_open_args_file=$(mktemp)
+direct_open_helper=$(mktemp)
+cat >"$direct_open_helper" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >"$DIRECT_OPEN_TEST_ARGS"
+exit 0
+EOF
+chmod 755 "$direct_open_helper"
+DIRECT_OPEN_TEST_ARGS=$direct_open_args_file
+export DIRECT_OPEN_TEST_ARGS
+DIRECT_OPEN_HELPER=$direct_open_helper
+first_path='a:\Audiobooks\Author\Book\01.mp3'
+saved_path='a:\Audiobooks\Author\Book\20.mp3'
+selected_path=
+test_record=$(mktemp)
+: >"$test_record"
+row_taps=
+swipe_taps=0
+
+book_title_memscan_root() {
+  printf '%s\n' 'a:\Audiobooks\Author\Book'
+}
+
+catalog_first_path_for_root() {
+  printf '%s\n' "$first_path"
+}
+
+existing_record_for_path() {
+  printf '%s\n' "$test_record"
+}
+
+book_root_for_path() {
+  printf '%s\n' 'a:\Audiobooks\Author\Book'
+}
+
+record_saved_path_for_current() {
+  printf '%s\n' "$saved_path"
+}
+
+json_bool() {
+  printf '%s\n' false
+}
+
+json_number() {
+  case "$1" in
+    position_ms) printf '%s\n' 15595 ;;
+    *) printf '\n' ;;
+  esac
+}
+
+catalog_field_for_path() {
+  case "$1:$2" in
+    2:"$saved_path") printf '%s\n' 20 ;;
+    3:"$saved_path") printf '%s\n' 44 ;;
+    *) printf '\n' ;;
+  esac
+}
+
+current_path() {
+  printf '%s\n' "$selected_path"
+}
+
+touch_track_row() {
+  row_taps="${row_taps}$1,"
+  selected_path=$saved_path
+  return 0
+}
+
+touch_track_swipe_up() {
+  swipe_taps=$((swipe_taps + 1))
+  return 0
+}
+
+assert_true "preplay direct start uses direct-open helper" book_title_direct_start_saved_track 321 222 333
+assert_eq "preplay direct-open forces zero-based saved index" "--pid 321 --row-index 19 --probe-addr 0x760708 --scratch-addr 0x8e4400 --timeout-ms 6000" "$(cat "$direct_open_args_file")"
+assert_eq "preplay direct-open taps only trigger row" "1,:0" "$row_taps:$swipe_taps"
+assert_file_contains "main loop settles before position restore after track jump" "$DAEMON" "restore settle after track restore path="
+rm -f "$direct_open_args_file" "$direct_open_helper" "$test_record"
+
+RESTORE_ENABLED=1
+BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED=1
+BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED=1
+BOOK_TITLE_DIRECT_OPEN_ENABLED=1
+BOOK_TITLE_DIRECT_TRACK_CALIBRATE_ENABLED=0
+DIRECT_OPEN_HELPER=$direct_open_helper
+stale_memscan_calls=0
+pid_scan_file=$(mktemp)
+first_path='a:\Audiobooks\Previous\Book\01.mp3'
+saved_path='a:\Audiobooks\Previous\Book\20.mp3'
+
+book_title_memscan_root() {
+  stale_memscan_calls=$((stale_memscan_calls + 1))
+  printf '%s\n' 'a:\Audiobooks\Previous\Book'
+}
+
+catalog_first_path_for_root() {
+  printf '%s\n' "$first_path"
+}
+
+pid_mem_first_catalog_path() {
+  printf 'scan\n' >>"$pid_scan_file"
+  return 1
+}
+
+assert_false "context direct-start skips stale memscan root" book_title_direct_start_saved_track 321 222 333 0
+assert_eq "context direct-start avoids stale root lookup" "0" "$stale_memscan_calls"
+assert_eq "context direct-start still tries fresh list scans" "2" "$(wc -l <"$pid_scan_file" | awk '{ print $1 }')"
+rm -f "$pid_scan_file"
+
+autostart_restore_active=1
+restored_path=
+path='a:\Audiobooks\Author\Book\01.mp3'
+saved_path='a:\Audiobooks\Author\Book\27.mp3'
+test_record=$(mktemp)
+: >"$test_record"
+
+book_root_for_path() {
+  printf '%s\n' 'a:\Audiobooks\Author\Book'
+}
+
+existing_record_for_path() {
+  printf '%s\n' "$test_record"
+}
+
+record_saved_path_for_current() {
+  printf '%s\n' "$saved_path"
+}
+
+assert_true "unresolved title start defers deeper bookmark overwrite past commit guard" should_defer_new_track_save "$path" 45000
+restored_path=$path
+assert_false "resolved title start allows later intentional save" should_defer_new_track_save "$path" 45000
+autostart_restore_active=0
+restored_path=
+rm -f "$test_record"
+
 RESTORE_REWIND_MS=0
 assert_eq "restore target exact by default" "270200" "$(restore_target_ms 270200)"
 RESTORE_REWIND_MS=5000
@@ -655,6 +837,77 @@ mode_state=2
 play_mode_taps=0
 assert_false "play mode guard blocks when screen not ready" ensure_audiobook_play_mode
 assert_eq "screen guard prevents play mode tap" "0:2" "$play_mode_taps:$mode_state"
+
+BOOK_TITLE_AUTOSTART_ENABLED=1
+BOOK_TITLE_CONTEXT_SECONDS=300
+BOOK_TITLE_AUTOSTART_DELAY_SECONDS=0
+RESTORE_RETRY_AFTER_FAILURE_SECONDS=60
+book_title_context_until=0
+test_album_ptr=90000
+test_track_list_ptr=91000
+test_catalog_scan_ptr=0
+test_source_seq=900
+test_album_ptr_addr=$((BOOK_TITLE_MARKER_ADDR + 24))
+test_source_magic_addr=$((BOOK_TITLE_MARKER_ADDR + 32))
+test_source_seq_addr=$((BOOK_TITLE_MARKER_ADDR + 44))
+test_track_list_ptr_addr=$((test_album_ptr + BOOK_TITLE_TRACK_LIST_OFFSET))
+test_catalog_scan_ptr_addr=$((test_album_ptr + BOOK_TITLE_CATALOG_SCAN_PTR_OFFSET))
+direct_start_calls=0
+direct_start_allow_root=
+touch_first_calls=0
+
+player_pid() {
+  printf '%s\n' 1234
+}
+
+u32le_at_pid_mem() {
+  case "$2" in
+    "$test_album_ptr_addr") printf '%s\n' "$test_album_ptr" ;;
+    "$test_track_list_ptr_addr") printf '%s\n' "$test_track_list_ptr" ;;
+    "$test_source_magic_addr") printf '%s\n' "$BOOK_TITLE_SOURCE_MAGIC" ;;
+    "$test_source_seq_addr") printf '%s\n' "$test_source_seq" ;;
+    "$test_catalog_scan_ptr_addr") printf '%s\n' "$test_catalog_scan_ptr" ;;
+    *) printf '%s\n' 0 ;;
+  esac
+}
+
+pid_mem_contains() {
+  return 1
+}
+
+pid_mem_contains_catalog_album() {
+  return 1
+}
+
+book_title_direct_start_saved_track() {
+  direct_start_calls=$((direct_start_calls + 1))
+  direct_start_allow_root=$4
+  return 1
+}
+
+touch_first_track() {
+  touch_first_calls=$((touch_first_calls + 1))
+  return 0
+}
+
+title_list_visible_result=1
+audiobook_title_list_visible() {
+  [ "$title_list_visible_result" = 1 ]
+}
+
+assert_true "launcher-only marker without fresh path is ignored safely" maybe_autostart_book_title "$test_source_seq"
+assert_eq "launcher-only marker skips direct-start scan" "0:" "$direct_start_calls:$direct_start_allow_root"
+assert_eq "launcher-only marker does not tap first row" "0" "$touch_first_calls"
+
+direct_start_calls=0
+direct_start_allow_root=
+touch_first_calls=0
+title_list_visible_result=0
+test_context_seq=901
+book_title_context_until=$(( $(date +%s) + 60 ))
+assert_true "context title marker keeps first-row fallback" maybe_autostart_book_title "$test_context_seq"
+assert_eq "context marker skips direct-start scan" "0:" "$direct_start_calls:$direct_start_allow_root"
+assert_eq "context marker can tap first row" "1" "$touch_first_calls"
 
 if [ "$failures" -ne 0 ]; then
   exit 1

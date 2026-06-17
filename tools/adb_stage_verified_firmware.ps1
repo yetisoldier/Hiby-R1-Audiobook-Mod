@@ -1,9 +1,9 @@
 param(
     [Parameter(Mandatory=$false)]
-    [string]$Adb = "C:\Program Files\Software Fix\adb.exe",
+    [string]$Adb = "",
 
     [Parameter(Mandatory=$false)]
-    [string]$Package = "work\audiobook-firmware-1.6.15-dbwatch-lock-candidate\r1-audiobooks-1.6.15-audiobook.upt",
+    [string]$Package = "work\audiobook-firmware-1.6.16-audiobook\r1-audiobooks-1.6.16-audiobook.upt",
 
     [Parameter(Mandatory=$false)]
     [string]$BuildOutDir = "",
@@ -15,15 +15,21 @@ param(
     [string]$StockRootfs = "work\original\rootfs.squashfs",
 
     [Parameter(Mandatory=$false)]
-    [string]$ExpectedVersion = "1.6.15-audiobook",
+    [string]$ExpectedVersion = "1.6.16-audiobook",
 
     [Parameter(Mandatory=$false)]
-    [string]$ExpectedLabel = "HiBy R1 Audiobook FW 1.6.15",
+    [string]$ExpectedLabel = "HiBy R1 Audiobook FW 1.6.16",
 
     [Parameter(Mandatory=$false)]
     [string]$RemoteFinal = "/usr/data/mnt/sd_0/r1.upt",
 
     [switch]$ExpectCurrentHashes,
+
+    [switch]$ExpectNativeDsd,
+
+    [switch]$ExpectBluetoothSbcXq,
+
+    [switch]$ExpectUsbDacMode,
 
     [switch]$RequireDbMaintenance = $true,
 
@@ -48,6 +54,28 @@ function Resolve-PathStrict([string]$PathValue) {
         throw "Missing path: $PathValue"
     }
     return (Resolve-Path -LiteralPath $PathValue).Path
+}
+
+function Resolve-AdbPath([string]$PathValue) {
+    if ($PathValue -and (Test-Path -LiteralPath $PathValue)) {
+        return (Resolve-Path -LiteralPath $PathValue).Path
+    }
+
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    $repoAdb = Join-Path $repoRoot ".tools\platform-tools\adb.exe"
+    if (Test-Path -LiteralPath $repoAdb) {
+        return (Resolve-Path -LiteralPath $repoAdb).Path
+    }
+
+    $pathAdb = Get-Command adb -ErrorAction SilentlyContinue
+    if ($pathAdb) {
+        return $pathAdb.Source
+    }
+
+    if ($PathValue) {
+        throw "Missing adb path: $PathValue"
+    }
+    throw "ADB not found. Install platform-tools, add adb to PATH, or place adb.exe at .tools\platform-tools\adb.exe."
 }
 
 function Get-RemoteSha256OrEmpty([string]$RemotePath) {
@@ -94,11 +122,50 @@ function Remove-RemoteIfExists([string]$RemotePath) {
     & $adbPath shell "rm -f '$RemotePath' 2>/dev/null || true" | Out-Null
 }
 
+function Join-NativeArguments([string[]]$InputArgs) {
+    return (($InputArgs | ForEach-Object {
+        if ($_ -match '[\s"]') {
+            '"' + ($_ -replace '"', '\"') + '"'
+        } else {
+            $_
+        }
+    }) -join ' ')
+}
+
+function Invoke-AdbPush([string]$SourcePath, [string]$DestinationPath) {
+    $argLine = Join-NativeArguments -InputArgs @("push", $SourcePath, $DestinationPath)
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $adbPath
+    $startInfo.Arguments = $argLine
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.CreateNoWindow = $true
+
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $startInfo
+    [void]$proc.Start()
+    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+    $stderrTask = $proc.StandardError.ReadToEndAsync()
+    $proc.WaitForExit()
+
+    $pushOutput = $stdoutTask.Result.Trim()
+    if ($pushOutput) {
+        Write-Host $pushOutput
+    }
+    $pushErrors = $stderrTask.Result.Trim()
+    if ($pushErrors) {
+        Write-Host $pushErrors
+    }
+
+    return $proc.ExitCode
+}
+
 if (!$IUnderstandThisStagesFirmware) {
     throw "Refusing to stage firmware without -IUnderstandThisStagesFirmware"
 }
 
-$adbPath = Resolve-PathStrict $Adb
+$adbPath = Resolve-AdbPath $Adb
 $packagePath = Resolve-PathStrict $Package
 $packageInfo = Get-Item -LiteralPath $packagePath
 if ($packageInfo.Length -lt 1048576) {
@@ -133,6 +200,15 @@ if (!$SkipLocalVerification) {
     if ($RequireDbMaintenance) {
         $verifyArgs += "--require-db-maintenance"
     }
+    if ($ExpectNativeDsd) {
+        $verifyArgs += "--expect-native-dsd"
+    }
+    if ($ExpectBluetoothSbcXq) {
+        $verifyArgs += "--expect-sbc-xq"
+    }
+    if ($ExpectUsbDacMode) {
+        $verifyArgs += "--expect-usb-dac-mode"
+    }
     python @verifyArgs
     if ($LASTEXITCODE -ne 0) {
         throw "local firmware verification failed; refusing to stage"
@@ -162,8 +238,8 @@ if ($LASTEXITCODE -ne 0) {
     throw "failed to prepare temp package path"
 }
 
-& $adbPath push $packagePath $remoteTmp | Out-Host
-if ($LASTEXITCODE -ne 0) {
+$pushExit = Invoke-AdbPush $packagePath $remoteTmp
+if ($pushExit -ne 0) {
     Remove-RemoteIfExists $remoteTmp
     throw "adb push failed"
 }

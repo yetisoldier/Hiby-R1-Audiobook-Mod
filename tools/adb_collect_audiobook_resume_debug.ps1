@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory=$false)]
-    [string]$Adb = "C:\Program Files\Software Fix\adb.exe",
+    [string]$Adb = "",
 
     [Parameter(Mandatory=$false)]
     [string]$RemoteBase = "/usr/data/audiobooks",
@@ -16,6 +16,28 @@ function Require-Path([string]$PathValue) {
         throw "Missing path: $PathValue"
     }
     return (Resolve-Path -LiteralPath $PathValue).Path
+}
+
+function Resolve-AdbPath([string]$PathValue) {
+    if ($PathValue -and (Test-Path -LiteralPath $PathValue)) {
+        return (Resolve-Path -LiteralPath $PathValue).Path
+    }
+
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    $repoAdb = Join-Path $repoRoot ".tools\platform-tools\adb.exe"
+    if (Test-Path -LiteralPath $repoAdb) {
+        return (Resolve-Path -LiteralPath $repoAdb).Path
+    }
+
+    $pathAdb = Get-Command adb -ErrorAction SilentlyContinue
+    if ($pathAdb) {
+        return $pathAdb.Source
+    }
+
+    if ($PathValue) {
+        throw "Missing adb path: $PathValue"
+    }
+    throw "ADB not found. Install platform-tools, add adb to PATH, or place adb.exe at .tools\platform-tools\adb.exe."
 }
 
 function Invoke-AdbText([string]$Command) {
@@ -38,7 +60,7 @@ function Pull-IfExists([string]$Remote, [string]$Local) {
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$adbPath = Require-Path $Adb
+$adbPath = Resolve-AdbPath $Adb
 if (-not $OutDir) {
     $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
     $OutDir = Join-Path $repoRoot "work\resume-debug\$stamp"
@@ -99,6 +121,9 @@ Pull-IfExists "$RemoteBase/db-maint.stdout.log" (Join-Path $OutDir "db-maint.std
 Pull-IfExists "$RemoteBase/catalog.tsv" (Join-Path $OutDir "catalog.tsv")
 Pull-IfExists "$RemoteBase/catalog-albums.txt" (Join-Path $OutDir "catalog-albums.txt")
 Pull-IfExists "$RemoteBase/catalog-books.tsv" (Join-Path $OutDir "catalog-books.tsv")
+Pull-IfExists "$RemoteBase/catalog-view-title.tsv" (Join-Path $OutDir "catalog-view-title.tsv")
+Pull-IfExists "$RemoteBase/catalog-view-author.tsv" (Join-Path $OutDir "catalog-view-author.tsv")
+Pull-IfExists "$RemoteBase/catalog-view-series.tsv" (Join-Path $OutDir "catalog-view-series.tsv")
 Pull-IfExists "$RemoteBase/resume.d" (Join-Path $OutDir "resume.d")
 Pull-IfExists "/usr/data/user.ini" (Join-Path $OutDir "user.ini")
 

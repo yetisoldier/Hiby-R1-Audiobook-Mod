@@ -1,5 +1,7 @@
 # Local build dependencies and generated firmware workspaces
 .deps/
+.tools/
+.tmp-adb/
 work/
 build/
 dist/

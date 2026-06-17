@@ -10,6 +10,9 @@ MUSIC_DIR=${AUDIOBOOK_DB_MUSIC_DIR:-$SD_ROOT/Music}
 CATALOG=${AUDIOBOOK_CATALOG:-$BASE/catalog.tsv}
 CATALOG_ALBUM_PATTERNS=${AUDIOBOOK_CATALOG_ALBUM_PATTERNS:-$BASE/catalog-albums.txt}
 CATALOG_BOOKS=${AUDIOBOOK_CATALOG_BOOKS:-$BASE/catalog-books.tsv}
+CATALOG_TITLES=${AUDIOBOOK_CATALOG_TITLES:-$BASE/catalog-view-title.tsv}
+CATALOG_AUTHORS=${AUDIOBOOK_CATALOG_AUTHORS:-$BASE/catalog-view-author.tsv}
+CATALOG_SERIES=${AUDIOBOOK_CATALOG_SERIES:-$BASE/catalog-view-series.tsv}
 SEED_DB=${AUDIOBOOK_DB_SEED:-$BASE/bin/r1_usrlocal_media_seed.db}
 LOG=${AUDIOBOOK_DB_MAINT_LOG:-$BASE/db-maint.log}
 PID_FILE=${AUDIOBOOK_DB_MAINT_PID:-$BASE/db-maint.pid}
@@ -17,11 +20,16 @@ LOCK_DIR=${AUDIOBOOK_DB_MAINT_LOCK:-$BASE/db-maint.lock}
 LOG_MAX_BYTES=${AUDIOBOOK_DB_MAINT_LOG_MAX_BYTES:-524288}
 
 BOOT_DELAY_SECONDS=${AUDIOBOOK_DB_BOOT_DELAY_SECONDS:-20}
+BOOT_STABLE_TIMEOUT_SECONDS=${AUDIOBOOK_DB_BOOT_STABLE_TIMEOUT_SECONDS:-180}
+STABLE_POLL_SECONDS=${AUDIOBOOK_DB_STABLE_POLL_SECONDS:-3}
 INTERVAL_SECONDS=${AUDIOBOOK_DB_INTERVAL_SECONDS:-30}
 STABLE_SECONDS=${AUDIOBOOK_DB_STABLE_SECONDS:-15}
 FULL_REFRESH_INTERVAL_SECONDS=${AUDIOBOOK_DB_FULL_REFRESH_INTERVAL_SECONDS:-0}
 RUN_ON_MTIME_ONLY=${AUDIOBOOK_DB_RUN_ON_MTIME_ONLY:-0}
 MTIME_ONLY_MIN_RERUN_SECONDS=${AUDIOBOOK_DB_MTIME_ONLY_MIN_RERUN_SECONDS:-0}
+ZERO_AUDIO_RETRY_TIMEOUT_SECONDS=${AUDIOBOOK_DB_ZERO_AUDIO_RETRY_TIMEOUT_SECONDS:-180}
+ZERO_AUDIO_RETRY_POLL_SECONDS=${AUDIOBOOK_DB_ZERO_AUDIO_RETRY_POLL_SECONDS:-5}
+LAST_AUDIOBOOK_TRACKS=
 
 rotate_log_if_needed() {
   case "$LOG_MAX_BYTES" in ''|*[!0-9]*|0) return 0 ;; esac
@@ -63,6 +71,18 @@ signature_size() {
   esac
 }
 
+has_audiobook_audio_files() {
+  [ -d "$AUDIOBOOKS_DIR" ] || return 1
+  find "$AUDIOBOOKS_DIR" -type f 2>/dev/null | while IFS= read -r audio_path; do
+    case "$audio_path" in
+      *.[mM][pP]3|*.[mM]4[bB]|*.[mM]4[aA]|*.[fF][lL][aA][cC]|*.[wW][aA][vV]|*.[aA][aA][cC]|*.[oO][gG][gG]|*.[oO][pP][uU][sS]|*.[aA][pP][eE]|*.[dD][sS][fF]|*.[dD][fF][fF])
+        printf 'found\n'
+        break
+        ;;
+    esac
+  done | grep -q .
+}
+
 ensure_db_seeded() {
   reason=$1
   if [ -s "$DB" ]; then
@@ -93,6 +113,30 @@ remove_own_lock() {
   fi
 }
 
+cleanup() {
+  remove_own_lock
+  rm -f "$PID_FILE"
+}
+
+pid_is_db_watcher() {
+  check_pid=$1
+  [ -n "$check_pid" ] || return 1
+  [ -d "/proc/$check_pid" ] || return 1
+
+  if [ -r "/proc/$check_pid/cmdline" ]; then
+    cmdline=$(tr '\000' ' ' <"/proc/$check_pid/cmdline" 2>/dev/null || true)
+    case "$cmdline" in
+      *r1_audiobook_db_watch.sh*) return 0 ;;
+    esac
+  fi
+
+  ps_line=$(ps | awk -v pid="$check_pid" '$1 == pid { $1=""; print }' 2>/dev/null | head -n 1)
+  case "$ps_line" in
+    *r1_audiobook_db_watch.sh*) return 0 ;;
+  esac
+  return 1
+}
+
 claim_lock() {
   if mkdir "$LOCK_DIR" 2>/dev/null; then
     echo $$ >"$LOCK_DIR/pid" 2>/dev/null || true
@@ -104,8 +148,11 @@ claim_lock() {
     ''|*[!0-9]*) old_pid= ;;
   esac
   if [ -n "$old_pid" ] && [ -d "/proc/$old_pid" ]; then
-    log "exit reason=already-running pid=$old_pid lock=$LOCK_DIR"
-    exit 0
+    if pid_is_db_watcher "$old_pid"; then
+      log "exit reason=already-running pid=$old_pid lock=$LOCK_DIR"
+      exit 0
+    fi
+    log "stale-lock-live-pid-not-watcher pid=$old_pid lock=$LOCK_DIR"
   fi
 
   rm -rf "$LOCK_DIR" 2>/dev/null || true
@@ -121,6 +168,7 @@ claim_lock() {
 
 run_maint() {
   reason=$1
+  LAST_AUDIOBOOK_TRACKS=
   [ -x "$HELPER" ] || {
     log "skip reason=$reason helper-not-executable helper=$HELPER"
     return 1
@@ -130,6 +178,7 @@ run_maint() {
     return 1
   }
   log "run reason=$reason db=$DB music=$MUSIC_DIR audiobooks=$AUDIOBOOKS_DIR"
+  helper_output="$BASE/db-maint-run.$$"
   "$HELPER" \
     --db "$DB" \
     --sd-root "$SD_ROOT" \
@@ -139,25 +188,110 @@ run_maint() {
     --catalog "$CATALOG" \
     --album-patterns "$CATALOG_ALBUM_PATTERNS" \
     --books-catalog "$CATALOG_BOOKS" \
-    --verbose >>"$LOG" 2>&1
+    --titles-catalog "$CATALOG_TITLES" \
+    --authors-catalog "$CATALOG_AUTHORS" \
+    --series-catalog "$CATALOG_SERIES" \
+    --verbose >"$helper_output" 2>&1
   rc=$?
+  if [ -f "$helper_output" ]; then
+    cat "$helper_output" >>"$LOG"
+    LAST_AUDIOBOOK_TRACKS=$(awk -F': ' '/^audiobook tracks:/ { print $2 }' "$helper_output" | tail -n 1 | awk '{ print $1 }')
+    rm -f "$helper_output"
+  fi
   rotate_log_if_needed
   if [ "$rc" -eq 0 ]; then
-    log "done reason=$reason"
+    log "done reason=$reason audiobook_tracks=${LAST_AUDIOBOOK_TRACKS:-unknown}"
   else
     log "failed reason=$reason rc=$rc"
   fi
   return "$rc"
 }
 
+retry_zero_audiobooks_if_needed() {
+  reason=$1
+  case "${LAST_AUDIOBOOK_TRACKS:-}" in
+    0) ;;
+    *) return 0 ;;
+  esac
+  case "$ZERO_AUDIO_RETRY_TIMEOUT_SECONDS" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$ZERO_AUDIO_RETRY_TIMEOUT_SECONDS" -gt 0 ] || return 0
+  case "$ZERO_AUDIO_RETRY_POLL_SECONDS" in ''|*[!0-9]*|0) retry_poll=5 ;; *) retry_poll=$ZERO_AUDIO_RETRY_POLL_SECONDS ;; esac
+
+  start_time=$(now_seconds)
+  log "zero-audiobook-retry-start reason=$reason timeout=${ZERO_AUDIO_RETRY_TIMEOUT_SECONDS}s poll=${retry_poll}s dir=$AUDIOBOOKS_DIR"
+  while :; do
+    if has_audiobook_audio_files; then
+      log "zero-audiobook-retry-ready reason=$reason"
+      run_maint "$reason-audiobook-ready" || true
+      return 0
+    fi
+
+    now=$(now_seconds)
+    elapsed=$((now - start_time))
+    if [ "$elapsed" -ge "$ZERO_AUDIO_RETRY_TIMEOUT_SECONDS" ]; then
+      log "zero-audiobook-retry-timeout reason=$reason timeout=${ZERO_AUDIO_RETRY_TIMEOUT_SECONDS}s"
+      return 0
+    fi
+    sleep "$retry_poll"
+  done
+}
+
+wait_for_stable_db() {
+  reason=$1
+  timeout=$2
+  case "$timeout" in ''|*[!0-9]*) timeout=0 ;; esac
+  case "$STABLE_POLL_SECONDS" in ''|*[!0-9]*|0) stable_poll=3 ;; *) stable_poll=$STABLE_POLL_SECONDS ;; esac
+
+  start_time=$(now_seconds)
+  stable_sig=
+  stable_since=0
+  last_wait_log=
+
+  while :; do
+    ensure_db_seeded "$reason-wait" || true
+    sig=$(db_signature 2>/dev/null || true)
+    now=$(now_seconds)
+
+    if [ -n "$sig" ]; then
+      if [ "$sig" != "$stable_sig" ]; then
+        stable_sig=$sig
+        stable_since=$now
+        log "wait-stable reason=$reason sig=$sig"
+      else
+        age=$((now - stable_since))
+        if [ "$age" -ge "$STABLE_SECONDS" ]; then
+          log "stable reason=$reason sig=$sig age=${age}s"
+          return 0
+        fi
+      fi
+    else
+      if [ "$last_wait_log" != missing ]; then
+        log "wait-stable reason=$reason db-missing db=$DB"
+        last_wait_log=missing
+      fi
+    fi
+
+    if [ "$timeout" -gt 0 ]; then
+      elapsed=$((now - start_time))
+      if [ "$elapsed" -ge "$timeout" ]; then
+        log "wait-stable-timeout reason=$reason timeout=${timeout}s last_sig=${stable_sig:-}"
+        return 1
+      fi
+    fi
+
+    sleep "$stable_poll"
+  done
+}
+
 mkdir -p "$BASE" "$BASE/bin" "$BASE/resume.d"
 claim_lock
-trap 'remove_own_lock; rm -f "$PID_FILE"' EXIT HUP INT TERM
+trap 'cleanup' EXIT
+trap 'cleanup; exit 0' HUP INT TERM
 echo $$ >"$PID_FILE"
 case "$RUN_ON_MTIME_ONLY" in 1|true|yes) RUN_ON_MTIME_ONLY=1 ;; *) RUN_ON_MTIME_ONLY=0 ;; esac
 case "$MTIME_ONLY_MIN_RERUN_SECONDS" in ''|*[!0-9]*) MTIME_ONLY_MIN_RERUN_SECONDS=0 ;; esac
 
-log "start interval=${INTERVAL_SECONDS}s stable=${STABLE_SECONDS}s full_refresh=${FULL_REFRESH_INTERVAL_SECONDS}s run_on_mtime_only=${RUN_ON_MTIME_ONLY} mtime_only_min_rerun=${MTIME_ONLY_MIN_RERUN_SECONDS}s helper=$HELPER seed=$SEED_DB"
+log "start interval=${INTERVAL_SECONDS}s stable=${STABLE_SECONDS}s boot_stable_timeout=${BOOT_STABLE_TIMEOUT_SECONDS}s zero_audio_retry=${ZERO_AUDIO_RETRY_TIMEOUT_SECONDS}s full_refresh=${FULL_REFRESH_INTERVAL_SECONDS}s run_on_mtime_only=${RUN_ON_MTIME_ONLY} mtime_only_min_rerun=${MTIME_ONLY_MIN_RERUN_SECONDS}s helper=$HELPER seed=$SEED_DB"
 
 sleep "$BOOT_DELAY_SECONDS"
 
@@ -169,7 +303,9 @@ last_seen_at=0
 last_run_at=0
 
 ensure_db_seeded boot || true
+wait_for_stable_db boot "$BOOT_STABLE_TIMEOUT_SECONDS" || true
 run_maint boot || true
+retry_zero_audiobooks_if_needed boot || true
 last_sig=$(db_signature 2>/dev/null || true)
 last_size=$(db_size_signature 2>/dev/null || true)
 last_seen_sig=$last_sig
@@ -217,6 +353,7 @@ while :; do
     fi
     if [ "$should_run" = 1 ]; then
       run_maint "$run_reason" || true
+      retry_zero_audiobooks_if_needed "$run_reason" || true
       last_sig=$(db_signature 2>/dev/null || echo "$sig")
       last_size=$(db_size_signature 2>/dev/null || true)
       [ -n "$last_size" ] || last_size=$(signature_size "$last_sig")

@@ -36,21 +36,25 @@ $psFiles = @(
     "tools\adb_build_release_audiobook_db.ps1",
     "tools\adb_collect_audiobook_resume_debug.ps1",
     "tools\adb_collect_r1_state.ps1",
+    "tools\adb_hold_hiby_player.ps1",
     "tools\adb_probe_usb_mode_toggle.ps1",
     "tools\compare_r1_settings_snapshots.ps1",
     "tools\adb_install_audiobook_resume_runtime.ps1",
     "tools\adb_install_release_audiobook_db.ps1",
     "tools\adb_manage_boot_adb.ps1",
     "tools\adb_monitor_r1_runtime.ps1",
+    "tools\adb_run_audiobook_route_matrix_tests.ps1",
     "tools\adb_snapshot_r1_settings.ps1",
     "tools\adb_stage_verified_firmware.ps1",
     "tools\adb_verify_installed_audiobook_release.ps1",
     "tools\build_r1_audiobook_firmware.ps1",
     "tools\build_r1_db_maint_helper.ps1",
+    "tools\build_r1_direct_open_helper.ps1",
     "tools\extract_r1_firmware.ps1",
     "tools\install_mips_binutils_wsl.ps1",
     "tools\mips_objdump_wsl.ps1",
     "tools\publish_github_release.ps1",
+    "tools\stage_r1_firmware_package.ps1",
     "tools\test_r1_db_maint_qemu_wsl.ps1",
     "tools\test_r1_resume_daemon_logic_wsl.ps1"
 )
@@ -78,10 +82,20 @@ Invoke-Checked {
         tools\compare_binary_settings.py `
         tools\test_r1_db_maint_local_fixture.py `
         tools\adb_test_audiobook_launcher_route_variant.py `
+        tools\adb_test_audiobook_launcher_callback.py `
+        tools\adb_test_audiobook_launcher_record.py `
+        tools\adb_test_audiobook_route_table_direct.py `
+        tools\adb_test_audiobook_route_table_matrix.py `
+        tools\adb_probe_route_callback.py `
         tools\adb_test_audiobook_ui_seek_fallback.py `
         tools\adb_test_audiobook_seek_restore.py `
+        tools\adb_probe_music_row.py `
         tools\adb_send_dmr_command.py `
-        tools\r1_adb_control.py
+        tools\r1_adb_control.py `
+        tools\r1_audiobook_ui_route_lab.py `
+        tools\r1_hiby_player_cave_audit.py `
+        tools\r1_hiby_player_static_xrefs.py `
+        tools\generate_audiobook_launcher_icons.py
 } "Python compile"
 
 Invoke-Checked {

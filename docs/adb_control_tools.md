@@ -12,6 +12,10 @@ development:
 
 ADB still has to be enabled manually after a reboot.
 
+The ADB scripts prefer the repo-local platform-tools binary at
+`.tools\platform-tools\adb.exe` when no explicit `-Adb`/`--adb` value is passed.
+They still accept a custom ADB path if a different SDK install should be used.
+
 ## Boot ADB For Development
 
 Persistent ADB should stay a developer option, not a normal release default.
@@ -131,10 +135,31 @@ python tools\r1_adb_control.py devices
 ```
 
 ```powershell
+python tools\r1_adb_control.py processes
+```
+
+```powershell
 python tools\r1_adb_control.py screenshot --label main-menu
 ```
 
 Screenshots are saved under `work\adb-control\screenshots\` by default.
+
+For input injection, `--event event1` and `--event /dev/input/event1` are both
+accepted. The connected R1 currently exposes the touchscreen as `event1`, but
+the shorthand is easier to read in logs.
+
+If RAM route experiments leave the UI player stopped or visually wedged while
+ADB still works, `tools\adb_hold_hiby_player.ps1` can hold a hidden foreground
+ADB session running `/usr/bin/hiby_player` without rebooting the device:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File tools\adb_hold_hiby_player.ps1 -ForceRestart
+```
+
+Use this only for development recovery. The stock wrapper reboots the device
+when `hiby_player` exits, so the helper stops the wrapper before forcing a
+restart and records the local holder PID under `work\adb-control`.
 
 ## Launcher And List Navigation
 
@@ -142,6 +167,15 @@ From the main launcher:
 
 ```powershell
 python tools\r1_adb_control.py preset main-audiobooks --after-screenshot
+```
+
+The launcher presets are calibrated from current framebuffer captures of the
+six-icon stock launcher layout, including the custom Audiobooks icon.
+
+The `tap` command also accepts the same preset names as a shortcut:
+
+```powershell
+python tools\r1_adb_control.py tap main-audiobooks --after-screenshot
 ```
 
 The screenshot-assisted macro captures before and after images:
@@ -164,6 +198,12 @@ Back arrow:
 python tools\r1_adb_control.py preset soft-back --after-screenshot
 ```
 
+Now Playing uses a higher back-arrow hit target:
+
+```powershell
+python tools\r1_adb_control.py preset now-playing-back --after-screenshot
+```
+
 Edge-swipe back, which is more reliable on Now Playing and some grid/list
 screens:
 
@@ -180,6 +220,46 @@ python tools\r1_adb_control.py drag 240 735 240 250 --after-screenshot
 The coordinate presets are based on the stock 480x800 R1 UI and the captured
 Audiobooks screenshots. If the screen is not on the expected page, use a
 screenshot first.
+
+## Audiobooks Route Lab
+
+For Author / Title / Series UI research, use the route lab to prepare a
+RAM-only test pass:
+
+```powershell
+python tools\r1_audiobook_ui_route_lab.py list
+python tools\r1_audiobook_ui_route_lab.py make-script `
+  --output work\ui-route-lab\test-route-candidates.ps1
+```
+
+Then, with the R1 on the main launcher and ADB enabled:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File work\ui-route-lab\test-route-candidates.ps1
+```
+
+The generated script tests one route at a time, captures screenshots, and
+restores the known-good Audiobooks title route after each candidate. Rebooting
+also restores the flashed route because the route patch is RAM-only.
+
+## Firmware Staging
+
+Use the guarded staging wrapper when a verified package needs to be placed on
+the R1 for flashing:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File tools\stage_r1_firmware_package.ps1 `
+  -IUnderstandThisStagesFirmware
+```
+
+The wrapper first prefers ADB and delegates to
+`tools\adb_stage_verified_firmware.ps1`. If ADB is not available, it will only
+copy to a single removable drive that already looks like the R1 SD card by
+containing `/Music`, `/Audiobooks`, or an existing `r1.upt`. It refuses fixed
+PC drives and refuses ambiguous removable-drive situations unless `-SdRoot` is
+provided.
 
 ## Playback Controls
 

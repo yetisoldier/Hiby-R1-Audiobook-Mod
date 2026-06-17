@@ -50,6 +50,9 @@ def run_helper(helper: Path, work_dir: Path, runner: list[str] | None = None) ->
     catalog = work_dir / "catalog.tsv"
     album_patterns = work_dir / "catalog-albums.txt"
     books_catalog = work_dir / "catalog-books.tsv"
+    titles_catalog = work_dir / "catalog-view-title.tsv"
+    authors_catalog = work_dir / "catalog-view-author.tsv"
+    series_catalog = work_dir / "catalog-view-series.tsv"
     shutil.copy2(SEED_DB, db)
 
     music_dir = sd_root / "Music" / "Test Artist" / "Test Album"
@@ -61,6 +64,21 @@ def run_helper(helper: Path, work_dir: Path, runner: list[str] | None = None) ->
         / "2020 - Test Book [Test Series 02]"
     )
     standalone_dir = sd_root / "Audiobooks" / "Test Author" / "2021 - Standalone Book"
+    article_dir = (
+        sd_root
+        / "Audiobooks"
+        / "Test Author"
+        / "Test Series"
+        / "2022 - The Amber Book [Test Series 03]"
+    )
+    number_dir = sd_root / "Audiobooks" / "Test Author" / "2022 - Number Book"
+    long_dir = (
+        sd_root
+        / "Audiobooks"
+        / "Author With Long Name"
+        / "Long Series"
+        / "2023 - Long Path Book With Fixture Coverage"
+    )
     write_text(music_dir / "01 - SACD.iso", "placeholder iso")
     write_text(music_dir / "cover.jpg", "fake jpg")
     write_text(book_dir / "01 - Opening.mp3", "placeholder mp3")
@@ -68,6 +86,11 @@ def run_helper(helper: Path, work_dir: Path, runner: list[str] | None = None) ->
     write_text(book_dir / "cover.jpg", "fake jpg")
     write_text(book_dir / "01 - Opening.lrc", "[00:00.00]Opening")
     write_text(standalone_dir / "01 - Standalone.mp3", "placeholder standalone mp3")
+    write_text(article_dir / "01 - Prologue.mp3", "placeholder article mp3")
+    write_text(number_dir / "1 - Start.mp3", "placeholder number mp3")
+    write_text(number_dir / "10 - Later.mp3", "placeholder number mp3")
+    write_text(number_dir / "2 - Middle.mp3", "placeholder number mp3")
+    write_text(long_dir / "01 - Long Path.mp3", "placeholder long path mp3")
     seed_problematic_stock_audiobook_rows(db)
 
     cmd = [
@@ -89,6 +112,12 @@ def run_helper(helper: Path, work_dir: Path, runner: list[str] | None = None) ->
         str(album_patterns),
         "--books-catalog",
         str(books_catalog),
+        "--titles-catalog",
+        str(titles_catalog),
+        "--authors-catalog",
+        str(authors_catalog),
+        "--series-catalog",
+        str(series_catalog),
         "--verbose",
     ]
     proc = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -300,6 +329,14 @@ def verify_db(db: Path, catalog: Path) -> None:
     first = r"a:\Audiobooks\Test Author\Test Series\2020 - Test Book [Test Series 02]\01 - Opening.mp3"
     second = r"a:\Audiobooks\Test Author\Test Series\2020 - Test Book [Test Series 02]\02 - Continued.m4b"
     standalone = r"a:\Audiobooks\Test Author\2021 - Standalone Book\01 - Standalone.mp3"
+    article = r"a:\Audiobooks\Test Author\Test Series\2022 - The Amber Book [Test Series 03]\01 - Prologue.mp3"
+    number_one = r"a:\Audiobooks\Test Author\2022 - Number Book\1 - Start.mp3"
+    number_two = r"a:\Audiobooks\Test Author\2022 - Number Book\2 - Middle.mp3"
+    number_ten = r"a:\Audiobooks\Test Author\2022 - Number Book\10 - Later.mp3"
+    long_path = (
+        r"a:\Audiobooks\Author With Long Name\Long Series"
+        r"\2023 - Long Path Book With Fixture Coverage\01 - Long Path.mp3"
+    )
     music_iso = r"a:\Music\Test Artist\Test Album\01 - SACD.iso"
     cover = r"a:\Audiobooks\Test Author\Test Series\2020 - Test Book [Test Series 02]\cover.jpg"
     lrc = r"a:\Audiobooks\Test Author\Test Series\2020 - Test Book [Test Series 02]\01 - Opening.lrc"
@@ -308,6 +345,9 @@ def verify_db(db: Path, catalog: Path) -> None:
     assert_true(first in rows, "first audiobook row generated")
     assert_true(second in rows, "m4b audiobook row generated")
     assert_true(standalone in rows, "standalone audiobook row generated")
+    assert_true(article in rows, "article-prefixed audiobook row generated")
+    assert_true(number_one in rows and number_two in rows and number_ten in rows, "unpadded multipart rows generated")
+    assert_true(long_path in rows, "long audiobook path row generated")
     assert_true(music_iso in rows, "iso music row generated")
     assert_true(r"a:\Music\*" not in rows, "stock placeholder music row replaced")
     assert_equal(rows[first]["album"], "Test Book", "guide folder fallback book title")
@@ -315,6 +355,9 @@ def verify_db(db: Path, catalog: Path) -> None:
     assert_equal(rows[first]["album_artist"], "Test Author", "guide folder fallback album artist")
     assert_equal(media2_index[first]["character"], "T", "audiobook album-route side index uses book title")
     assert_equal(media2_index[first]["pinyin"], "TEST BOOK", "audiobook album-route pinyin uses book title")
+    assert_equal(rows[article]["album"], "The Amber Book", "article-prefixed book title preserved")
+    assert_equal(media2_index[article]["character"], "A", "article stripped from side index")
+    assert_equal(media2_index[article]["pinyin"], "AMBER BOOK", "article stripped from pinyin")
     assert_equal(rows[second]["genre"], "Audiobook", "custom m4b genre normalized")
     assert_equal(rows[standalone]["genre"], "Audiobook", "blank audiobook genre normalized")
     assert_true("Tolkien Audiobook" not in normal_genres, "custom audiobook genre removed from music genres")
@@ -331,14 +374,15 @@ def verify_db(db: Path, catalog: Path) -> None:
     header = catalog.read_text(encoding="utf-8").splitlines()[0].split("\t")
     assert_true("book_key" in header, "catalog book_key column")
     assert_true("series" in header and "series_part" in header, "catalog guide series columns")
-    catalog_rows = {
-        fields[4]: fields
+    catalog_entries = [
+        fields
         for fields in (
             line.split("\t")
             for line in catalog.read_text(encoding="utf-8").splitlines()[1:]
             if line
         )
-    }
+    ]
+    catalog_rows = {fields[4]: fields for fields in catalog_entries}
     assert_equal(catalog_rows[first][header.index("series")], "Test Series", "catalog guide series")
     assert_equal(catalog_rows[first][header.index("series_part")], "02", "catalog guide series part")
     assert_equal(catalog_rows[standalone][header.index("series")], "", "standalone catalog series blank")
@@ -346,6 +390,19 @@ def verify_db(db: Path, catalog: Path) -> None:
         catalog_rows[standalone][header.index("series_part")],
         "",
         "standalone catalog series part blank",
+    )
+    number_root = r"a:\Audiobooks\Test Author\2022 - Number Book"
+    number_order = [
+        fields[header.index("path")]
+        for fields in sorted(
+            (fields for fields in catalog_entries if fields[0] == number_root),
+            key=lambda fields: int(fields[header.index("track_index")]),
+        )
+    ]
+    assert_equal(
+        number_order,
+        [number_one, number_two, number_ten],
+        "unpadded multipart catalog track order",
     )
     books_catalog = catalog.parent / "catalog-books.tsv"
     assert_true(books_catalog.exists() and books_catalog.stat().st_size > 0, "book-level catalog written")
@@ -369,6 +426,38 @@ def verify_db(db: Path, catalog: Path) -> None:
     assert_equal(book_rows[series_root][books_header.index("track_count")], "2", "book-level catalog track count")
     assert_equal(book_rows[standalone_root][books_header.index("series")], "", "standalone book-level series blank")
     assert_equal(book_rows[standalone_root][books_header.index("series_part")], "", "standalone book-level series part blank")
+    titles_catalog = catalog.parent / "catalog-view-title.tsv"
+    authors_catalog = catalog.parent / "catalog-view-author.tsv"
+    series_catalog = catalog.parent / "catalog-view-series.tsv"
+    assert_true(titles_catalog.exists() and titles_catalog.stat().st_size > 0, "title-view catalog written")
+    assert_true(authors_catalog.exists() and authors_catalog.stat().st_size > 0, "author-view catalog written")
+    assert_true(series_catalog.exists() and series_catalog.stat().st_size > 0, "series-view catalog written")
+
+    title_lines = titles_catalog.read_text(encoding="utf-8").splitlines()
+    title_header = title_lines[0].split("\t")
+    title_rows = [line.split("\t") for line in title_lines[1:] if line]
+    assert_equal(title_header[:4], ["character", "pinyin_charater", "album", "author"], "title-view header")
+    assert_equal(title_rows[0][title_header.index("album")], "The Amber Book", "title-view strips article for sort")
+    assert_equal(title_rows[0][title_header.index("character")], "A", "title-view character strips article")
+    assert_equal(title_rows[0][title_header.index("pinyin_charater")], "AMBER BOOK", "title-view pinyin strips article")
+
+    author_lines = authors_catalog.read_text(encoding="utf-8").splitlines()
+    author_header = author_lines[0].split("\t")
+    author_rows = [line.split("\t") for line in author_lines[1:] if line]
+    assert_equal(author_header[:4], ["character", "pinyin_charater", "author", "album"], "author-view header")
+    assert_equal(author_rows[0][author_header.index("author")], "Author With Long Name", "author-view sorts by author")
+
+    series_lines = series_catalog.read_text(encoding="utf-8").splitlines()
+    series_header = series_lines[0].split("\t")
+    series_rows = [line.split("\t") for line in series_lines[1:] if line]
+    assert_equal(series_header[:6], ["character", "pinyin_charater", "series", "series_part", "album", "author"], "series-view header")
+    assert_true(all(row[series_header.index("series")] for row in series_rows), "series-view omits standalone books")
+    test_series_titles = [
+        row[series_header.index("album")]
+        for row in series_rows
+        if row[series_header.index("series")] == "Test Series"
+    ]
+    assert_equal(test_series_titles, ["Test Book", "The Amber Book"], "series-view sorts numeric series parts")
 
     check = subprocess.run(
         [
@@ -379,6 +468,12 @@ def verify_db(db: Path, catalog: Path) -> None:
             str(catalog),
             "--books-catalog",
             str(books_catalog),
+            "--titles-catalog",
+            str(titles_catalog),
+            "--authors-catalog",
+            str(authors_catalog),
+            "--series-catalog",
+            str(series_catalog),
             "--expect-audiobooks",
         ],
         check=False,

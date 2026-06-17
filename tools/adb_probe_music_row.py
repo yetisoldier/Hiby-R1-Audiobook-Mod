@@ -22,6 +22,7 @@ from keystone import KS_ARCH_MIPS, KS_MODE_LITTLE_ENDIAN, KS_MODE_MIPS32, Ks  # 
 from adb_runtime_patch_hiby_player import (  # noqa: E402
     DEFAULT_ADB,
     find_stock_player_pid,
+    parse_memory_maps,
     ptrace_write,
     read_memory_bytes,
     shell,
@@ -30,17 +31,24 @@ from patch_hiby_player import STOCK_MD5  # noqa: E402
 
 
 REMOTE_DIR = "/usr/data/codex_row_probe"
-SCRATCH = 0x8B1F00
+SCRATCH = 0x8E4600
 PROBE = 0x75DCEC
 ALBUM_SCRATCH = 0x8E4000
 ALBUM_PROBE = 0x75DE00
-PLAY_OPEN_SCRATCH = 0x8B2100
+PLAY_OPEN_SCRATCH = 0x8E4400
 # 0x75df00 looked tempting during early tracing, but live testing showed it can
 # reboot the R1. It is in/near the rodata mapping used by the player, so keep it
 # documented as a known-bad cave and refuse to arm that tracer until a safer
 # executable scratch area is found.
-PLAY_OPEN_PROBE = 0x75DF00
-KNOWN_AUDIOBOOK_PLAYER_MD5 = "09997a636c94112ff76c85a6d4a8d0ff"
+KNOWN_BAD_PLAY_OPEN_PROBES = {0x75DF00}
+KNOWN_AUDIOBOOK_PLAYER_MD5S = {
+    # Early audiobook development package.
+    "09997a636c94112ff76c85a6d4a8d0ff",
+    # Public 1.6.15-audiobook release.
+    "dac7b58717097ef2a75ae5887478ef16",
+    # 1.6.28-sd-ready-dev is the current dev build used for route/listview work.
+    "c161af12bd050aca6f3fc2f67979d792",
+}
 
 # Normal file/list selection dispatch in stock 1.6. We intercept a few
 # instructions before the playback call and then jump to the handler's normal
@@ -62,6 +70,18 @@ ALBUM_OPEN_MARKER_JUMP = 0x49FE40
 ALBUM_OPEN_MARKER_ORIGINAL = bytes.fromhex("c8fdbd272c02b2af")
 ALBUM_OPEN_MARKER_CONTINUE = 0x49FE48
 
+RESERVED_PROBE_RANGES = (
+    # Flashed audiobook launcher helper and strings.
+    (0x75DAEC, 0x75DC80, "audiobook launcher cave"),
+    # Flashed title marker helper.
+    (0x75DE00, 0x75DE80, "audiobook title marker cave"),
+    # Runtime music row probe.
+    (PROBE, PROBE + 0x100, "music row probe cave"),
+    # Runtime album marker probe. This overlaps the flashed title marker cave
+    # on current development builds.
+    (ALBUM_PROBE, ALBUM_PROBE + 0x100, "album marker probe cave"),
+)
+
 
 def assemble(addr: int, text: str) -> bytes:
     return bytes(Ks(KS_ARCH_MIPS, KS_MODE_MIPS32 + KS_MODE_LITTLE_ENDIAN).asm(text, addr=addr)[0])
@@ -70,7 +90,7 @@ def assemble(addr: int, text: str) -> bytes:
 def verify_known_player_binary(adb: str) -> None:
     out = shell(adb, "md5sum /usr/bin/hiby_player").strip()
     digest = out.split()[0].lower()
-    if digest not in {STOCK_MD5, KNOWN_AUDIOBOOK_PLAYER_MD5}:
+    if digest not in {STOCK_MD5, *KNOWN_AUDIOBOOK_PLAYER_MD5S}:
         raise RuntimeError(
             "/usr/bin/hiby_player is not a known stock/audiobook 1.6 binary: "
             f"{digest}"
@@ -87,6 +107,81 @@ def jump_patch(from_addr: int, to_addr: int) -> bytes:
     if len(patch) != 8:
         raise RuntimeError(f"unexpected jump patch length at 0x{from_addr:x}: {len(patch)}")
     return patch
+
+
+def assert_probe_range_available(
+    adb: str,
+    pid: str,
+    addr: int,
+    size: int,
+    local: Path,
+    label: str,
+) -> None:
+    if addr in KNOWN_BAD_PLAY_OPEN_PROBES:
+        raise RuntimeError(
+            f"0x{addr:x} is a known-bad play-open probe address from live testing. "
+            "Run tools/r1_hiby_player_cave_audit.py and pass a different executable cave."
+        )
+    for start, end, reason in RESERVED_PROBE_RANGES:
+        if addr < end and addr + size > start:
+            raise RuntimeError(
+                f"probe range 0x{addr:x}-0x{addr + size:x} overlaps {reason} "
+                f"(0x{start:x}-0x{end:x})"
+            )
+
+    mappings = parse_memory_maps(adb, pid)
+    mapping = next((item for item in mappings if item.start <= addr and addr + size <= item.end), None)
+    if mapping is None:
+        raise RuntimeError(f"probe range 0x{addr:x}-0x{addr + size:x} is not inside one memory mapping")
+    if "x" not in mapping.perms:
+        raise RuntimeError(
+            f"probe range 0x{addr:x}-0x{addr + size:x} is in non-executable mapping "
+            f"{mapping.perms} {mapping.path}"
+        )
+    if "hiby_player" not in mapping.path:
+        raise RuntimeError(
+            f"probe range 0x{addr:x}-0x{addr + size:x} is executable but not in hiby_player: "
+            f"{mapping.perms} {mapping.path}"
+        )
+
+    existing = read_memory_bytes(adb, pid, addr, size, REMOTE_DIR, local, label, "bin")
+    if any(existing):
+        nonzero = next(index for index, value in enumerate(existing) if value)
+        raise RuntimeError(
+            f"probe range 0x{addr:x}-0x{addr + size:x} is not empty; "
+            f"first non-zero byte at +0x{nonzero:x}"
+        )
+
+
+def assert_writable_zero_range_available(
+    adb: str,
+    pid: str,
+    addr: int,
+    size: int,
+    local: Path,
+    label: str,
+    *,
+    stale_magic: int | None = None,
+) -> None:
+    mappings = parse_memory_maps(adb, pid)
+    mapping = next((item for item in mappings if item.start <= addr and addr + size <= item.end), None)
+    if mapping is None:
+        raise RuntimeError(f"scratch range 0x{addr:x}-0x{addr + size:x} is not inside one memory mapping")
+    if "w" not in mapping.perms:
+        raise RuntimeError(
+            f"scratch range 0x{addr:x}-0x{addr + size:x} is not writable: "
+            f"{mapping.perms} {mapping.path}"
+        )
+    existing = read_memory_bytes(adb, pid, addr, size, REMOTE_DIR, local, label, "bin")
+    if any(existing):
+        found_magic = struct.unpack("<I", existing[:4])[0] if len(existing) >= 4 else None
+        if stale_magic is not None and found_magic == stale_magic:
+            return
+        nonzero = next(index for index, value in enumerate(existing) if value)
+        raise RuntimeError(
+            f"scratch range 0x{addr:x}-0x{addr + size:x} is not empty; "
+            f"first non-zero byte at +0x{nonzero:x}. Refusing to clear live player data."
+        )
 
 
 def arm_music(adb: str) -> None:
@@ -126,6 +221,15 @@ def arm_music(adb: str) -> None:
     )
     probe = probe + b"\x00" * ((len(probe) + 3) // 4 * 4 - len(probe))
     call_patch = jump_patch(MUSIC_PROBE_JUMP, PROBE)
+    assert_writable_zero_range_available(
+        adb,
+        pid,
+        SCRATCH,
+        0x100,
+        local,
+        "music_probe_scratch_pre",
+        stale_magic=0xC0DE4A10,
+    )
 
     ptrace_write(
         adb,
@@ -226,6 +330,15 @@ def arm_album(adb: str) -> None:
         """,
     )
     probe = probe + b"\x00" * ((len(probe) + 3) // 4 * 4 - len(probe))
+    assert_writable_zero_range_available(
+        adb,
+        pid,
+        ALBUM_SCRATCH,
+        0x100,
+        local,
+        "album_probe_scratch_pre",
+        stale_magic=0xC0DE4A17,
+    )
 
     ptrace_write(
         adb,
@@ -252,19 +365,16 @@ def arm_album(adb: str) -> None:
     print(f"armed album open marker in pid {pid}; opener jump now {verify.hex()}")
 
 
-def arm_play_open(adb: str) -> None:
-    raise RuntimeError(
-        "play-open probe is disabled: 0x75df00 caused a live reboot during "
-        "testing. Find a verified executable cave before re-enabling this."
-    )
-
+def arm_play_open(adb: str, probe_addr: int, *, override_row_index: int | None = None) -> None:
+    if override_row_index is not None and not (0 <= override_row_index <= 9999):
+        raise RuntimeError(f"override row index is out of range: {override_row_index}")
     verify_known_player_binary(adb)
     pid = find_stock_player_pid(adb)
     local = Path("work/row-probe")
     local.mkdir(parents=True, exist_ok=True)
     shell(adb, f"mkdir -p '{REMOTE_DIR}'")
 
-    call_patch = jump_patch(PLAY_OPEN_JUMP, PLAY_OPEN_PROBE)
+    call_patch = jump_patch(PLAY_OPEN_JUMP, probe_addr)
     actual = read_memory_bytes(adb, pid, PLAY_OPEN_JUMP, len(PLAY_OPEN_ORIGINAL), REMOTE_DIR, local, "play_open_pre", "bin")
     if actual == call_patch:
         print("play-open probe already armed")
@@ -275,8 +385,16 @@ def arm_play_open(adb: str) -> None:
             f"expected {PLAY_OPEN_ORIGINAL.hex()} or {call_patch.hex()}, got {actual.hex()}"
         )
 
+    override_text = ""
+    if override_row_index is not None:
+        override_text = f"""
+        {li('t3', override_row_index)}
+        sw $t3, 68($t0)
+        move $a2, $t3
+        """
+
     probe = assemble(
-        PLAY_OPEN_PROBE,
+        probe_addr,
         f"""
         {li('t0', PLAY_OPEN_SCRATCH)}
         {li('t1', 0xC0DE49E2)}
@@ -299,6 +417,7 @@ def arm_play_open(adb: str) -> None:
         lw $t2, 64($t0)
         addiu $t2, $t2, 1
         sw $t2, 64($t0)
+        {override_text}
         addiu $sp, $sp, -3296
         sw $s7, 3284($sp)
         j 0x{PLAY_OPEN_CONTINUE:x}
@@ -306,6 +425,16 @@ def arm_play_open(adb: str) -> None:
         """,
     )
     probe = probe + b"\x00" * ((len(probe) + 3) // 4 * 4 - len(probe))
+    assert_probe_range_available(adb, pid, probe_addr, len(probe), local, "play_open_probe_cave_pre")
+    assert_writable_zero_range_available(
+        adb,
+        pid,
+        PLAY_OPEN_SCRATCH,
+        0x120,
+        local,
+        "play_open_scratch_pre",
+        stale_magic=0xC0DE49E2,
+    )
     ptrace_write(
         adb,
         pid,
@@ -314,20 +443,26 @@ def arm_play_open(adb: str) -> None:
         "arm_play_open",
         [
             ("play_open_scratch_clear", PLAY_OPEN_SCRATCH, bytes(0x120)),
-            ("play_open_probe", PLAY_OPEN_PROBE, probe),
+            ("play_open_probe", probe_addr, probe),
             ("play_open_jump", PLAY_OPEN_JUMP, call_patch),
         ],
     )
-    print(f"armed play-open probe in pid {pid}")
+    if override_row_index is None:
+        print(f"armed play-open probe in pid {pid} at 0x{probe_addr:x}")
+    else:
+        print(
+            f"armed play-open override probe in pid {pid} at 0x{probe_addr:x}; "
+            f"a2 will be forced to {override_row_index}"
+        )
 
 
-def restore_play_open(adb: str) -> None:
+def restore_play_open(adb: str, probe_addr: int) -> None:
     verify_known_player_binary(adb)
     pid = find_stock_player_pid(adb)
     local = Path("work/row-probe")
     local.mkdir(parents=True, exist_ok=True)
     shell(adb, f"mkdir -p '{REMOTE_DIR}'")
-    call_patch = jump_patch(PLAY_OPEN_JUMP, PLAY_OPEN_PROBE)
+    call_patch = jump_patch(PLAY_OPEN_JUMP, probe_addr)
     actual = read_memory_bytes(adb, pid, PLAY_OPEN_JUMP, len(PLAY_OPEN_ORIGINAL), REMOTE_DIR, local, "play_open_restore_pre", "bin")
     if actual == PLAY_OPEN_ORIGINAL:
         print("play-open probe already restored")
@@ -343,9 +478,12 @@ def restore_play_open(adb: str) -> None:
         REMOTE_DIR,
         local,
         "restore_play_open",
-        [("play_open_restore", PLAY_OPEN_JUMP, PLAY_OPEN_ORIGINAL)],
+        [
+            ("play_open_restore", PLAY_OPEN_JUMP, PLAY_OPEN_ORIGINAL),
+            ("play_open_probe_clear", probe_addr, bytes(0x120)),
+        ],
     )
-    print("restored play-open probe")
+    print(f"restored play-open probe and cleared 0x{probe_addr:x}")
 
 
 def read_utf16(data: bytes) -> str:
@@ -479,6 +617,7 @@ def read_play_open_probe(adb: str) -> None:
         "s7",
         "gp",
         "seq",
+        "override_a2",
     ]
     for label, value in zip(labels, vals):
         print(f"{label}=0x{value:08x} ({value})")
@@ -490,12 +629,23 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--adb", default=DEFAULT_ADB)
     parser.add_argument(
+        "--play-open-probe-addr",
+        type=lambda value: int(value, 0),
+        help="Audited executable zero-cave runtime address for arm/restore play-open.",
+    )
+    parser.add_argument(
+        "--override-row-index",
+        type=int,
+        help="Zero-based row index to force in arm-play-open-override.",
+    )
+    parser.add_argument(
         "action",
         choices=[
             "arm-music",
             "restore-music",
             "arm-album",
             "arm-play-open",
+            "arm-play-open-override",
             "restore-play-open",
             "read",
             "read-album",
@@ -511,9 +661,19 @@ def main() -> int:
     elif args.action == "arm-album":
         arm_album(args.adb)
     elif args.action == "arm-play-open":
-        arm_play_open(args.adb)
+        if args.play_open_probe_addr is None:
+            parser.error("arm-play-open requires --play-open-probe-addr from the cave audit")
+        arm_play_open(args.adb, args.play_open_probe_addr)
+    elif args.action == "arm-play-open-override":
+        if args.play_open_probe_addr is None:
+            parser.error("arm-play-open-override requires --play-open-probe-addr from the cave audit")
+        if args.override_row_index is None:
+            parser.error("arm-play-open-override requires --override-row-index")
+        arm_play_open(args.adb, args.play_open_probe_addr, override_row_index=args.override_row_index)
     elif args.action == "restore-play-open":
-        restore_play_open(args.adb)
+        if args.play_open_probe_addr is None:
+            parser.error("restore-play-open requires --play-open-probe-addr used to arm the probe")
+        restore_play_open(args.adb, args.play_open_probe_addr)
     elif args.action == "read-play-open":
         read_play_open_probe(args.adb)
     elif args.action == "read-album":

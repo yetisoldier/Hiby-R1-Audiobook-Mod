@@ -416,6 +416,125 @@ Tested gated commands that did not change the current local audiobook file:
 
 Conclusion: the DMR socket path is suitable for position and seek, but not for selecting/switching local media rows in the current stock local-playback mode. Correct-file auto-resume now uses verified physical Next/Previous key packets for track correction. Title-only book selection uses a UI/media-list marker plus a guarded first-track tap and has passed a visible title-list live test.
 
+## Direct Play-Open Research
+
+The next resume improvement target is the stock shared media-open function at
+`0x49e200`. If we can capture and later recreate the arguments used when the
+stock UI opens a selected media row, multipart audiobook resume may be able to
+jump directly to the saved file instead of visibly tapping through the track
+list.
+
+The first live play-open probe used `0x75df00` as a code cave and caused a live
+R1 reboot. `tools\r1_hiby_player_cave_audit.py` now audits executable
+zero-filled regions in an extracted `hiby_player` ELF before any new RAM probe
+is attempted. Against the current `1.6.17-ui-dev` binary it reports:
+
+- `0x75df00` is file offset `0x35df00`, in an executable file-backed mapping,
+  and all zero, but remains blocked as known-bad from live testing.
+- Current audiobook launcher/book-open/title-marker helpers occupy nearby
+  addresses under `0x75daec` through `0x75de80`.
+- A cleaner candidate such as `0x760708` has about `0x3d0` zero bytes in the
+  same executable file-backed mapping, while the play-open probe body is only
+  about `0x70` bytes.
+
+`tools\adb_probe_music_row.py arm-play-open` now requires an explicit audited
+`--play-open-probe-addr`. It refuses the known-bad address, refuses overlap with
+current audiobook helper caves, checks `/proc/<pid>/maps` for an executable
+`hiby_player` mapping, and verifies the chosen range is still zero before
+patching. The next connected-device experiment should use this guarded path,
+then compare recorded register/object values from music and audiobook row
+selection before attempting any direct invocation.
+
+Live test update on 2026-06-16: the guarded `0x760708` code cave armed on the
+installed `1.6.15-audiobook` player, but the device rebooted shortly after UI
+navigation. Post-reboot memory inspection found that the old play-open scratch
+buffer at `0x8b2100` was not empty (`0x120` bytes contained six non-zero bytes),
+so the tracer's pre-arm scratch clear likely zeroed live player state. Clean
+high-BSS candidates `0x8e4200`, `0x8e4400`, and `0x8e4800` were all zero after
+the reboot. The play-open tracer now uses `0x8e4400` and refuses to clear any
+scratch range unless it is writable and already zero.
+
+Follow-up inspection also found the older music-row probe scratch at `0x8b1f00`
+was not empty (`0x120` bytes contained 55 non-zero bytes). That probe now uses
+`0x8e4600`, and the music-row plus album-marker probes now apply the same
+writable/zero scratch guard before writing to the live player process.
+
+After moving scratch to guarded high-BSS addresses, a no-UI arm/read/restore
+smoke test passed with ADB still connected. A live track-list test then captured
+the stock call at `0x49e200` while selecting `The Road` audiobook tracks:
+
+- Row 1 tap: `a0=0x00ff6ca4`, `a1=0x7fd4f680`, `a2=0`,
+  `a3=0x010941c0`, `ra=0x0049ff8c`.
+- Row 3 tap: same `a0`, `a1`, and `a3`, but `a2=2` and incoming `s1=2`.
+- The `a0` object begins with ASCII
+  `vg_listview_songs_of_an_album_and_a_genre`.
+
+This strongly suggests that `0x49e200` can open a track by list-view object plus
+selected zero-based row index. The next direct-resume experiment should happen
+while the saved book's track list is open: call or trampoline into `0x49e200`
+with the captured current list-view context and the saved track index in `a2`.
+If the function accepts an off-screen index, multipart resume can jump directly
+to the correct file without row swipes or transport stepping. If it only accepts
+loaded/visible rows, this still gives a cleaner target for reducing the current
+visible-row workaround.
+
+Follow-up live result: `tools\adb_probe_music_row.py` now has
+`arm-play-open-override`, which records the original call but forces `a2` to a
+chosen zero-based row index before replaying the stock prologue. Two tests
+passed on the installed `1.6.15-audiobook` player:
+
+- Visible control: from `The Road` track list, tapping row 1 while forcing
+  `a2=4` opened `The Road (2007) - pt05`, showing `5/5`.
+- Off-screen proof: from `The Remaining Aftermath` track list, tapping visible
+  row 1 while forcing `a2=20` opened `Aftermath 20-43`, showing `21/44`.
+
+This proves the stock open function accepts off-screen row indexes from the
+loaded book track list. The production path is now feasible: when the daemon
+sees a saved multipart book's track list, it can arm a one-shot row-index
+override for `0x49e200`, tap the first visible row, and let the stock function
+open the saved part directly. That should remove the audible/visible stepping
+through prior tracks.
+
+Native helper update on 2026-06-16: `tools\r1_audiobook_direct_open.c` packages
+the proven override as a static MIPS helper. It validates the audited executable
+probe cave (`0x760708`), validates the guarded writable scratch range
+(`0x8e4400`), patches the next `0x49e200` call only, waits for the call or a
+timeout, restores the stock prologue, clears the probe cave, and exits. A live
+no-tap test on the installed `1.6.15-audiobook` player armed, timed out after
+500 ms, and restored cleanly. A live track-list test from `The Remaining
+Aftermath` then kept the helper running through ADB, forced zero-based row
+`20`, tapped visible row 1, and opened `Aftermath 20-43`, showing `21/44`.
+The helper logged `direct-open called count=1 original_row=0 override_row=20
+restored`.
+
+The daemon now has a direct-open fast path before the older swipe/tap fallback.
+Firmware candidate `1.6.18-directopen-dev` includes the helper in `/usr/bin`,
+copies it to `/usr/data/audiobooks/bin` at boot, and enables it with
+`AUDIOBOOK_BOOK_TITLE_DIRECT_OPEN_ENABLED=1`. Local verification passed and the
+package was staged to the SD card as `/usr/data/mnt/sd_0/r1.upt`.
+
+Post-flash testing of `1.6.18-directopen-dev` exposed a packaging mismatch: the
+DB watcher invoked the new title/author/series sidecar flags, but the firmware
+contained an older DB helper binary that rejected those options and exited with
+`rc=2`. Rebuilding the MIPS helper and installing it live fixed the boot run and
+generated `catalog-view-title.tsv`, `catalog-view-author.tsv`, and
+`catalog-view-series.tsv` from the device DB. The verifier now checks the
+helper binary for those flags before a build can pass.
+
+Corrected package `1.6.19-directopen-fix-dev` was built and locally verified on
+2026-06-16:
+
+- UPT: `work\audiobook-firmware-1.6.19-directopen-fix-dev\r1-audiobooks-1.6.19-directopen-fix-dev.upt`
+- UPT MD5: `c4c89309f5f60c16d9b587d29de7fdee`
+- UPT SHA256: `ed1edc7770229ad957306525ad9a9848226881ea71e28ec967cc7805ca0c7238`
+- Rootfs MD5: `4cb1cc46aa55bfa9d437e7be19d13e60`
+- Rootfs SHA256: `843b804d792bf6b8e92c7411ad2d444a62e5708c65b003ff799773240535c7fa`
+
+ADB disappeared before this corrected package could be staged to the SD card.
+When ADB returns, stage it with `tools\adb_stage_verified_firmware.ps1`; that
+script now prefers the repo-local `.tools\platform-tools\adb.exe` if the old
+system ADB path is not present.
+
 ## Full Development Package
 
 An opt-in full development package was built with:

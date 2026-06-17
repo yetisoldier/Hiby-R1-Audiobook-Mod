@@ -24,7 +24,17 @@ param(
 
     [switch]$IncludeSelectDispatchBranch,
 
+    [switch]$IncludeAudiobookLauncherIcon,
+
     [switch]$EnableBootAdb,
+
+    [switch]$DisableBatdLogger,
+
+    [switch]$UnlockNativeDsd,
+
+    [switch]$EnableBluetoothSbcXq,
+
+    [switch]$UnlockUsbDacMode,
 
     [switch]$IncludeAudiobookResumeRuntime,
 
@@ -33,6 +43,9 @@ param(
 
     [Parameter(Mandatory=$false)]
     [string]$AudiobookMemscanHelper = "work\native-memscan\r1_audiobook_memscan",
+
+    [Parameter(Mandatory=$false)]
+    [string]$AudiobookDirectOpenHelper = "work\native-direct-open\r1_audiobook_direct_open",
 
     [Parameter(Mandatory=$false)]
     [string]$AudiobookResumeDaemon = "tools\r1_audiobook_resume_daemon.sh",
@@ -52,10 +65,16 @@ param(
     [string]$MediaDbSeed = "firmware\seed\usrlocal_media.seed.db",
 
     [Parameter(Mandatory=$false)]
-    [string]$CustomVersionId = "1.6.4-audiobook",
+    [string]$CustomVersionId = "1.6.16-audiobook",
 
     [Parameter(Mandatory=$false)]
-    [string]$CustomVersionLabel = "HiBy R1 Audiobook FW 1.6.4",
+    [string]$CustomVersionLabel = "HiBy R1 Audiobook FW 1.6.16",
+
+    [Parameter(Mandatory=$false)]
+    [int]$OtaVersion = 0,
+
+    [Parameter(Mandatory=$false)]
+    [string]$OtaSite = "",
 
     [Parameter(Mandatory=$false)]
     [string]$TouchNextEventSource = "",
@@ -71,6 +90,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+if ($OtaVersion -lt 0) {
+    throw "OtaVersion must be non-negative"
+}
 
 function Resolve-PathStrict([string]$PathValue) {
     if (!(Test-Path -LiteralPath $PathValue)) {
@@ -122,15 +145,96 @@ python tools\patch_hiby_player.py @playerPatchArgs
 Copy-Item -Force -LiteralPath $patchedPlayer -Destination $playerPath
 
 python tools\patch_r1_resource_text.py $rootTree --about-model $CustomVersionLabel --product-version $CustomVersionId
+if ($IncludeAudiobookLauncherIcon) {
+    python tools\generate_audiobook_launcher_icons.py $rootTree
+    if ($LASTEXITCODE -ne 0) {
+        throw "failed to generate audiobook launcher icons"
+    }
+}
+
+$otaInfoPath = Join-Path $rootTree "etc\ota_info"
+$effectiveOtaSite = "/data/autoupdate/autoupdate"
+if (Test-Path -LiteralPath $otaInfoPath) {
+    $otaInfoText = Get-Content -Raw -LiteralPath $otaInfoPath
+    $otaSiteMatch = [regex]::Match($otaInfoText, "(?m)^ota_site=(.+)$")
+    if ($otaSiteMatch.Success) {
+        $effectiveOtaSite = $otaSiteMatch.Groups[1].Value.Trim()
+    }
+}
+if ($OtaSite) {
+    $effectiveOtaSite = $OtaSite
+}
+if (($OtaVersion -ne 0) -or $OtaSite) {
+    $newOtaInfoText = "ota_version=$OtaVersion`nota_site=$effectiveOtaSite`n"
+    [System.IO.File]::WriteAllText($otaInfoPath, $newOtaInfoText, [System.Text.Encoding]::ASCII)
+}
+
+$audioUnlockArgs = @($rootTree)
+if ($UnlockNativeDsd) {
+    $audioUnlockArgs += "--native-dsd"
+}
+if ($EnableBluetoothSbcXq) {
+    $audioUnlockArgs += "--sbc-xq"
+}
+if ($UnlockUsbDacMode) {
+    $audioUnlockArgs += "--usb-dac"
+}
+if ($audioUnlockArgs.Count -gt 1) {
+    python tools\patch_r1_audio_feature_unlocks.py @audioUnlockArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "failed to patch audio feature unlocks"
+    }
+}
 
 $customVersionMarker = Join-Path $rootTree "etc\r1_audiobook_version"
 $bootAdbMarker = if ($EnableBootAdb) { "enabled" } else { "disabled" }
+$batdLoggerMarker = if ($DisableBatdLogger) { "disabled" } else { "enabled" }
+$launcherIconMarker = if ($IncludeAudiobookLauncherIcon) { "audiobook" } else { "stock-book" }
+$nativeDsdMarker = if ($UnlockNativeDsd) { "enabled" } else { "stock" }
+$sbcXqMarker = if ($EnableBluetoothSbcXq) { "enabled" } else { "stock" }
+$usbDacMarker = if ($UnlockUsbDacMode) { "enabled" } else { "stock" }
 @"
 version=$CustomVersionId
 label=$CustomVersionLabel
 base_firmware=1.6
+ota_version=$OtaVersion
+ota_site=$effectiveOtaSite
 boot_adb=$bootAdbMarker
+batd_logger=$batdLoggerMarker
+launcher_icon=$launcherIconMarker
+native_dsd=$nativeDsdMarker
+bluetooth_sbc_xq=$sbcXqMarker
+usb_dac_mode=$usbDacMarker
 "@ | Set-Content -LiteralPath $customVersionMarker -Encoding ASCII
+
+# Stock R1 1.6 includes a guarded batd launch block in hiby_player.sh. If a batd
+# binary is present, it writes batlog.txt to the SD card every five seconds.
+# Keep this as an explicit build option until it has been battery/playback
+# tested on-device with music and audiobooks.
+if ($DisableBatdLogger) {
+    $playerLaunchScript = Join-Path $rootTree "usr\bin\hiby_player.sh"
+    $launchText = Get-Content -Raw -LiteralPath $playerLaunchScript
+    $launchText = $launchText -replace "`r`n", "`n"
+    $launchText = $launchText -replace "`r", "`n"
+    $batdBlock = @'
+if [ -f "/usr/bin/batd" ]; then
+killall    batd    &>/dev/null
+killall -9 batd    &>/dev/null
+/usr/bin/batd -v -s -t5 -o /mnt/sd_0/batlog.txt &
+fi
+
+'@
+    $batdBlock = $batdBlock -replace "`r`n", "`n"
+    $batdBlock = $batdBlock -replace "`r", "`n"
+    if (-not $launchText.Contains($batdBlock)) {
+        throw "Expected batd launch block not found in $playerLaunchScript"
+    }
+    $launchText = $launchText.Replace($batdBlock, "")
+    if ($launchText.Contains("/usr/bin/batd -v -s -t5 -o /mnt/sd_0/batlog.txt")) {
+        throw "batd SD logger command still present in $playerLaunchScript"
+    }
+    [System.IO.File]::WriteAllText($playerLaunchScript, $launchText, [System.Text.Encoding]::ASCII)
+}
 
 # Stock firmware ships the ADB startup helper as T90adb, but rcS only runs
 # /etc/init.d/S??* scripts. Keep boot ADB opt-in so shareable release builds do
@@ -186,6 +290,7 @@ exit $?
 if ($IncludeAudiobookResumeRuntime) {
     $resumeHelperPath = Resolve-PathStrict $AudiobookResumeHelper
     $memscanHelperPath = Resolve-PathStrict $AudiobookMemscanHelper
+    $directOpenHelperPath = Resolve-PathStrict $AudiobookDirectOpenHelper
     $resumeDaemonPath = Resolve-PathStrict $AudiobookResumeDaemon
     if ($TouchNextEventSource) {
         $touchNextEventPath = Resolve-PathStrict $TouchNextEventSource
@@ -291,6 +396,7 @@ if ($IncludeAudiobookResumeRuntime) {
     }
     Copy-Item -Force -LiteralPath $resumeHelperPath -Destination (Join-Path $rootTree "usr\bin\r1_audiobook_resume_helper")
     Copy-Item -Force -LiteralPath $memscanHelperPath -Destination (Join-Path $rootTree "usr\bin\r1_audiobook_memscan")
+    Copy-Item -Force -LiteralPath $directOpenHelperPath -Destination (Join-Path $rootTree "usr\bin\r1_audiobook_direct_open")
     Copy-Item -Force -LiteralPath $resumeDaemonPath -Destination (Join-Path $rootTree "usr\bin\r1_audiobook_resume_daemon.sh")
     Copy-Item -Force -LiteralPath $touchNextEventPath -Destination (Join-Path $rootTree "usr\bin\r1_touch_next_event1.bin")
     Copy-Item -Force -LiteralPath $touchFirstTrackEventPath -Destination (Join-Path $rootTree "usr\bin\r1_touch_first_track_event1.bin")
@@ -353,6 +459,7 @@ mkdir -p "$BASE/bin" "$BASE/input" "$BASE/resume.d"
 clear_stock_audiobook_last_file
 cp -f /usr/bin/r1_audiobook_resume_helper "$BASE/bin/r1_audiobook_resume_helper"
 cp -f /usr/bin/r1_audiobook_memscan "$BASE/bin/r1_audiobook_memscan"
+cp -f /usr/bin/r1_audiobook_direct_open "$BASE/bin/r1_audiobook_direct_open"
 cp -f /usr/bin/r1_audiobook_resume_daemon.sh "$BASE/bin/r1_audiobook_resume_daemon.sh"
 cp -f /usr/bin/r1_touch_next_event1.bin "$BASE/input/touch_next_event1.bin"
 cp -f /usr/bin/r1_touch_first_track_event1.bin "$BASE/input/touch_first_track_event1.bin"
@@ -382,7 +489,7 @@ if [ ! -s "$BASE/catalog.tsv" ]; then
   fi
 fi
 
-chmod 755 "$BASE/bin/r1_audiobook_resume_helper" "$BASE/bin/r1_audiobook_memscan" "$BASE/bin/r1_audiobook_resume_daemon.sh"
+chmod 755 "$BASE/bin/r1_audiobook_resume_helper" "$BASE/bin/r1_audiobook_memscan" "$BASE/bin/r1_audiobook_direct_open" "$BASE/bin/r1_audiobook_resume_daemon.sh"
 for file in "$BASE/input/"*.bin; do
   if [ -e "$file" ]; then
     chmod 644 "$file"
@@ -404,6 +511,11 @@ AUDIOBOOK_BOOK_TITLE_MEMSCAN_ENABLED=1
 AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_CALIBRATE_ENABLED=1
 AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_RECOVERY_TRANSPORT_ENABLED=1
 AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_RECOVERY_MAX_STEPS=20
+AUDIOBOOK_BOOK_TITLE_DIRECT_OPEN_ENABLED=1
+AUDIOBOOK_DIRECT_OPEN_PROBE_ADDR=0x760708
+AUDIOBOOK_DIRECT_OPEN_SCRATCH_ADDR=0x8e4400
+AUDIOBOOK_DIRECT_OPEN_TIMEOUT_MS=6000
+AUDIOBOOK_DIRECT_OPEN_ARM_DELAY_US=200000
 AUDIOBOOK_BOOK_TITLE_AUTOSTART_REQUIRE_PATH=1
 AUDIOBOOK_INTERVAL_SECONDS=1
 AUDIOBOOK_IDLE_INTERVAL_SECONDS=5
@@ -412,6 +524,7 @@ AUDIOBOOK_BOOK_TITLE_MARKER_MUSIC_POLL_SECONDS=15
 AUDIOBOOK_DIAGNOSTICS_INTERVAL_SECONDS=60
 AUDIOBOOK_BOOK_TITLE_AUTOSTART_DELAY_SECONDS=1
 AUDIOBOOK_BOOK_TITLE_CONTEXT_SECONDS=300
+AUDIOBOOK_SAVE_BUCKET_MS=15000
 AUDIOBOOK_NEW_TRACK_COMMIT_MS=15000
 AUDIOBOOK_RESTORE_RETRY_MAX_AFTER_FAILURE_SECONDS=300
 AUDIOBOOK_FAILED_RESTORE_SKIP_LOG_BUCKET_MS=30000
@@ -421,17 +534,27 @@ AUDIOBOOK_UI_SEEK_FALLBACK_ENABLED=1
 AUDIOBOOK_UI_SEEK_SCREEN_GUARD_ENABLED=1
 AUDIOBOOK_UI_SEEK_SCREEN_MIN_BAR_PIXELS=300
 AUDIOBOOK_UI_SEEK_TOUCH_FRAMES=2
+AUDIOBOOK_BACK_GUARD_ENABLED=1
+AUDIOBOOK_BACK_GUARD_WINDOW_SECONDS=60
+AUDIOBOOK_BACK_GUARD_AFTER_SCREEN_SECONDS=8
+AUDIOBOOK_BACK_GUARD_IDLE_INTERVAL_SECONDS=1
+AUDIOBOOK_BACK_GUARD_EXTRA_BACKS=2
 export AUDIOBOOK_POSITION_SOURCE AUDIOBOOK_RESTORE_ENABLED AUDIOBOOK_TRACK_RESTORE_ENABLED
 export AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED
 export AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_MAX_SWIPES AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_VISIBLE_ROWS AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_ROWS_PER_SWIPE
 export AUDIOBOOK_BOOK_TITLE_MEMSCAN_ENABLED
 export AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_CALIBRATE_ENABLED AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_RECOVERY_TRANSPORT_ENABLED AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_RECOVERY_MAX_STEPS
+export AUDIOBOOK_BOOK_TITLE_DIRECT_OPEN_ENABLED AUDIOBOOK_DIRECT_OPEN_PROBE_ADDR AUDIOBOOK_DIRECT_OPEN_SCRATCH_ADDR
+export AUDIOBOOK_DIRECT_OPEN_TIMEOUT_MS AUDIOBOOK_DIRECT_OPEN_ARM_DELAY_US
 export AUDIOBOOK_BOOK_TITLE_AUTOSTART_REQUIRE_PATH
 export AUDIOBOOK_INTERVAL_SECONDS AUDIOBOOK_IDLE_INTERVAL_SECONDS AUDIOBOOK_BOOK_TITLE_MARKER_IDLE_POLL_SECONDS AUDIOBOOK_BOOK_TITLE_MARKER_MUSIC_POLL_SECONDS
 export AUDIOBOOK_DIAGNOSTICS_INTERVAL_SECONDS AUDIOBOOK_BOOK_TITLE_AUTOSTART_DELAY_SECONDS AUDIOBOOK_BOOK_TITLE_CONTEXT_SECONDS
-export AUDIOBOOK_NEW_TRACK_COMMIT_MS AUDIOBOOK_RESTORE_RETRY_MAX_AFTER_FAILURE_SECONDS AUDIOBOOK_FAILED_RESTORE_SKIP_LOG_BUCKET_MS
+export AUDIOBOOK_SAVE_BUCKET_MS AUDIOBOOK_NEW_TRACK_COMMIT_MS AUDIOBOOK_RESTORE_RETRY_MAX_AFTER_FAILURE_SECONDS AUDIOBOOK_FAILED_RESTORE_SKIP_LOG_BUCKET_MS
 export AUDIOBOOK_BOOK_TITLE_RESTORE_LOG_BUCKET_MS AUDIOBOOK_RESUME_LOG_MAX_BYTES AUDIOBOOK_UI_SEEK_FALLBACK_ENABLED
 export AUDIOBOOK_UI_SEEK_SCREEN_GUARD_ENABLED AUDIOBOOK_UI_SEEK_SCREEN_MIN_BAR_PIXELS AUDIOBOOK_UI_SEEK_TOUCH_FRAMES
+export AUDIOBOOK_BACK_GUARD_ENABLED AUDIOBOOK_BACK_GUARD_WINDOW_SECONDS AUDIOBOOK_BACK_GUARD_AFTER_SCREEN_SECONDS
+export AUDIOBOOK_BACK_GUARD_IDLE_INTERVAL_SECONDS
+export AUDIOBOOK_BACK_GUARD_EXTRA_BACKS
 start-stop-daemon -S -b -m -p "$BASE/resume-daemon.ssd.pid" -x /bin/sh -- "$BASE/bin/r1_audiobook_resume_daemon.sh" >>"$BASE/resume-daemon.stdout.log" 2>&1
 '@
     $resumeBootScriptText = $resumeBootScriptText -replace "`r`n", "`n"
@@ -447,13 +570,58 @@ if ($IncludeAudiobookDbMaintenance) {
     Copy-Item -Force -LiteralPath $mediaDbSeedPath -Destination (Join-Path $rootTree "usr\bin\r1_usrlocal_media_seed.db")
 
     $dbMaintBootScript = Join-Path $rootTree "etc\init.d\S92audiobook_db_maint.sh"
-    $dbMaintBootScriptText = @'
+$dbMaintBootScriptText = @'
 #!/bin/sh
 
 BASE=/usr/data/audiobooks
 
-if [ "$1" = stop ]; then
+db_watch_pid_is_live() {
+  check_pid=$1
+  [ -n "$check_pid" ] || return 1
+  [ -d "/proc/$check_pid" ] || return 1
+
+  if [ -r "/proc/$check_pid/cmdline" ]; then
+    cmdline=$(tr '\000' ' ' <"/proc/$check_pid/cmdline" 2>/dev/null || true)
+    case "$cmdline" in
+      *r1_audiobook_db_watch.sh*) return 0 ;;
+    esac
+  fi
+
+  ps_line=$(ps | awk -v pid="$check_pid" '$1 == pid { $1=""; print }' 2>/dev/null | head -n 1)
+  case "$ps_line" in
+    *r1_audiobook_db_watch.sh*) return 0 ;;
+  esac
+  return 1
+}
+
+stop_db_watch() {
+  old_pid=$(cat "$BASE/db-maint.ssd.pid" 2>/dev/null || cat "$BASE/db-maint.lock/pid" 2>/dev/null || true)
+  case "$old_pid" in
+    ''|*[!0-9]*) old_pid= ;;
+  esac
+
   start-stop-daemon -K -p "$BASE/db-maint.ssd.pid" 2>/dev/null || true
+
+  if [ -n "$old_pid" ]; then
+    wait_count=0
+    while [ "$wait_count" -lt 3 ] && db_watch_pid_is_live "$old_pid"; do
+      sleep 1
+      wait_count=$((wait_count + 1))
+    done
+    if db_watch_pid_is_live "$old_pid"; then
+      kill -9 "$old_pid" 2>/dev/null || true
+      sleep 1
+    fi
+  fi
+
+  if [ -z "$old_pid" ] || ! db_watch_pid_is_live "$old_pid"; then
+    rm -rf "$BASE/db-maint.lock" 2>/dev/null || true
+  fi
+  rm -f "$BASE/db-maint.pid" "$BASE/db-maint.ssd.pid"
+}
+
+if [ "$1" = stop ]; then
+  stop_db_watch
   exit 0
 fi
 
@@ -470,19 +638,24 @@ cp -f /usr/bin/r1_usrlocal_media_seed.db "$BASE/bin/r1_usrlocal_media_seed.db"
 chmod 755 "$BASE/bin/r1_audiobook_db_maint" "$BASE/bin/r1_audiobook_db_watch.sh"
 chmod 644 "$BASE/bin/r1_usrlocal_media_seed.db"
 
-start-stop-daemon -K -p "$BASE/db-maint.ssd.pid" 2>/dev/null || true
-rm -f "$BASE/db-maint.pid" "$BASE/db-maint.ssd.pid"
+stop_db_watch
 
 AUDIOBOOK_DB_BOOT_DELAY_SECONDS=20
+AUDIOBOOK_DB_BOOT_STABLE_TIMEOUT_SECONDS=180
+AUDIOBOOK_DB_STABLE_POLL_SECONDS=3
 AUDIOBOOK_DB_INTERVAL_SECONDS=30
 AUDIOBOOK_DB_STABLE_SECONDS=15
 AUDIOBOOK_DB_FULL_REFRESH_INTERVAL_SECONDS=0
 AUDIOBOOK_DB_MAINT_LOG_MAX_BYTES=524288
 AUDIOBOOK_DB_RUN_ON_MTIME_ONLY=0
 AUDIOBOOK_DB_MTIME_ONLY_MIN_RERUN_SECONDS=0
-export AUDIOBOOK_DB_BOOT_DELAY_SECONDS AUDIOBOOK_DB_INTERVAL_SECONDS AUDIOBOOK_DB_STABLE_SECONDS
+AUDIOBOOK_DB_ZERO_AUDIO_RETRY_TIMEOUT_SECONDS=180
+AUDIOBOOK_DB_ZERO_AUDIO_RETRY_POLL_SECONDS=5
+export AUDIOBOOK_DB_BOOT_DELAY_SECONDS AUDIOBOOK_DB_BOOT_STABLE_TIMEOUT_SECONDS AUDIOBOOK_DB_STABLE_POLL_SECONDS
+export AUDIOBOOK_DB_INTERVAL_SECONDS AUDIOBOOK_DB_STABLE_SECONDS
 export AUDIOBOOK_DB_FULL_REFRESH_INTERVAL_SECONDS AUDIOBOOK_DB_MAINT_LOG_MAX_BYTES
 export AUDIOBOOK_DB_RUN_ON_MTIME_ONLY AUDIOBOOK_DB_MTIME_ONLY_MIN_RERUN_SECONDS
+export AUDIOBOOK_DB_ZERO_AUDIO_RETRY_TIMEOUT_SECONDS AUDIOBOOK_DB_ZERO_AUDIO_RETRY_POLL_SECONDS
 
 start-stop-daemon -S -b -m -p "$BASE/db-maint.ssd.pid" -x /bin/sh -- "$BASE/bin/r1_audiobook_db_watch.sh" >>"$BASE/db-maint.stdout.log" 2>&1
 '@
@@ -504,6 +677,7 @@ $newFileModeOverrides += @(
     @{ Path = "etc\init.d\S92audiobook_db_maint.sh"; Mode = "0755" },
     @{ Path = "etc\r1_audiobook_version"; Mode = "0644" },
     @{ Path = "usr\bin\r1_audiobook_resume_helper"; Mode = "0755" },
+    @{ Path = "usr\bin\r1_audiobook_direct_open"; Mode = "0755" },
     @{ Path = "usr\bin\r1_audiobook_resume_daemon.sh"; Mode = "0755" },
     @{ Path = "usr\bin\r1_audiobook_db_maint"; Mode = "0755" },
     @{ Path = "usr\bin\r1_audiobook_db_watch.sh"; Mode = "0755" },
@@ -545,6 +719,6 @@ if ($LASTEXITCODE -ne 0) {
     throw "mksquashfs failed"
 }
 
-python tools\build_r1_upt.py --ximage $xImagePath --rootfs $newRootfs --output $OutputUpt --keep-tree $otaTree
+python tools\build_r1_upt.py --ximage $xImagePath --rootfs $newRootfs --output $OutputUpt --keep-tree $otaTree --ota-version $OtaVersion
 
 Get-Item -LiteralPath $OutputUpt, $newRootfs

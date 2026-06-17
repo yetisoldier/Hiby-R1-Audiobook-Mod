@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory=$false)]
-    [string]$Adb = "C:\Program Files\Software Fix\adb.exe",
+    [string]$Adb = "",
 
     [Parameter(Mandatory=$false)]
     [int]$DurationMinutes = 60,
@@ -21,6 +21,25 @@ function Require-Path([string]$PathValue) {
     return (Resolve-Path -LiteralPath $PathValue).Path
 }
 
+function Resolve-AdbPath([string]$PathValue) {
+    if ($PathValue -and (Test-Path -LiteralPath $PathValue)) {
+        return (Resolve-Path -LiteralPath $PathValue).Path
+    }
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    $repoAdb = Join-Path $repoRoot ".tools\platform-tools\adb.exe"
+    if (Test-Path -LiteralPath $repoAdb) {
+        return (Resolve-Path -LiteralPath $repoAdb).Path
+    }
+    $pathAdb = Get-Command adb -ErrorAction SilentlyContinue
+    if ($pathAdb) {
+        return $pathAdb.Source
+    }
+    if ($PathValue) {
+        throw "Missing adb path: $PathValue"
+    }
+    throw "ADB not found. Install platform-tools, add adb to PATH, or place adb.exe at .tools\platform-tools\adb.exe."
+}
+
 if ($DurationMinutes -le 0) {
     throw "DurationMinutes must be positive"
 }
@@ -29,7 +48,7 @@ if ($IntervalSeconds -le 0) {
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$adbPath = Require-Path $Adb
+$adbPath = Resolve-AdbPath $Adb
 if (-not $OutDir) {
     $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
     $OutDir = Join-Path $repoRoot "work\runtime-monitor\$stamp"

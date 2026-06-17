@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory=$false)]
-    [string]$Adb = "C:\Program Files\Software Fix\adb.exe",
+    [string]$Adb = "",
 
     [Parameter(Mandatory=$false)]
     [ValidateSet("status", "enable", "disable")]
@@ -14,6 +14,25 @@ function Resolve-PathStrict([string]$PathValue) {
         throw "Missing path: $PathValue"
     }
     return (Resolve-Path -LiteralPath $PathValue).Path
+}
+
+function Resolve-AdbPath([string]$PathValue) {
+    if ($PathValue -and (Test-Path -LiteralPath $PathValue)) {
+        return (Resolve-Path -LiteralPath $PathValue).Path
+    }
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    $repoAdb = Join-Path $repoRoot ".tools\platform-tools\adb.exe"
+    if (Test-Path -LiteralPath $repoAdb) {
+        return (Resolve-Path -LiteralPath $repoAdb).Path
+    }
+    $pathAdb = Get-Command adb -ErrorAction SilentlyContinue
+    if ($pathAdb) {
+        return $pathAdb.Source
+    }
+    if ($PathValue) {
+        throw "Missing adb path: $PathValue"
+    }
+    throw "ADB not found. Install platform-tools, add adb to PATH, or place adb.exe at .tools\platform-tools\adb.exe."
 }
 
 function Invoke-AdbText([string]$Command) {
@@ -84,7 +103,7 @@ function Write-BootAdbAdvice($Status) {
     }
 }
 
-$adbPath = Resolve-PathStrict $Adb
+$adbPath = Resolve-AdbPath $Adb
 
 & $adbPath devices | Out-Host
 if ($LASTEXITCODE -ne 0) {

@@ -101,7 +101,7 @@ DEFAULT_FFPROBE_PATHS = (
 )
 
 ARTICLES_RE = re.compile(r"^(the|der|die|das|les|il|lo|la|le|el)\s+", re.IGNORECASE)
-PUNCT_RE = re.compile(r"""^[(."']+""")
+PUNCT_CHARS = "(.\"'"
 YEAR_PREFIX_RE = re.compile(r"^\s*((?:19|20)\d{2})\s*[-_. ]+\s*(.+)$")
 YEAR_ANY_RE = re.compile(r"(?:19|20)\d{2}")
 BRACKET_SUFFIX_RE = re.compile(r"\s+\[[^\]]+\]\s*$")
@@ -165,7 +165,9 @@ def denul(value: object) -> str:
 
 
 def normalize_for_sort(text: str) -> str:
-    stripped = PUNCT_RE.sub("", text.strip())
+    stripped = denul(text).strip()
+    while stripped and (stripped[0].isspace() or stripped[0] in PUNCT_CHARS):
+        stripped = stripped[1:].lstrip()
     return ARTICLES_RE.sub("", stripped)
 
 

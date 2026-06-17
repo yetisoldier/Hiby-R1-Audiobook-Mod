@@ -24,6 +24,9 @@
 #define DEFAULT_CATALOG "/usr/data/audiobooks/catalog.tsv"
 #define DEFAULT_ALBUM_PATTERNS "/usr/data/audiobooks/catalog-albums.txt"
 #define DEFAULT_BOOKS_CATALOG "/usr/data/audiobooks/catalog-books.tsv"
+#define DEFAULT_TITLES_CATALOG "/usr/data/audiobooks/catalog-view-title.tsv"
+#define DEFAULT_AUTHORS_CATALOG "/usr/data/audiobooks/catalog-view-author.tsv"
+#define DEFAULT_SERIES_CATALOG "/usr/data/audiobooks/catalog-view-series.tsv"
 #define HIBY_MUSIC_PREFIX_LIKE "a:\\Music\\%"
 #define HIBY_PREFIX "a:\\Audiobooks\\"
 #define HIBY_PREFIX_LIKE "a:\\Audiobooks\\%"
@@ -79,6 +82,23 @@ typedef struct {
 } FormatVec;
 
 typedef struct {
+    char *root;
+    char *album;
+    char *author;
+    char *book_key;
+    char *series;
+    char *series_part;
+    int track_count;
+    int first_media_id;
+} BookViewRow;
+
+typedef struct {
+    BookViewRow *items;
+    size_t len;
+    size_t cap;
+} BookViewVec;
+
+typedef struct {
     const char *db_path;
     const char *sd_root;
     const char *music_dir;
@@ -87,6 +107,9 @@ typedef struct {
     const char *catalog_path;
     const char *album_patterns_path;
     const char *books_catalog_path;
+    const char *titles_catalog_path;
+    const char *authors_catalog_path;
+    const char *series_catalog_path;
     int verbose;
 } Options;
 
@@ -320,9 +343,63 @@ static int parse_track_number(const char *text) {
     return track;
 }
 
-static char *character_for(const char *text) {
+static int is_sort_punctuation(char ch) {
+    return ch == '(' || ch == '.' || ch == '"' || ch == '\'';
+}
+
+static int sort_article_len(const char *text) {
+    static const char *articles[] = {
+        "the",
+        "der",
+        "die",
+        "das",
+        "les",
+        "il",
+        "lo",
+        "la",
+        "le",
+        "el",
+    };
+    for (size_t i = 0; i < sizeof(articles) / sizeof(articles[0]); i++) {
+        size_t len = strlen(articles[i]);
+        if (starts_ci(text, articles[i]) && isspace((unsigned char)text[len])) {
+            return (int)len;
+        }
+    }
+    return 0;
+}
+
+static const char *normalized_sort_start(const char *text) {
     const char *p = text ? text : "";
-    while (*p && (isspace((unsigned char)*p) || *p == '"' || *p == '\'' || *p == '.' || *p == '(')) p++;
+    while (*p && (isspace((unsigned char)*p) || is_sort_punctuation(*p))) p++;
+    int article_len = sort_article_len(p);
+    if (article_len > 0) {
+        p += article_len;
+        while (*p && isspace((unsigned char)*p)) p++;
+    }
+    return p;
+}
+
+static int sort_tier_for_char(unsigned char ch) {
+    if (ch == '\0') return 0;
+    if (ch >= '0' && ch <= '9') return 1;
+    if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch >= 0xC0) return 2;
+    return 0;
+}
+
+static int cmp_sort_text_ci(const char *a, const char *b) {
+    const char *sa = normalized_sort_start(a);
+    const char *sb = normalized_sort_start(b);
+    int tier_a = sort_tier_for_char((unsigned char)*sa);
+    int tier_b = sort_tier_for_char((unsigned char)*sb);
+    if (tier_a != tier_b) return tier_a < tier_b ? -1 : 1;
+    int c = strcasecmp(sa, sb);
+    if (c) return c;
+    return strcasecmp(a ? a : "", b ? b : "");
+}
+
+static char *character_for(const char *text) {
+    const char *p = normalized_sort_start(text);
     if (!*p) return xstrdup("#");
     char out[2];
     out[0] = (char)toupper((unsigned char)*p);
@@ -331,8 +408,7 @@ static char *character_for(const char *text) {
 }
 
 static char *pinyin_for(const char *text) {
-    const char *src = text ? text : "";
-    char *out = xstrdup(src);
+    char *out = trim_copy(normalized_sort_start(text));
     for (char *p = out; *p; p++) {
         if (*p >= 'a' && *p <= 'z') *p = (char)(*p - 'a' + 'A');
     }
@@ -1042,7 +1118,7 @@ static int cmp_path_ci(const void *a, const void *b) {
 static int cmp_name_ci(const void *a, const void *b) {
     const MediaRow *ra = (const MediaRow *)a;
     const MediaRow *rb = (const MediaRow *)b;
-    int c = strcasecmp(ra->name, rb->name);
+    int c = cmp_sort_text_ci(ra->name, rb->name);
     if (c) return c;
     return strcasecmp(ra->path, rb->path);
 }
@@ -1050,7 +1126,7 @@ static int cmp_name_ci(const void *a, const void *b) {
 static int cmp_album_track(const void *a, const void *b) {
     const MediaRow *ra = (const MediaRow *)a;
     const MediaRow *rb = (const MediaRow *)b;
-    int c = strcasecmp(ra->album, rb->album);
+    int c = cmp_sort_text_ci(ra->album, rb->album);
     if (c) return c;
     if (ra->dis_id != rb->dis_id) return ra->dis_id < rb->dis_id ? -1 : 1;
     if (ra->ck_id != rb->ck_id) return ra->ck_id < rb->ck_id ? -1 : 1;
@@ -1273,6 +1349,50 @@ static void free_formatvec(FormatVec *vec) {
     vec->cap = 0;
 }
 
+static void bookview_push(
+    BookViewVec *vec,
+    const char *root,
+    const char *album,
+    const char *author,
+    const char *book_key,
+    const char *series,
+    const char *series_part,
+    int track_count,
+    int first_media_id
+) {
+    if (vec->len == vec->cap) {
+        size_t next = vec->cap ? vec->cap * 2 : 32;
+        BookViewRow *items = (BookViewRow *)realloc(vec->items, next * sizeof(BookViewRow));
+        if (!items) die("out of memory");
+        vec->items = items;
+        vec->cap = next;
+    }
+    BookViewRow *row = &vec->items[vec->len++];
+    row->root = xstrdup(root);
+    row->album = xstrdup(album);
+    row->author = xstrdup(author);
+    row->book_key = xstrdup(book_key);
+    row->series = xstrdup(series);
+    row->series_part = xstrdup(series_part);
+    row->track_count = track_count;
+    row->first_media_id = first_media_id;
+}
+
+static void free_bookview(BookViewVec *vec) {
+    for (size_t i = 0; i < vec->len; i++) {
+        free(vec->items[i].root);
+        free(vec->items[i].album);
+        free(vec->items[i].author);
+        free(vec->items[i].book_key);
+        free(vec->items[i].series);
+        free(vec->items[i].series_part);
+    }
+    free(vec->items);
+    vec->items = NULL;
+    vec->len = 0;
+    vec->cap = 0;
+}
+
 static void rebuild_format_tables(sqlite3 *db) {
     FormatVec formats = {0};
     sqlite3_stmt *stmt = NULL;
@@ -1394,16 +1514,159 @@ static void write_field(FILE *fp, const char *text) {
     }
 }
 
+static int parse_leading_int(const char *text, int *out) {
+    const char *p = text ? text : "";
+    while (*p && isspace((unsigned char)*p)) p++;
+    if (!isdigit((unsigned char)*p)) return 0;
+    int value = 0;
+    while (*p && isdigit((unsigned char)*p)) {
+        value = value * 10 + (*p - '0');
+        p++;
+    }
+    *out = value;
+    return 1;
+}
+
+static int cmp_series_part(const char *a, const char *b) {
+    int ia = 0;
+    int ib = 0;
+    int has_a = parse_leading_int(a, &ia);
+    int has_b = parse_leading_int(b, &ib);
+    if (has_a && has_b && ia != ib) return ia < ib ? -1 : 1;
+    if (has_a != has_b) return has_a ? -1 : 1;
+    return cmp_sort_text_ci(a, b);
+}
+
+static int cmp_book_title_view(const void *a, const void *b) {
+    const BookViewRow *ra = (const BookViewRow *)a;
+    const BookViewRow *rb = (const BookViewRow *)b;
+    int c = cmp_sort_text_ci(ra->album, rb->album);
+    if (c) return c;
+    c = cmp_sort_text_ci(ra->author, rb->author);
+    if (c) return c;
+    return strcasecmp(ra->root, rb->root);
+}
+
+static int cmp_book_author_view(const void *a, const void *b) {
+    const BookViewRow *ra = (const BookViewRow *)a;
+    const BookViewRow *rb = (const BookViewRow *)b;
+    int c = cmp_sort_text_ci(ra->author, rb->author);
+    if (c) return c;
+    c = cmp_sort_text_ci(ra->album, rb->album);
+    if (c) return c;
+    return strcasecmp(ra->root, rb->root);
+}
+
+static int cmp_book_series_view(const void *a, const void *b) {
+    const BookViewRow *ra = (const BookViewRow *)a;
+    const BookViewRow *rb = (const BookViewRow *)b;
+    int c = cmp_sort_text_ci(ra->series, rb->series);
+    if (c) return c;
+    c = cmp_series_part(ra->series_part, rb->series_part);
+    if (c) return c;
+    c = cmp_sort_text_ci(ra->album, rb->album);
+    if (c) return c;
+    return strcasecmp(ra->root, rb->root);
+}
+
+static void write_book_view_common_fields(FILE *fp, const BookViewRow *row) {
+    write_field(fp, row->root);
+    fputc('\t', fp);
+    write_field(fp, row->book_key);
+    fputc('\t', fp);
+    write_field(fp, row->series);
+    fputc('\t', fp);
+    write_field(fp, row->series_part);
+    fprintf(fp, "\t%d\t%d\n", row->track_count, row->first_media_id);
+}
+
+static void write_title_view(FILE *fp, BookViewVec *rows) {
+    qsort(rows->items, rows->len, sizeof(BookViewRow), cmp_book_title_view);
+    fprintf(fp, "character\tpinyin_charater\talbum\tauthor\troot_hiby_path\tbook_key\tseries\tseries_part\ttrack_count\tfirst_media_id\n");
+    for (size_t i = 0; i < rows->len; i++) {
+        char *character = character_for(rows->items[i].album);
+        char *pinyin = pinyin_for(rows->items[i].album);
+        write_field(fp, character);
+        fputc('\t', fp);
+        write_field(fp, pinyin);
+        fputc('\t', fp);
+        write_field(fp, rows->items[i].album);
+        fputc('\t', fp);
+        write_field(fp, rows->items[i].author);
+        fputc('\t', fp);
+        write_book_view_common_fields(fp, &rows->items[i]);
+        free(character);
+        free(pinyin);
+    }
+}
+
+static void write_author_view(FILE *fp, BookViewVec *rows) {
+    qsort(rows->items, rows->len, sizeof(BookViewRow), cmp_book_author_view);
+    fprintf(fp, "character\tpinyin_charater\tauthor\talbum\troot_hiby_path\tbook_key\tseries\tseries_part\ttrack_count\tfirst_media_id\n");
+    for (size_t i = 0; i < rows->len; i++) {
+        char *character = character_for(rows->items[i].author);
+        char *pinyin = pinyin_for(rows->items[i].author);
+        write_field(fp, character);
+        fputc('\t', fp);
+        write_field(fp, pinyin);
+        fputc('\t', fp);
+        write_field(fp, rows->items[i].author);
+        fputc('\t', fp);
+        write_field(fp, rows->items[i].album);
+        fputc('\t', fp);
+        write_book_view_common_fields(fp, &rows->items[i]);
+        free(character);
+        free(pinyin);
+    }
+}
+
+static void write_series_view(FILE *fp, BookViewVec *rows) {
+    qsort(rows->items, rows->len, sizeof(BookViewRow), cmp_book_series_view);
+    fprintf(fp, "character\tpinyin_charater\tseries\tseries_part\talbum\tauthor\troot_hiby_path\tbook_key\ttrack_count\tfirst_media_id\n");
+    for (size_t i = 0; i < rows->len; i++) {
+        if (!rows->items[i].series || !*rows->items[i].series) continue;
+        char *character = character_for(rows->items[i].series);
+        char *pinyin = pinyin_for(rows->items[i].series);
+        write_field(fp, character);
+        fputc('\t', fp);
+        write_field(fp, pinyin);
+        fputc('\t', fp);
+        write_field(fp, rows->items[i].series);
+        fputc('\t', fp);
+        write_field(fp, rows->items[i].series_part);
+        fputc('\t', fp);
+        write_field(fp, rows->items[i].album);
+        fputc('\t', fp);
+        write_field(fp, rows->items[i].author);
+        fputc('\t', fp);
+        write_field(fp, rows->items[i].root);
+        fputc('\t', fp);
+        write_field(fp, rows->items[i].book_key);
+        fprintf(fp, "\t%d\t%d\n", rows->items[i].track_count, rows->items[i].first_media_id);
+        free(character);
+        free(pinyin);
+    }
+}
+
 static void write_catalog_files(const Options *opts, RowVec *rows) {
     ensure_parent_dir(opts->catalog_path);
     ensure_parent_dir(opts->album_patterns_path);
     ensure_parent_dir(opts->books_catalog_path);
+    ensure_parent_dir(opts->titles_catalog_path);
+    ensure_parent_dir(opts->authors_catalog_path);
+    ensure_parent_dir(opts->series_catalog_path);
     char tmp_catalog[PATH_MAX];
     char tmp_albums[PATH_MAX];
     char tmp_books[PATH_MAX];
+    char tmp_titles[PATH_MAX];
+    char tmp_authors[PATH_MAX];
+    char tmp_series[PATH_MAX];
     snprintf(tmp_catalog, sizeof(tmp_catalog), "%s.tmp.%ld", opts->catalog_path, (long)getpid());
     snprintf(tmp_albums, sizeof(tmp_albums), "%s.tmp.%ld", opts->album_patterns_path, (long)getpid());
     snprintf(tmp_books, sizeof(tmp_books), "%s.tmp.%ld", opts->books_catalog_path, (long)getpid());
+    snprintf(tmp_titles, sizeof(tmp_titles), "%s.tmp.%ld", opts->titles_catalog_path, (long)getpid());
+    snprintf(tmp_authors, sizeof(tmp_authors), "%s.tmp.%ld", opts->authors_catalog_path, (long)getpid());
+    snprintf(tmp_series, sizeof(tmp_series), "%s.tmp.%ld", opts->series_catalog_path, (long)getpid());
     FILE *catalog = fopen(tmp_catalog, "w");
     if (!catalog) {
         fprintf(stderr, "could not write %s: %s\n", tmp_catalog, strerror(errno));
@@ -1419,12 +1682,28 @@ static void write_catalog_files(const Options *opts, RowVec *rows) {
         fprintf(stderr, "could not write %s: %s\n", tmp_books, strerror(errno));
         exit(1);
     }
+    FILE *titles = fopen(tmp_titles, "w");
+    if (!titles) {
+        fprintf(stderr, "could not write %s: %s\n", tmp_titles, strerror(errno));
+        exit(1);
+    }
+    FILE *authors = fopen(tmp_authors, "w");
+    if (!authors) {
+        fprintf(stderr, "could not write %s: %s\n", tmp_authors, strerror(errno));
+        exit(1);
+    }
+    FILE *series_view = fopen(tmp_series, "w");
+    if (!series_view) {
+        fprintf(stderr, "could not write %s: %s\n", tmp_series, strerror(errno));
+        exit(1);
+    }
 
     qsort(rows->items, rows->len, sizeof(MediaRow), cmp_catalog);
     fprintf(catalog, "root_hiby_path\ttrack_index\ttrack_count\tmedia_id\tpath\ttitle\talbum\tauthor\tbook_key\tseries\tseries_part\n");
     fprintf(books, "root_hiby_path\talbum\tauthor\tbook_key\tseries\tseries_part\ttrack_count\tfirst_media_id\n");
     char *current_root = NULL;
     char *last_album = NULL;
+    BookViewVec view_rows = {0};
     size_t group_start = 0;
     while (group_start < rows->len) {
         free(current_root);
@@ -1453,6 +1732,17 @@ static void write_catalog_files(const Options *opts, RowVec *rows) {
         fputc('\t', books);
         write_field(books, series_part);
         fprintf(books, "\t%d\t%d\n", track_count, rows->items[group_start].id);
+        bookview_push(
+            &view_rows,
+            current_root,
+            rows->items[group_start].album,
+            rows->items[group_start].album_artist,
+            book_key,
+            series,
+            series_part,
+            track_count,
+            rows->items[group_start].id
+        );
         for (size_t i = group_start; i < group_end; i++) {
             int index = (int)(i - group_start + 1);
             fprintf(catalog, "%s\t%d\t%d\t%d\t", current_root, index, track_count, rows->items[i].id);
@@ -1482,14 +1772,24 @@ static void write_catalog_files(const Options *opts, RowVec *rows) {
         free(series_part);
         group_start = group_end;
     }
+    write_title_view(titles, &view_rows);
+    write_author_view(authors, &view_rows);
+    write_series_view(series_view, &view_rows);
     free(current_root);
     free(last_album);
+    free_bookview(&view_rows);
     if (fclose(catalog) != 0) die("failed closing catalog");
     if (fclose(albums) != 0) die("failed closing album patterns");
     if (fclose(books) != 0) die("failed closing books catalog");
+    if (fclose(titles) != 0) die("failed closing title view catalog");
+    if (fclose(authors) != 0) die("failed closing author view catalog");
+    if (fclose(series_view) != 0) die("failed closing series view catalog");
     if (rename(tmp_catalog, opts->catalog_path) != 0) die("failed replacing catalog");
     if (rename(tmp_albums, opts->album_patterns_path) != 0) die("failed replacing album patterns");
     if (rename(tmp_books, opts->books_catalog_path) != 0) die("failed replacing books catalog");
+    if (rename(tmp_titles, opts->titles_catalog_path) != 0) die("failed replacing title view catalog");
+    if (rename(tmp_authors, opts->authors_catalog_path) != 0) die("failed replacing author view catalog");
+    if (rename(tmp_series, opts->series_catalog_path) != 0) die("failed replacing series view catalog");
 }
 
 static void maintain_database(const Options *opts) {
@@ -1564,6 +1864,9 @@ static void usage(void) {
         "  --catalog PATH            catalog output (default " DEFAULT_CATALOG ")\n"
         "  --album-patterns PATH     album pattern output (default " DEFAULT_ALBUM_PATTERNS ")\n"
         "  --books-catalog PATH      book-level catalog output (default " DEFAULT_BOOKS_CATALOG ")\n"
+        "  --titles-catalog PATH     title-view catalog output (default " DEFAULT_TITLES_CATALOG ")\n"
+        "  --authors-catalog PATH    author-view catalog output (default " DEFAULT_AUTHORS_CATALOG ")\n"
+        "  --series-catalog PATH     series-view catalog output (default " DEFAULT_SERIES_CATALOG ")\n"
         "  --verbose                 print summary\n");
 }
 
@@ -1577,6 +1880,9 @@ static Options parse_args(int argc, char **argv) {
     opts.catalog_path = DEFAULT_CATALOG;
     opts.album_patterns_path = DEFAULT_ALBUM_PATTERNS;
     opts.books_catalog_path = DEFAULT_BOOKS_CATALOG;
+    opts.titles_catalog_path = DEFAULT_TITLES_CATALOG;
+    opts.authors_catalog_path = DEFAULT_AUTHORS_CATALOG;
+    opts.series_catalog_path = DEFAULT_SERIES_CATALOG;
     opts.verbose = 0;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--db") == 0 && i + 1 < argc) opts.db_path = argv[++i];
@@ -1587,6 +1893,9 @@ static Options parse_args(int argc, char **argv) {
         else if (strcmp(argv[i], "--catalog") == 0 && i + 1 < argc) opts.catalog_path = argv[++i];
         else if (strcmp(argv[i], "--album-patterns") == 0 && i + 1 < argc) opts.album_patterns_path = argv[++i];
         else if (strcmp(argv[i], "--books-catalog") == 0 && i + 1 < argc) opts.books_catalog_path = argv[++i];
+        else if (strcmp(argv[i], "--titles-catalog") == 0 && i + 1 < argc) opts.titles_catalog_path = argv[++i];
+        else if (strcmp(argv[i], "--authors-catalog") == 0 && i + 1 < argc) opts.authors_catalog_path = argv[++i];
+        else if (strcmp(argv[i], "--series-catalog") == 0 && i + 1 < argc) opts.series_catalog_path = argv[++i];
         else if (strcmp(argv[i], "--verbose") == 0) opts.verbose = 1;
         else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             usage();

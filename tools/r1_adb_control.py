@@ -20,13 +20,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-DEFAULT_ADB = r"C:\Program Files\Software Fix\adb.exe"
+DEFAULT_ADB = ""
 WIDTH = 480
 HEIGHT = 800
 STRIDE = WIDTH * 2
 DEFAULT_REMOTE_DIR = "/usr/data/r1_adb_control"
 DEFAULT_TOUCH_EVENT = "event1"
 DEFAULT_TOUCH_FRAMES = 8
+DEFAULT_PROCESS_PATTERN = "r1_audiobook_db_watch|r1_audiobook_resume_daemon|hiby_player"
 
 
 @dataclass(frozen=True)
@@ -44,14 +45,15 @@ class KeyPreset:
 
 
 TOUCH_PRESETS: dict[str, TouchPreset] = {
-    "main-music": TouchPreset(120, 145, "launcher Music tile"),
+    "main-music": TouchPreset(120, 220, "launcher Music tile label/hit area"),
     "main-stream": TouchPreset(360, 145, "launcher Stream media tile"),
     "main-wireless": TouchPreset(120, 390, "launcher Wireless tile"),
-    "main-audiobooks": TouchPreset(360, 490, "launcher Audiobooks tile"),
+    "main-audiobooks": TouchPreset(360, 430, "launcher Audiobooks icon/hit area"),
     "main-system": TouchPreset(120, 640, "launcher System tile"),
     "main-about": TouchPreset(360, 640, "launcher About tile"),
     "soft-back": TouchPreset(34, 88, "top-left back arrow"),
     "top-left-back": TouchPreset(34, 88, "top-left back arrow"),
+    "now-playing-back": TouchPreset(28, 38, "Now Playing top-left back arrow"),
     "title-row-1": TouchPreset(240, 234, "visible audiobook title row 1"),
     "title-row-2": TouchPreset(240, 358, "visible audiobook title row 2"),
     "title-row-3": TouchPreset(240, 485, "visible audiobook title row 3"),
@@ -83,6 +85,36 @@ def quote_remote(value: str) -> str:
     return "'" + value.replace("'", "'\"'\"'") + "'"
 
 
+def normalize_input_event(event: str) -> str:
+    event = event.replace("\\", "/").rstrip("/")
+    if "/" in event:
+        event = event.rsplit("/", 1)[-1]
+    if not event.startswith("event") or not event[5:].isdigit():
+        raise ValueError(f"input event must look like event1 or /dev/input/event1: {event}")
+    return event
+
+
+def resolve_adb(adb: str) -> str:
+    if adb:
+        candidate = Path(adb)
+        if candidate.exists():
+            return str(candidate)
+        found = shutil.which(adb)
+        if found:
+            return found
+
+    repo_adb = Path(__file__).resolve().parents[1] / ".tools" / "platform-tools" / "adb.exe"
+    if repo_adb.exists():
+        return str(repo_adb)
+
+    found = shutil.which("adb")
+    if found:
+        return found
+
+    requested = adb if adb else ".tools\\platform-tools\\adb.exe or PATH adb"
+    raise RuntimeError(f"ADB not found: {requested}")
+
+
 def run(
     args: list[str],
     *,
@@ -109,9 +141,8 @@ def adb_shell(adb: str, command: str, *, check: bool = True) -> str:
     return proc.stdout
 
 
-def ensure_adb(adb: str) -> None:
-    if not Path(adb).exists() and shutil.which(adb) is None:
-        raise RuntimeError(f"ADB not found: {adb}")
+def ensure_adb(adb: str) -> str:
+    return resolve_adb(adb)
 
 
 def check_device(adb: str) -> str:
@@ -255,6 +286,7 @@ def inject_stream(
     remote_dir: str = DEFAULT_REMOTE_DIR,
     dry_run: bool = False,
 ) -> Path:
+    event = normalize_input_event(event)
     local_dir = Path("work") / "adb-control" / "input-events"
     local_dir.mkdir(parents=True, exist_ok=True)
     local = local_dir / f"{timestamp()}-{label}-{event}.bin"
@@ -294,6 +326,23 @@ def command_devices(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_processes(args: argparse.Namespace) -> int:
+    ensure_adb(args.adb)
+    check_device(args.adb)
+    pattern = args.pattern or DEFAULT_PROCESS_PATTERN
+    output = adb_shell(
+        args.adb,
+        f"ps | grep -E {quote_remote(pattern)} | grep -v grep || true",
+        check=False,
+    )
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if lines:
+        print("\n".join(lines))
+    else:
+        print(f"no matching processes: {pattern}")
+    return 0
+
+
 def command_screenshot(args: argparse.Namespace) -> int:
     ensure_adb(args.adb)
     check_device(args.adb)
@@ -305,10 +354,25 @@ def command_screenshot(args: argparse.Namespace) -> int:
 
 
 def command_tap(args: argparse.Namespace) -> int:
-    validate_point(args.x, args.y)
-    data = tap_stream(args.x, args.y, args.frames)
-    inject_stream(args.adb, args.event, data, label=f"tap-{args.x}-{args.y}", dry_run=args.dry_run)
-    maybe_after_screenshot(args, f"tap-{args.x}-{args.y}")
+    if args.y is None:
+        if args.x not in TOUCH_PRESETS:
+            raise ValueError("tap needs either raw coordinates like 'tap 240 400' or a preset name like 'tap main-audiobooks'")
+        preset = TOUCH_PRESETS[args.x]
+        print(f"preset: {args.x} ({preset.description}) at {preset.x},{preset.y}")
+        x = preset.x
+        y = preset.y
+        label = f"preset-{args.x}"
+    else:
+        try:
+            x = int(args.x)
+        except ValueError as exc:
+            raise ValueError("raw tap x coordinate must be an integer, or omit y when using a preset name") from exc
+        y = args.y
+        label = f"tap-{x}-{y}"
+    validate_point(x, y)
+    data = tap_stream(x, y, args.frames)
+    inject_stream(args.adb, args.event, data, label=label, dry_run=args.dry_run)
+    maybe_after_screenshot(args, label)
     return 0
 
 
@@ -477,6 +541,11 @@ def build_parser() -> argparse.ArgumentParser:
     devices = sub.add_parser("devices", help="show connected ADB devices")
     devices.set_defaults(func=command_devices)
 
+    processes = sub.add_parser("processes", help="show R1 player and audiobook helper processes")
+    processes.add_argument("--adb", default=DEFAULT_ADB)
+    processes.add_argument("--pattern", help="custom grep -E pattern")
+    processes.set_defaults(func=command_processes)
+
     screenshot = sub.add_parser("screenshot", help="capture /dev/fb0 as PNG")
     screenshot.add_argument("--adb", default=DEFAULT_ADB)
     screenshot.add_argument("--output", type=Path)
@@ -485,10 +554,10 @@ def build_parser() -> argparse.ArgumentParser:
     screenshot.add_argument("--label", default="screen")
     screenshot.set_defaults(func=command_screenshot)
 
-    tap = sub.add_parser("tap", help="tap raw screen coordinates")
+    tap = sub.add_parser("tap", help="tap raw coordinates or a named preset")
     add_input_common(tap)
-    tap.add_argument("x", type=int)
-    tap.add_argument("y", type=int)
+    tap.add_argument("x", help="x coordinate, or a named preset such as main-audiobooks")
+    tap.add_argument("y", nargs="?", type=int, help="y coordinate when x is numeric")
     tap.set_defaults(func=command_tap)
 
     drag = sub.add_parser("drag", help="drag from one coordinate to another")
@@ -546,7 +615,7 @@ def main(argv: list[str] | None = None) -> int:
         after_screenshot = bool(getattr(args, "after_screenshot", False))
         needs_adb = args.command in {"devices", "screenshot"} or not dry_run or after_screenshot
         if needs_adb:
-            ensure_adb(args.adb)
+            args.adb = ensure_adb(args.adb)
         if args.command != "devices" and needs_adb:
             check_device(args.adb)
         return int(args.func(args) or 0)

@@ -12,6 +12,9 @@ from pathlib import Path
 
 
 PREFIX = "a:\\Audiobooks\\"
+ARTICLES = ("the", "der", "die", "das", "les", "il", "lo", "la", "le", "el")
+PUNCT_CHARS = "(.\"'"
+ASCII_UPPER = str.maketrans("abcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
 
 @dataclass(frozen=True)
@@ -24,6 +27,7 @@ class MediaRow:
     album_artist: str
     genre: str
     character: str = ""
+    pinyin_charater: str = ""
 
     @property
     def root(self) -> str:
@@ -34,12 +38,29 @@ def denul(value: object) -> str:
     return "" if value is None else str(value).rstrip("\x00")
 
 
+def normalize_for_sort(text: str) -> str:
+    value = denul(text).strip()
+    while value and (value[0].isspace() or value[0] in PUNCT_CHARS):
+        value = value[1:].lstrip()
+    lowered = value.lower()
+    for article in ARTICLES:
+        prefix = article + " "
+        if lowered.startswith(prefix):
+            return value[len(article) :].lstrip()
+    return value
+
+
+def ascii_upper(text: str) -> str:
+    return text.translate(ASCII_UPPER)
+
+
 def expected_character(text: str) -> str:
-    value = text or ""
-    i = 0
-    while i < len(value) and (value[i].isspace() or value[i] in "\"'.("):
-        i += 1
-    return value[i].upper() if i < len(value) else "#"
+    value = normalize_for_sort(text)
+    return value[0].upper() if value else "#"
+
+
+def expected_pinyin(text: str) -> str:
+    return ascii_upper(normalize_for_sort(text))
 
 
 def table_exists(conn: sqlite3.Connection, table: str) -> bool:
@@ -63,9 +84,9 @@ def load_audiobook_rows(conn: sqlite3.Connection, table: str, failures: list[str
     if not require_table(conn, table, failures):
         return []
     rows: list[MediaRow] = []
-    for media_id, path, title, album, artist, album_artist, genre, character in conn.execute(
+    for media_id, path, title, album, artist, album_artist, genre, character, pinyin_charater in conn.execute(
         f"""
-        SELECT id, path, name, album, artist, album_artist, genre, character
+        SELECT id, path, name, album, artist, album_artist, genre, character, pinyin_charater
           FROM {table}
          WHERE path LIKE ? COLLATE NOCASE
          ORDER BY path COLLATE NOCASE
@@ -82,6 +103,7 @@ def load_audiobook_rows(conn: sqlite3.Connection, table: str, failures: list[str
                 album_artist=denul(album_artist),
                 genre=denul(genre),
                 character=denul(character),
+                pinyin_charater=denul(pinyin_charater),
             )
         )
     return rows
@@ -211,6 +233,23 @@ def load_books_catalog(path: Path) -> dict[str, dict[str, str]]:
     return rows
 
 
+def load_tsv_rows(path: Path, expected_header: list[str]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        header = handle.readline().rstrip("\n").split("\t")
+        if header != expected_header:
+            raise ValueError(f"unexpected {path.name} header: {header}")
+        for line_number, raw in enumerate(handle, 2):
+            line = raw.rstrip("\n")
+            if not line:
+                continue
+            fields = line.split("\t")
+            if len(fields) != len(header):
+                raise ValueError(f"{path.name} line {line_number}: expected {len(header)} fields, got {len(fields)}")
+            rows.append(dict(zip(header, fields)))
+    return rows
+
+
 def check_books_catalog(books_catalog: Path, media_rows: list[MediaRow], failures: list[str]) -> None:
     if not books_catalog.exists():
         failures.append(f"books catalog not found: {books_catalog}")
@@ -257,10 +296,134 @@ def check_books_catalog(books_catalog: Path, media_rows: list[MediaRow], failure
                 failures.append(f"books catalog author mismatch for root: {root}")
 
 
+def check_view_catalogs(
+    titles_catalog: Path | None,
+    authors_catalog: Path | None,
+    series_catalog: Path | None,
+    books_catalog: Path | None,
+    media_rows: list[MediaRow],
+    failures: list[str],
+) -> None:
+    expected_roots = {row.root for row in media_rows}
+    book_rows: dict[str, dict[str, str]] = {}
+    if books_catalog is not None and books_catalog.exists():
+        try:
+            book_rows = load_books_catalog(books_catalog)
+        except Exception as exc:
+            failures.append(f"books catalog parse failed for view checks: {exc}")
+
+    if titles_catalog is not None:
+        if not titles_catalog.exists():
+            failures.append(f"title-view catalog not found: {titles_catalog}")
+        else:
+            try:
+                rows = load_tsv_rows(
+                    titles_catalog,
+                    [
+                        "character",
+                        "pinyin_charater",
+                        "album",
+                        "author",
+                        "root_hiby_path",
+                        "book_key",
+                        "series",
+                        "series_part",
+                        "track_count",
+                        "first_media_id",
+                    ],
+                )
+                roots = {row["root_hiby_path"] for row in rows}
+                if roots != expected_roots:
+                    failures.append("title-view catalog roots do not match audiobook books")
+                for row in rows:
+                    if row["album"] and row["character"] != expected_character(row["album"]):
+                        failures.append(f"title-view bad character for {row['album']}: {row['character']!r}")
+                        break
+                    if row["album"] and row["pinyin_charater"] != expected_pinyin(row["album"]):
+                        failures.append(f"title-view bad pinyin for {row['album']}: {row['pinyin_charater']!r}")
+                        break
+            except Exception as exc:
+                failures.append(f"title-view catalog parse failed: {exc}")
+
+    if authors_catalog is not None:
+        if not authors_catalog.exists():
+            failures.append(f"author-view catalog not found: {authors_catalog}")
+        else:
+            try:
+                rows = load_tsv_rows(
+                    authors_catalog,
+                    [
+                        "character",
+                        "pinyin_charater",
+                        "author",
+                        "album",
+                        "root_hiby_path",
+                        "book_key",
+                        "series",
+                        "series_part",
+                        "track_count",
+                        "first_media_id",
+                    ],
+                )
+                roots = {row["root_hiby_path"] for row in rows}
+                if roots != expected_roots:
+                    failures.append("author-view catalog roots do not match audiobook books")
+                for row in rows:
+                    if row["author"] and row["character"] != expected_character(row["author"]):
+                        failures.append(f"author-view bad character for {row['author']}: {row['character']!r}")
+                        break
+                    if row["author"] and row["pinyin_charater"] != expected_pinyin(row["author"]):
+                        failures.append(f"author-view bad pinyin for {row['author']}: {row['pinyin_charater']!r}")
+                        break
+            except Exception as exc:
+                failures.append(f"author-view catalog parse failed: {exc}")
+
+    if series_catalog is not None:
+        if not series_catalog.exists():
+            failures.append(f"series-view catalog not found: {series_catalog}")
+        else:
+            try:
+                rows = load_tsv_rows(
+                    series_catalog,
+                    [
+                        "character",
+                        "pinyin_charater",
+                        "series",
+                        "series_part",
+                        "album",
+                        "author",
+                        "root_hiby_path",
+                        "book_key",
+                        "track_count",
+                        "first_media_id",
+                    ],
+                )
+                roots = {row["root_hiby_path"] for row in rows}
+                if book_rows:
+                    expected_series_roots = {root for root, row in book_rows.items() if row.get("series")}
+                    if roots != expected_series_roots:
+                        failures.append("series-view catalog roots do not match series books")
+                for row in rows:
+                    if not row["series"]:
+                        failures.append("series-view catalog includes blank series row")
+                        break
+                    if row["character"] != expected_character(row["series"]):
+                        failures.append(f"series-view bad character for {row['series']}: {row['character']!r}")
+                        break
+                    if row["pinyin_charater"] != expected_pinyin(row["series"]):
+                        failures.append(f"series-view bad pinyin for {row['series']}: {row['pinyin_charater']!r}")
+                        break
+            except Exception as exc:
+                failures.append(f"series-view catalog parse failed: {exc}")
+
+
 def check_database(
     db: Path,
     catalog: Path | None,
     books_catalog: Path | None,
+    titles_catalog: Path | None,
+    authors_catalog: Path | None,
+    series_catalog: Path | None,
     *,
     expect_audiobooks: bool,
 ) -> int:
@@ -298,6 +461,16 @@ def check_database(
                 "MEDIA2_TABLE audiobook rows should index by book title for the title-list side rail: "
                 + "; ".join(bad_media2_indexes[:5])
             )
+        bad_media2_pinyin = [
+            f"{row.path} ({row.pinyin_charater!r} != {expected_pinyin(row.album)!r})"
+            for row in media2_rows
+            if row.album and row.pinyin_charater != expected_pinyin(row.album)
+        ]
+        if bad_media2_pinyin:
+            failures.append(
+                "MEDIA2_TABLE audiobook rows should store normalized book-title pinyin_charater: "
+                + "; ".join(bad_media2_pinyin[:5])
+            )
         if search_audiobooks:
             failures.append(f"SEARCH_TABLE contains audiobook rows: {search_audiobooks}")
 
@@ -324,6 +497,7 @@ def check_database(
             check_catalog(catalog, media_rows, failures)
         if books_catalog is not None:
             check_books_catalog(books_catalog, media_rows, failures)
+        check_view_catalogs(titles_catalog, authors_catalog, series_catalog, books_catalog, media_rows, failures)
 
         roots = {row.root for row in media_rows}
         print(f"database: {db}")
@@ -338,6 +512,12 @@ def check_database(
             print(f"catalog: {catalog}")
         if books_catalog is not None:
             print(f"books catalog: {books_catalog}")
+        if titles_catalog is not None:
+            print(f"title-view catalog: {titles_catalog}")
+        if authors_catalog is not None:
+            print(f"author-view catalog: {authors_catalog}")
+        if series_catalog is not None:
+            print(f"series-view catalog: {series_catalog}")
         if failures:
             print("\nFailures:")
             for failure in failures:
@@ -354,6 +534,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("db", type=Path, help="usrlocal_media.db to check")
     parser.add_argument("--catalog", type=Path, help="Optional audiobook resume catalog TSV")
     parser.add_argument("--books-catalog", type=Path, help="Optional book-level audiobook catalog TSV")
+    parser.add_argument("--titles-catalog", type=Path, help="Optional title-view audiobook catalog TSV")
+    parser.add_argument("--authors-catalog", type=Path, help="Optional author-view audiobook catalog TSV")
+    parser.add_argument("--series-catalog", type=Path, help="Optional series-view audiobook catalog TSV")
     parser.add_argument("--expect-audiobooks", action="store_true")
     return parser.parse_args()
 
@@ -363,7 +546,15 @@ def main() -> int:
     if not args.db.exists():
         print(f"DB not found: {args.db}", file=sys.stderr)
         return 2
-    return check_database(args.db, args.catalog, args.books_catalog, expect_audiobooks=args.expect_audiobooks)
+    return check_database(
+        args.db,
+        args.catalog,
+        args.books_catalog,
+        args.titles_catalog,
+        args.authors_catalog,
+        args.series_catalog,
+        expect_audiobooks=args.expect_audiobooks,
+    )
 
 
 if __name__ == "__main__":

@@ -37,12 +37,39 @@ ROUTE_SIZE = len(AUDIOBOOK_LAUNCHER_ROUTE)
 SELECTED_SIZE = len(AUDIOBOOK_LAUNCHER_SELECTED_GENRE)
 
 ROUTE_PRESETS = {
+    # Known-good release route. It opens the stock Genre -> Albums-of-Genre
+    # screen filtered to the synthetic Audiobook genre.
     "title": ("genre\\Audiobook", "Audiobook"),
+    "genre-audiobook": ("genre\\Audiobook", "Audiobook"),
+
+    # Stock root routes. These are useful to confirm what a bare route opens.
     "artist": ("artist\\", ""),
+    "artist-root": ("artist\\", ""),
     "artist-all": ("artist_all\\", ""),
+    "artist-all-root": ("artist_all\\", ""),
     "album": ("album\\", ""),
+    "album-root": ("album\\", ""),
     "genre": ("genre\\", ""),
+    "genre-root": ("genre\\", ""),
     "genre-all": ("genre_all\\", ""),
+    "genre-all-root": ("genre_all\\", ""),
+    "search": ("search\\", ""),
+    "search-root": ("search\\", ""),
+    "book": ("book\\", ""),
+    "book-root": ("book\\", ""),
+    "book-drive": ("a:\\book\\", ""),
+    "book-drive-root": ("a:\\book\\", ""),
+
+    # Filter-argument experiments. These keep the route short enough for the
+    # current launcher code cave and vary only the selected argument.
+    "artist-selected-audiobook": ("artist\\", "Audiobook"),
+    "album-selected-audiobook": ("album\\", "Audiobook"),
+    "genre-selected-audiobook": ("genre\\", "Audiobook"),
+
+    # Route-value experiments. These are distinct from the known-good title
+    # route and may expose whether artist/album routes accept inline filters.
+    "artist-audiobook": ("artist\\Audiobook", "Audiobook"),
+    "album-audiobook": ("album\\Audiobook", "Audiobook"),
 }
 
 
