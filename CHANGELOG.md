@@ -2,6 +2,22 @@
 
 All public releases are for the normal HiBy R1 on stock firmware 1.6. Do not install these packages on the R1 MIDI.
 
+## v1.5.2 - 2026-06-17
+
+Firmware marker: `1.6.16.2-audiobook`
+
+Hotfix for `v1.5.1`.
+
+- Fixed the remaining new-SD-card scan case where Audiobooks could still show `No music found` after Music -> Update Database.
+- Root cause: after the DB helper normalized audiobook rows, the stock scanner could rewrite those rows back to their original genre tags without changing the media DB file size. The `v1.5.1` watcher skipped same-size DB changes as mtime-only churn, so it could miss that rewrite.
+- The DB helper now has a cheap `--needs-maintenance` check that reports whether `/Audiobooks` rows are misnormalized or leaked into search.
+- The DB watcher now uses that check before skipping same-size DB changes and runs a `content-repair-mtime` pass when the DB contents need repair.
+- Reduced scan-time lag by repairing the primary media DB once, then copying the repaired DB to the `/data` and SD-root mirror locations instead of fully reprocessing each mirror DB.
+- Reduced active audiobook resume polling from 1 second to 2 seconds while keeping the 15-second resume save cadence.
+- Live runtime testing on the regression SD card confirmed all three DB copies report 298 audiobook rows, zero misnormalized audiobook rows, and zero audiobook rows in search after repair.
+- Built package `r1-audiobooks-1.6.16.2-audiobook.upt`. MD5: `80c0d7295c2d55575870c4d226e83be9`; SHA256: `3109fea179b816dcdd4c1536b8973f527ef8f8b2d628942317f6b4ded62ca4c6`.
+- Rootfs MD5: `35ffdbb9b401c03f1742782da0104b55`; Rootfs SHA256: `127b90ddfc92ecf2e668368e31422b5eb090c47e86011c391c30dd4b4ec4c475`.
+
 ## v1.5.1 - 2026-06-17
 
 Firmware marker: `1.6.16.1-audiobook`

@@ -86,11 +86,11 @@ Example OTA-site staging command:
 
 ```powershell
 python tools\build_r1_ota_site.py `
-  --source-tree work\audiobook-firmware-1.6.16.1-audiobook\ota-tree `
+  --source-tree work\audiobook-firmware-1.6.16.2-audiobook\ota-tree `
   --out-dir work\ota-site\v37 `
   --ota-version 37 `
   --firmware-version 1.6.37-network-ota-test `
-  --upt work\audiobook-firmware-1.6.16.1-audiobook\r1-audiobooks-1.6.16.1-audiobook.upt `
+  --upt work\audiobook-firmware-1.6.16.2-audiobook\r1-audiobooks-1.6.16.2-audiobook.upt `
   --force
 ```
 

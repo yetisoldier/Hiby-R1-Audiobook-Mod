@@ -111,6 +111,7 @@ typedef struct {
     const char *authors_catalog_path;
     const char *series_catalog_path;
     int verbose;
+    int needs_maintenance_only;
 } Options;
 
 static void die(const char *message) {
@@ -1444,6 +1445,67 @@ static int scalar_int(sqlite3 *db, const char *sql) {
     return value;
 }
 
+static int scalar_count_path_like(sqlite3 *db, const char *table) {
+    if (!table_exists(db, table)) return 0;
+    char sql[256];
+    snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM %s WHERE path LIKE ? COLLATE NOCASE", table);
+    sqlite3_stmt *stmt = NULL;
+    int value = 0;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) die_sql(db, "prepare path count");
+    bind_text_plain(stmt, 1, HIBY_PREFIX_LIKE);
+    if (sqlite3_step(stmt) == SQLITE_ROW) value = sqlite3_column_int(stmt, 0);
+    sqlite3_finalize(stmt);
+    return value;
+}
+
+static int scalar_count_misnormalized_audiobooks(sqlite3 *db, const char *table) {
+    if (!table_exists(db, table)) return 0;
+    char sql[512];
+    snprintf(
+        sql,
+        sizeof(sql),
+        "SELECT COUNT(*) FROM %s "
+        "WHERE path LIKE ? COLLATE NOCASE "
+        "AND (genre IS NULL OR (genre != ? AND genre != ?))",
+        table);
+    sqlite3_stmt *stmt = NULL;
+    int value = 0;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) die_sql(db, "prepare audiobook normalization count");
+    bind_text_plain(stmt, 1, HIBY_PREFIX_LIKE);
+    bind_text0(stmt, 2, "Audiobook");
+    bind_text_plain(stmt, 3, "Audiobook");
+    if (sqlite3_step(stmt) == SQLITE_ROW) value = sqlite3_column_int(stmt, 0);
+    sqlite3_finalize(stmt);
+    return value;
+}
+
+static int check_database_needs_maintenance(const Options *opts) {
+    sqlite3 *db = NULL;
+    if (sqlite3_open(opts->db_path, &db) != SQLITE_OK) die_sql(db, "open database");
+    sqlite3_busy_timeout(db, 5000);
+
+    int media_audiobooks = scalar_count_path_like(db, "MEDIA_TABLE");
+    int media2_audiobooks = scalar_count_path_like(db, "MEDIA2_TABLE");
+    int media_bad = scalar_count_misnormalized_audiobooks(db, "MEDIA_TABLE");
+    int media2_bad = scalar_count_misnormalized_audiobooks(db, "MEDIA2_TABLE");
+    int search_audiobooks = scalar_count_path_like(db, "SEARCH_TABLE");
+    int needs = 0;
+    if (media_audiobooks != media2_audiobooks) needs = 1;
+    if (media_bad > 0 || media2_bad > 0 || search_audiobooks > 0) needs = 1;
+
+    if (opts->verbose) {
+        fprintf(stderr, "audiobook rows MEDIA_TABLE: %d\n", media_audiobooks);
+        fprintf(stderr, "audiobook rows MEDIA2_TABLE: %d\n", media2_audiobooks);
+        fprintf(stderr, "misnormalized MEDIA_TABLE: %d\n", media_bad);
+        fprintf(stderr, "misnormalized MEDIA2_TABLE: %d\n", media2_bad);
+        fprintf(stderr, "audiobook rows SEARCH_TABLE: %d\n", search_audiobooks);
+        fprintf(stderr, "needs maintenance: %s\n", needs ? "yes" : "no");
+    }
+
+    sqlite3_close(db);
+    return needs ? 10 : 0;
+}
+
 static void rebuild_count_table(sqlite3 *db) {
     if (!table_exists(db, "COUNT_TABLE")) return;
     if (exec_sql(db, "DELETE FROM COUNT_TABLE") != SQLITE_OK) die_sql(db, "delete count table");
@@ -1867,6 +1929,7 @@ static void usage(void) {
         "  --titles-catalog PATH     title-view catalog output (default " DEFAULT_TITLES_CATALOG ")\n"
         "  --authors-catalog PATH    author-view catalog output (default " DEFAULT_AUTHORS_CATALOG ")\n"
         "  --series-catalog PATH     series-view catalog output (default " DEFAULT_SERIES_CATALOG ")\n"
+        "  --needs-maintenance       exit 10 when the DB needs audiobook repair, else 0\n"
         "  --verbose                 print summary\n");
 }
 
@@ -1884,6 +1947,7 @@ static Options parse_args(int argc, char **argv) {
     opts.authors_catalog_path = DEFAULT_AUTHORS_CATALOG;
     opts.series_catalog_path = DEFAULT_SERIES_CATALOG;
     opts.verbose = 0;
+    opts.needs_maintenance_only = 0;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--db") == 0 && i + 1 < argc) opts.db_path = argv[++i];
         else if (strcmp(argv[i], "--sd-root") == 0 && i + 1 < argc) opts.sd_root = argv[++i];
@@ -1896,6 +1960,7 @@ static Options parse_args(int argc, char **argv) {
         else if (strcmp(argv[i], "--titles-catalog") == 0 && i + 1 < argc) opts.titles_catalog_path = argv[++i];
         else if (strcmp(argv[i], "--authors-catalog") == 0 && i + 1 < argc) opts.authors_catalog_path = argv[++i];
         else if (strcmp(argv[i], "--series-catalog") == 0 && i + 1 < argc) opts.series_catalog_path = argv[++i];
+        else if (strcmp(argv[i], "--needs-maintenance") == 0) opts.needs_maintenance_only = 1;
         else if (strcmp(argv[i], "--verbose") == 0) opts.verbose = 1;
         else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             usage();
@@ -1910,6 +1975,9 @@ static Options parse_args(int argc, char **argv) {
 
 int main(int argc, char **argv) {
     Options opts = parse_args(argc, argv);
+    if (opts.needs_maintenance_only) {
+        return check_database_needs_maintenance(&opts);
+    }
     if (mkdir_p(opts.base_dir) != 0) {
         fprintf(stderr, "could not create base dir %s: %s\n", opts.base_dir, strerror(errno));
         return 1;

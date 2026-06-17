@@ -209,6 +209,28 @@ run_maint_one_db() {
   return "$rc"
 }
 
+copy_primary_to_mirror() {
+  reason=$1
+  mirror_db=$2
+  [ -s "$DB" ] || {
+    log "mirror-copy-skip reason=$reason source-missing source=$DB mirror=$mirror_db"
+    return 1
+  }
+  mirror_parent=${mirror_db%/*}
+  if [ "$mirror_parent" != "$mirror_db" ]; then
+    mkdir -p "$mirror_parent" 2>/dev/null || true
+  fi
+  mirror_tmp="$mirror_db.tmp.$$"
+  if cp -f "$DB" "$mirror_tmp" 2>/dev/null && mv -f "$mirror_tmp" "$mirror_db" 2>/dev/null; then
+    chmod 666 "$mirror_db" 2>/dev/null || true
+    log "mirror-copy reason=$reason source=$DB mirror=$mirror_db"
+    return 0
+  fi
+  rm -f "$mirror_tmp" 2>/dev/null || true
+  log "mirror-copy-failed reason=$reason source=$DB mirror=$mirror_db"
+  return 1
+}
+
 run_maint() {
   reason=$1
   LAST_AUDIOBOOK_TRACKS=
@@ -225,7 +247,11 @@ run_maint() {
     esac
     mirror_seen="$mirror_seen$mirror_db "
     if [ -s "$mirror_db" ]; then
-      run_maint_one_db "$reason" "$mirror_db" mirror || true
+      if [ "$primary_rc" -eq 0 ]; then
+        copy_primary_to_mirror "$reason" "$mirror_db" || run_maint_one_db "$reason" "$mirror_db" mirror || true
+      else
+        run_maint_one_db "$reason" "$mirror_db" mirror || true
+      fi
     else
       log "mirror-skip reason=$reason db=$mirror_db missing"
     fi
@@ -233,6 +259,54 @@ run_maint() {
 
   LAST_AUDIOBOOK_TRACKS=$primary_tracks
   return "$primary_rc"
+}
+
+db_needs_maint_one_db() {
+  target_db=$1
+  role=$2
+  [ -x "$HELPER" ] || return 1
+  [ -s "$target_db" ] || return 1
+  helper_output="$BASE/db-maint-check.$$.$role"
+  "$HELPER" --db "$target_db" --needs-maintenance --verbose >"$helper_output" 2>&1
+  rc=$?
+  if [ -f "$helper_output" ]; then
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 10 ]; then
+      cat "$helper_output" >>"$LOG"
+    fi
+    rm -f "$helper_output"
+  fi
+  case "$rc" in
+    10)
+      log "check-needs-maint role=$role db=$target_db"
+      return 0
+      ;;
+    0)
+      return 1
+      ;;
+    *)
+      log "check-failed role=$role db=$target_db rc=$rc"
+      return 1
+      ;;
+  esac
+}
+
+any_db_needs_maintenance() {
+  if db_needs_maint_one_db "$DB" primary; then
+    return 0
+  fi
+
+  mirror_seen=" $DB "
+  for mirror_db in $AUDIOBOOK_DB_MIRROR_PATHS; do
+    [ -n "$mirror_db" ] || continue
+    case "$mirror_seen" in
+      *" $mirror_db "*) continue ;;
+    esac
+    mirror_seen="$mirror_seen$mirror_db "
+    if db_needs_maint_one_db "$mirror_db" mirror; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 retry_zero_audiobooks_if_needed() {
@@ -377,6 +451,9 @@ while :; do
       elif [ "$MTIME_ONLY_MIN_RERUN_SECONDS" -gt 0 ] && [ "$since_run" -ge "$MTIME_ONLY_MIN_RERUN_SECONDS" ]; then
         should_run=1
         run_reason=periodic-mtime
+      elif any_db_needs_maintenance; then
+        should_run=1
+        run_reason=content-repair-mtime
       fi
     fi
     if [ "$should_run" = 1 ]; then

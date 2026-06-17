@@ -65,10 +65,10 @@ param(
     [string]$MediaDbSeed = "firmware\seed\usrlocal_media.seed.db",
 
     [Parameter(Mandatory=$false)]
-    [string]$CustomVersionId = "1.6.16.1-audiobook",
+    [string]$CustomVersionId = "1.6.16.2-audiobook",
 
     [Parameter(Mandatory=$false)]
-    [string]$CustomVersionLabel = "HiBy R1 Audiobook FW 1.6.16.1",
+    [string]$CustomVersionLabel = "HiBy R1 Audiobook FW 1.6.16.2",
 
     [Parameter(Mandatory=$false)]
     [int]$OtaVersion = 0,
@@ -517,7 +517,7 @@ AUDIOBOOK_DIRECT_OPEN_SCRATCH_ADDR=0x8e4400
 AUDIOBOOK_DIRECT_OPEN_TIMEOUT_MS=6000
 AUDIOBOOK_DIRECT_OPEN_ARM_DELAY_US=200000
 AUDIOBOOK_BOOK_TITLE_AUTOSTART_REQUIRE_PATH=1
-AUDIOBOOK_INTERVAL_SECONDS=1
+AUDIOBOOK_INTERVAL_SECONDS=2
 AUDIOBOOK_IDLE_INTERVAL_SECONDS=5
 AUDIOBOOK_BOOK_TITLE_MARKER_IDLE_POLL_SECONDS=5
 AUDIOBOOK_BOOK_TITLE_MARKER_MUSIC_POLL_SECONDS=15

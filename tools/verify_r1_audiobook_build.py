@@ -56,6 +56,10 @@ EXPECTED_CURRENT_HASHES = {
         "md5": "d30527750a071602a67f1eceb462f8cc",
         "sha256": "085495646039eafb496279d3ef2625671783552ad069150c3e959e5c219d7f3f",
     },
+    "r1-audiobooks-1.6.16.2-audiobook.upt": {
+        "md5": "80c0d7295c2d55575870c4d226e83be9",
+        "sha256": "3109fea179b816dcdd4c1536b8973f527ef8f8b2d628942317f6b4ded62ca4c6",
+    },
     "r1-audiobooks-1.6.9-audiobook.upt": {
         "md5": "3c3b3f05724acc474fb349e6378fc351",
         "sha256": "f78e67089ff84021b18d69a4af2cb01be6f872bc59d187bf9cba256f8cd792aa",
@@ -65,8 +69,8 @@ EXPECTED_CURRENT_HASHES = {
         "sha256": "02b286676d93ec683307820e1ef40288f34ef21a42a24f5cbda361f2d3733b7b",
     },
     "rootfs.squashfs": {
-        "md5": "7a0b2a3d001ea53b079b79fbcf9c5933",
-        "sha256": "26c9b68e49a3761930dcae3c95b172905d8e88108c68f59be44ffe3c0a96d942",
+        "md5": "35ffdbb9b401c03f1742782da0104b55",
+        "sha256": "127b90ddfc92ecf2e668368e31422b5eb090c47e86011c391c30dd4b4ec4c475",
     },
     "r1-audiobooks-1.6.3-audiobook.upt": {
         "md5": "1954b92ae7a394a0dc450c2d5f70f3d2",
@@ -642,7 +646,7 @@ def verify(
         require("clear_stock_audiobook_last_file" in resume_init_text, "resume init clears stock last audiobook path before player start", failures)
         require("count=320" in resume_init_text, "resume init clears stock last-file slot and adjacent fragments", failures)
         require("00003a005c0041007500640069006f0062006f006f006b007300" in resume_init_text, "resume init also clears partially nulled audiobook path", failures)
-        require("AUDIOBOOK_INTERVAL_SECONDS=1" in resume_init_text, "resume init script uses tuned 1s polling", failures)
+        require("AUDIOBOOK_INTERVAL_SECONDS=2" in resume_init_text, "resume init script uses lower-load 2s polling", failures)
         require("AUDIOBOOK_IDLE_INTERVAL_SECONDS=5" in resume_init_text, "resume init script uses lower-power idle polling", failures)
         require(
             "AUDIOBOOK_BOOK_TITLE_MARKER_MUSIC_POLL_SECONDS=15" in resume_init_text,
@@ -727,6 +731,7 @@ def verify(
             require(b"--titles-catalog" in db_helper_bytes, "db maint helper supports title-view catalog flag", failures)
             require(b"--authors-catalog" in db_helper_bytes, "db maint helper supports author-view catalog flag", failures)
             require(b"--series-catalog" in db_helper_bytes, "db maint helper supports series-view catalog flag", failures)
+            require(b"--needs-maintenance" in db_helper_bytes, "db maint helper supports cheap repair-needed check", failures)
 
         db_seed = root / "usr/bin/r1_usrlocal_media_seed.db"
         require(db_seed.exists() and db_seed.stat().st_size > 100000, f"media DB seed present: {db_seed}", failures)
@@ -746,6 +751,11 @@ def verify(
             require("$SD_ROOT/usrlocal_media.db" in db_watch_text, "db watch includes SD-root media DB mirror", failures)
             require("run_maint_one_db" in db_watch_text, "db watch can run helper per DB path", failures)
             require('run_maint_one_db "$reason" "$mirror_db" mirror' in db_watch_text, "db watch runs helper for mirror DB paths", failures)
+            require("copy_primary_to_mirror" in db_watch_text, "db watch can copy repaired primary DB to mirrors", failures)
+            require("mirror-copy reason=" in db_watch_text, "db watch logs mirror DB copy repairs", failures)
+            require("any_db_needs_maintenance" in db_watch_text, "db watch can detect same-size stock DB rewrites", failures)
+            require("--needs-maintenance" in db_watch_text, "db watch uses cheap DB repair-needed check", failures)
+            require("content-repair-mtime" in db_watch_text, "db watch repairs same-size content rewrites", failures)
             require("boot_stable_timeout=" in db_watch_text, "db watch start log includes boot stability timeout", failures)
             require("zero_audio_retry=" in db_watch_text, "db watch start log includes zero-audiobook retry timeout", failures)
             require("run_maint boot" in db_watch_text, "db watch runs maintainer once after boot", failures)
@@ -910,10 +920,10 @@ def verify(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--out-dir", type=Path, default=Path("work/audiobook-firmware-1.6.16.1-audiobook"))
-    parser.add_argument("--upt-name", default="r1-audiobooks-1.6.16.1-audiobook.upt")
-    parser.add_argument("--expected-version", default="1.6.16.1-audiobook")
-    parser.add_argument("--expected-label", default="HiBy R1 Audiobook FW 1.6.16.1")
+    parser.add_argument("--out-dir", type=Path, default=Path("work/audiobook-firmware-1.6.16.2-audiobook"))
+    parser.add_argument("--upt-name", default="r1-audiobooks-1.6.16.2-audiobook.upt")
+    parser.add_argument("--expected-version", default="1.6.16.2-audiobook")
+    parser.add_argument("--expected-label", default="HiBy R1 Audiobook FW 1.6.16.2")
     parser.add_argument(
         "--stock-rootfs",
         type=Path,

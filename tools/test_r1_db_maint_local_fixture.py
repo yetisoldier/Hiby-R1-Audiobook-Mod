@@ -92,6 +92,7 @@ def run_helper(helper: Path, work_dir: Path, runner: list[str] | None = None) ->
     write_text(number_dir / "2 - Middle.mp3", "placeholder number mp3")
     write_text(long_dir / "01 - Long Path.mp3", "placeholder long path mp3")
     seed_problematic_stock_audiobook_rows(db)
+    assert_needs_maintenance(helper, db, runner, True, "stock audiobook rows need maintenance")
 
     cmd = [
         *(runner or []),
@@ -125,7 +126,34 @@ def run_helper(helper: Path, work_dir: Path, runner: list[str] | None = None) ->
     if proc.returncode != 0:
         print(proc.stdout)
         raise SystemExit(proc.returncode)
+    assert_needs_maintenance(helper, db, runner, False, "repaired audiobook rows do not need maintenance")
     return db, catalog
+
+
+def assert_needs_maintenance(
+    helper: Path,
+    db: Path,
+    runner: list[str] | None,
+    expected: bool,
+    label: str,
+) -> None:
+    cmd = [
+        *(runner or []),
+        str(helper),
+        "--db",
+        str(db),
+        "--needs-maintenance",
+        "--verbose",
+    ]
+    proc = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if expected:
+        if proc.returncode != 10:
+            print(proc.stdout)
+            raise AssertionError(f"{label}: expected exit 10, got {proc.returncode}")
+    elif proc.returncode != 0:
+        print(proc.stdout)
+        raise AssertionError(f"{label}: expected exit 0, got {proc.returncode}")
+    print(f"OK   {label}")
 
 
 def seed_problematic_stock_audiobook_rows(db: Path) -> None:
