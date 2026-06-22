@@ -59,8 +59,14 @@ now_seconds() {
 
 db_signature() {
   [ -s "$DB" ] || return 1
-  size=$(wc -c <"$DB" 2>/dev/null | awk '{ print $1 }')
-  mtime=$(date -r "$DB" '+%s' 2>/dev/null || ls --full-time "$DB" 2>/dev/null | awk '{ print $6 " " $7 " " $8 }')
+  path_signature "$DB"
+}
+
+path_signature() {
+  sig_path=$1
+  [ -s "$sig_path" ] || return 1
+  size=$(wc -c <"$sig_path" 2>/dev/null | awk '{ print $1 }')
+  mtime=$(date -r "$sig_path" '+%s' 2>/dev/null || ls --full-time "$sig_path" 2>/dev/null | awk '{ print $6 " " $7 " " $8 }')
   [ -n "$size" ] && [ -n "$mtime" ] || return 1
   printf '%s:%s\n' "$size" "$mtime"
 }
@@ -76,6 +82,20 @@ signature_size() {
     *:*) printf '%s\n' "${sig_value%%:*}" ;;
     *) printf '%s\n' "$sig_value" ;;
   esac
+}
+
+mirror_db_signature() {
+  mirror_seen=" $DB "
+  for mirror_db in $AUDIOBOOK_DB_MIRROR_PATHS; do
+    [ -n "$mirror_db" ] || continue
+    case "$mirror_seen" in
+      *" $mirror_db "*) continue ;;
+    esac
+    mirror_seen="$mirror_seen$mirror_db "
+    mirror_sig=$(path_signature "$mirror_db" 2>/dev/null || true)
+    [ -n "$mirror_sig" ] || continue
+    printf '%s=%s;' "$mirror_db" "$mirror_sig"
+  done
 }
 
 has_audiobook_audio_files() {
@@ -255,12 +275,108 @@ copy_primary_to_mirror() {
   return 1
 }
 
+copy_db_to_primary() {
+  reason=$1
+  source_db=$2
+  [ -s "$source_db" ] || {
+    log "primary-copy-skip reason=$reason source-missing source=$source_db primary=$DB"
+    return 1
+  }
+  [ "$source_db" = "$DB" ] && return 0
+  primary_parent=${DB%/*}
+  if [ "$primary_parent" != "$DB" ]; then
+    mkdir -p "$primary_parent" 2>/dev/null || true
+  fi
+  primary_tmp="$DB.tmp.$$"
+  if cp -f "$source_db" "$primary_tmp" 2>/dev/null && mv -f "$primary_tmp" "$DB" 2>/dev/null; then
+    chmod 666 "$DB" 2>/dev/null || true
+    log "primary-copy reason=$reason source=$source_db primary=$DB"
+    return 0
+  fi
+  rm -f "$primary_tmp" 2>/dev/null || true
+  log "primary-copy-failed reason=$reason source=$source_db primary=$DB"
+  return 1
+}
+
+db_maintenance_status() {
+  target_db=$1
+  role=$2
+  [ -x "$HELPER" ] || return 1
+  [ -s "$target_db" ] || return 1
+  helper_output="$BASE/db-maint-check.$$.$role"
+  "$HELPER" --db "$target_db" --needs-maintenance --verbose >"$helper_output" 2>&1
+  rc=$?
+  if [ -f "$helper_output" ]; then
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 10 ]; then
+      cat "$helper_output" >>"$LOG"
+    fi
+    rm -f "$helper_output"
+  fi
+  case "$rc" in
+    10)
+      log "check-needs-maint role=$role db=$target_db"
+      ;;
+    0)
+      ;;
+    *)
+      log "check-failed role=$role db=$target_db rc=$rc"
+      ;;
+  esac
+  return "$rc"
+}
+
+promote_clean_sd_db() {
+  reason=$1
+  mode=$2
+  sd_db="$SD_ROOT/usrlocal_media.db"
+  [ -s "$sd_db" ] || return 1
+  [ "$sd_db" = "$DB" ] && return 1
+
+  if db_maintenance_status "$sd_db" sd-promote-check; then
+    :
+  else
+    sd_status=$?
+    [ "$sd_status" = 0 ] || return 1
+  fi
+
+  case "$mode" in
+    force)
+      ;;
+    if-primary-needs)
+      db_maintenance_status "$DB" primary-promote-check
+      primary_status=$?
+      [ "$primary_status" = 10 ] || return 1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  copy_db_to_primary "$reason" "$sd_db" || return 1
+  LAST_AUDIOBOOK_TRACKS=
+  run_maint_one_db "$reason-promoted-sd" "$DB" primary
+  return $?
+}
+
 run_maint() {
   reason=$1
   LAST_AUDIOBOOK_TRACKS=
   primary_tracks=
-  run_maint_one_db "$reason" "$DB" primary
-  primary_rc=$?
+  promote_mode=if-primary-needs
+  case "$reason" in
+    mirror-stable*) promote_mode=force ;;
+  esac
+  promote_clean_sd_db "$reason" "$promote_mode"
+  promote_rc=$?
+  case "$promote_rc" in
+    0|"$TRANSIENT_ZERO_AUDIO_RC"|"$TRANSIENT_LOCKED_DB_RC")
+      primary_rc=$promote_rc
+      ;;
+    *)
+    run_maint_one_db "$reason" "$DB" primary
+    primary_rc=$?
+      ;;
+  esac
   primary_tracks=${LAST_AUDIOBOOK_TRACKS:-}
 
   mirror_seen=" $DB "
@@ -292,32 +408,8 @@ run_maint() {
 }
 
 db_needs_maint_one_db() {
-  target_db=$1
-  role=$2
-  [ -x "$HELPER" ] || return 1
-  [ -s "$target_db" ] || return 1
-  helper_output="$BASE/db-maint-check.$$.$role"
-  "$HELPER" --db "$target_db" --needs-maintenance --verbose >"$helper_output" 2>&1
-  rc=$?
-  if [ -f "$helper_output" ]; then
-    if [ "$rc" -ne 0 ] && [ "$rc" -ne 10 ]; then
-      cat "$helper_output" >>"$LOG"
-    fi
-    rm -f "$helper_output"
-  fi
-  case "$rc" in
-    10)
-      log "check-needs-maint role=$role db=$target_db"
-      return 0
-      ;;
-    0)
-      return 1
-      ;;
-    *)
-      log "check-failed role=$role db=$target_db rc=$rc"
-      return 1
-      ;;
-  esac
+  db_maintenance_status "$1" "$2"
+  [ "$?" = 10 ]
 }
 
 any_db_needs_maintenance() {
@@ -510,6 +602,9 @@ last_size=
 last_seen_sig=
 last_seen_size=
 last_seen_at=0
+last_mirror_sig=
+last_seen_mirror_sig=
+last_seen_mirror_at=0
 last_run_at=0
 
 ensure_db_seeded boot || true
@@ -520,6 +615,9 @@ last_size=$(db_size_signature 2>/dev/null || true)
 last_seen_sig=$last_sig
 last_seen_size=$last_size
 last_seen_at=$(now_seconds)
+last_mirror_sig=$(mirror_db_signature 2>/dev/null || true)
+last_seen_mirror_sig=$last_mirror_sig
+last_seen_mirror_at=$last_seen_at
 last_run_at=$last_seen_at
 
 while :; do
@@ -568,6 +666,9 @@ while :; do
       last_sig=$(db_signature 2>/dev/null || echo "$sig")
       last_size=$(db_size_signature 2>/dev/null || true)
       [ -n "$last_size" ] || last_size=$(signature_size "$last_sig")
+      last_mirror_sig=$(mirror_db_signature 2>/dev/null || true)
+      last_seen_mirror_sig=$last_mirror_sig
+      last_seen_mirror_at=$now
       last_seen_sig=$last_sig
       last_seen_size=$last_size
       last_seen_at=$now
@@ -582,10 +683,36 @@ while :; do
     fi
     continue
   fi
+  mirror_sig=$(mirror_db_signature 2>/dev/null || true)
+  if [ -n "$mirror_sig" ]; then
+    if [ "$mirror_sig" != "$last_seen_mirror_sig" ]; then
+      last_seen_mirror_sig=$mirror_sig
+      last_seen_mirror_at=$now
+      log "mirror-db-change sig=$mirror_sig"
+      continue
+    fi
+    mirror_age=$((now - last_seen_mirror_at))
+    if [ "$mirror_sig" != "$last_mirror_sig" ] && [ "$mirror_age" -ge "$STABLE_SECONDS" ]; then
+      run_maint_with_retries mirror-stable || true
+      last_sig=$(db_signature 2>/dev/null || echo "$sig")
+      last_size=$(db_size_signature 2>/dev/null || echo "$size")
+      last_seen_sig=$last_sig
+      last_seen_size=$last_size
+      last_seen_at=$now
+      last_mirror_sig=$(mirror_db_signature 2>/dev/null || true)
+      last_seen_mirror_sig=$last_mirror_sig
+      last_seen_mirror_at=$now
+      last_run_at=$now
+      continue
+    fi
+  fi
   if [ "$FULL_REFRESH_INTERVAL_SECONDS" -gt 0 ] && [ "$since_run" -ge "$FULL_REFRESH_INTERVAL_SECONDS" ]; then
     run_maint_with_retries periodic || true
     last_sig=$(db_signature 2>/dev/null || echo "$sig")
     last_size=$(db_size_signature 2>/dev/null || echo "$size")
+    last_mirror_sig=$(mirror_db_signature 2>/dev/null || true)
+    last_seen_mirror_sig=$last_mirror_sig
+    last_seen_mirror_at=$now
     last_seen_sig=$last_sig
     last_seen_size=$last_size
     last_seen_at=$now

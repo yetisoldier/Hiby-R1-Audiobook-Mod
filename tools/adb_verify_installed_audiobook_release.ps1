@@ -9,7 +9,7 @@ param(
     [string]$OutDir = "work\installed-release-verification",
 
     [Parameter(Mandatory=$false)]
-    [string]$ExpectedVersion = "1.6.16.4-audiobook",
+    [string]$ExpectedVersion = "1.6.16.5-audiobook",
 
     [Parameter(Mandatory=$false)]
     [int]$MinUsrDataFreeKb = 4096,
@@ -280,6 +280,13 @@ if ($RequireDbMaintenance) {
         Assert-Contains $dbWatchScript 'run_maint_one_db "$reason" "$mirror_db" mirror' "runtime DB watcher"
         Assert-Contains $dbWatchScript "copy_primary_to_mirror" "runtime DB watcher"
         Assert-Contains $dbWatchScript "mirror-copy reason=" "runtime DB watcher"
+        Assert-Contains $dbWatchScript "copy_db_to_primary" "runtime DB watcher"
+        Assert-Contains $dbWatchScript "primary-copy reason=" "runtime DB watcher"
+        Assert-Contains $dbWatchScript "promote_clean_sd_db" "runtime DB watcher"
+        Assert-Contains $dbWatchScript "mirror_db_signature" "runtime DB watcher"
+        Assert-Contains $dbWatchScript "mirror-db-change" "runtime DB watcher"
+        Assert-Contains $dbWatchScript "mirror-stable" "runtime DB watcher"
+        Assert-Contains $dbWatchScript "promoted-sd" "runtime DB watcher"
         Assert-Contains $dbWatchScript "any_db_needs_maintenance" "runtime DB watcher"
         Assert-Contains $dbWatchScript "--needs-maintenance" "runtime DB watcher"
         Assert-Contains $dbWatchScript "content-repair-mtime" "runtime DB watcher"

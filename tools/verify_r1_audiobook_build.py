@@ -64,6 +64,10 @@ EXPECTED_CURRENT_HASHES = {
         "md5": "d6ebce37c653f3756b54a7b5c3725788",
         "sha256": "eefd1f060babf5930d7bae4be481d7f580edf225a128d17ab6130beced4dd404",
     },
+    "r1-audiobooks-1.6.16.5-audiobook.upt": {
+        "md5": "f6a0e65af41c7990f03e342fef995bad",
+        "sha256": "efd77a5a6f83879e76089ace072657891ff2e5475c4f0e82d812f728ad4e2816",
+    },
     "r1-audiobooks-1.6.9-audiobook.upt": {
         "md5": "3c3b3f05724acc474fb349e6378fc351",
         "sha256": "f78e67089ff84021b18d69a4af2cb01be6f872bc59d187bf9cba256f8cd792aa",
@@ -73,8 +77,8 @@ EXPECTED_CURRENT_HASHES = {
         "sha256": "02b286676d93ec683307820e1ef40288f34ef21a42a24f5cbda361f2d3733b7b",
     },
     "rootfs.squashfs": {
-        "md5": "8728cd7ad4734f3f36efdfe6d0c1093a",
-        "sha256": "394db7b39571f3cc95f04ceec1195f1fedb0abe3ac2a3dec3dbf5f7c3461c152",
+        "md5": "1797f124a92177605e776615144f323a",
+        "sha256": "cf2076de6c700abd24d66dc587ac3109786829e5f589f4068e61988b0a481325",
     },
     "r1-audiobooks-1.6.3-audiobook.upt": {
         "md5": "1954b92ae7a394a0dc450c2d5f70f3d2",
@@ -1038,7 +1042,7 @@ def verify(
         if db_watch.exists():
             db_watch_text = db_watch.read_text(encoding="ascii", errors="replace")
             require("\r" not in db_watch_text, "db watch script uses LF line endings", failures)
-            require("date -r \"$DB\" '+%s'" in db_watch_text, "db watch uses R1-supported date -r signature", failures)
+            require("date -r \"$sig_path\" '+%s'" in db_watch_text, "db watch uses R1-supported date -r signature", failures)
             require(
                 'run_maint_with_retries "$run_reason"' in db_watch_text,
                 "db watch runs maintainer with transient retry handling after stable size-changing scan",
@@ -1055,6 +1059,13 @@ def verify(
             require('run_maint_one_db "$reason" "$mirror_db" mirror' in db_watch_text, "db watch runs helper for mirror DB paths", failures)
             require("copy_primary_to_mirror" in db_watch_text, "db watch can copy repaired primary DB to mirrors", failures)
             require("mirror-copy reason=" in db_watch_text, "db watch logs mirror DB copy repairs", failures)
+            require("copy_db_to_primary" in db_watch_text, "db watch can promote a scanned SD DB to primary", failures)
+            require("primary-copy reason=" in db_watch_text, "db watch logs SD DB promotion", failures)
+            require("promote_clean_sd_db" in db_watch_text, "db watch can prefer a clean SD-root DB after card changes", failures)
+            require("mirror_db_signature" in db_watch_text, "db watch tracks mirror DB signature changes", failures)
+            require("mirror-db-change" in db_watch_text, "db watch logs mirror DB changes", failures)
+            require("mirror-stable" in db_watch_text, "db watch repairs stable mirror DB changes", failures)
+            require("promoted-sd" in db_watch_text, "db watch runs maintainer after SD DB promotion", failures)
             require("any_db_needs_maintenance" in db_watch_text, "db watch can detect same-size stock DB rewrites", failures)
             require("--needs-maintenance" in db_watch_text, "db watch uses cheap DB repair-needed check", failures)
             require("content-repair-mtime" in db_watch_text, "db watch repairs same-size content rewrites", failures)
@@ -1241,10 +1252,10 @@ def verify(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--out-dir", type=Path, default=Path("work/audiobook-firmware-1.6.16.4-audiobook"))
-    parser.add_argument("--upt-name", default="r1-audiobooks-1.6.16.4-audiobook.upt")
-    parser.add_argument("--expected-version", default="1.6.16.4-audiobook")
-    parser.add_argument("--expected-label", default="HiBy R1 Audiobook FW 1.6.16.4")
+    parser.add_argument("--out-dir", type=Path, default=Path("work/audiobook-firmware-1.6.16.5-audiobook"))
+    parser.add_argument("--upt-name", default="r1-audiobooks-1.6.16.5-audiobook.upt")
+    parser.add_argument("--expected-version", default="1.6.16.5-audiobook")
+    parser.add_argument("--expected-label", default="HiBy R1 Audiobook FW 1.6.16.5")
     parser.add_argument(
         "--stock-rootfs",
         type=Path,

@@ -155,6 +155,84 @@ EOF
   trap - EXIT
 }
 
+test_clean_sd_db_promotes_over_stale_primary() {
+  tmp=$(new_fixture)
+  trap 'rm -rf "$tmp"' EXIT
+  printf 'stale-primary\n' >"$tmp/primary.db"
+  printf 'clean-sd\n' >"$tmp/sd/usrlocal_media.db"
+  cat >"$tmp/helper.sh" <<'EOF'
+#!/bin/sh
+db=
+needs=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --db)
+      db=$2
+      shift 2
+      ;;
+    --needs-maintenance)
+      needs=1
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+if [ "$needs" = 1 ]; then
+  if grep -q stale "$db" 2>/dev/null; then
+    echo "audiobook rows MEDIA_TABLE: 99"
+    echo "audiobook files: 1"
+    echo "audiobook files missing from DB: 1"
+    echo "needs maintenance: yes"
+    exit 10
+  fi
+  echo "audiobook rows MEDIA_TABLE: 1"
+  echo "audiobook files: 1"
+  echo "audiobook files missing from DB: 0"
+  echo "needs maintenance: no"
+  exit 0
+fi
+echo "audiobook tracks: 1"
+exit 0
+EOF
+  chmod 755 "$tmp/helper.sh"
+
+  set +e
+  timeout 5 env \
+    AUDIOBOOK_BASE_DIR="$tmp/base" \
+    AUDIOBOOK_DB_MAINT_HELPER="$tmp/helper.sh" \
+    AUDIOBOOK_DB_PATH="$tmp/primary.db" \
+    AUDIOBOOK_SD_ROOT="$tmp/sd" \
+    AUDIOBOOK_DB_MIRROR_PATHS="$tmp/mirror.db $tmp/sd/usrlocal_media.db" \
+    AUDIOBOOK_DB_BOOT_DELAY_SECONDS=0 \
+    AUDIOBOOK_DB_BOOT_STABLE_TIMEOUT_SECONDS=1 \
+    AUDIOBOOK_DB_STABLE_POLL_SECONDS=1 \
+    AUDIOBOOK_DB_INTERVAL_SECONDS=60 \
+    AUDIOBOOK_DB_STABLE_SECONDS=1 \
+    sh "$WATCHER" >"$tmp/stdout.log" 2>"$tmp/stderr.log"
+  rc=$?
+  set -e
+  case "$rc" in
+    0|124|143) ;;
+    *)
+      cat "$tmp/stdout.log" >&2 || true
+      cat "$tmp/stderr.log" >&2 || true
+      fail "watcher exited unexpectedly with rc=$rc"
+      ;;
+  esac
+
+  log="$tmp/base/db-maint.log"
+  assert_contains "$log" "check-needs-maint role=primary-promote-check db=$tmp/primary.db" "stale primary is detected before promotion"
+  assert_contains "$log" "primary-copy reason=boot source=$tmp/sd/usrlocal_media.db primary=$tmp/primary.db" "clean SD DB is promoted to primary"
+  assert_contains "$log" "done reason=boot-promoted-sd role=primary" "promoted primary is maintained"
+  assert_contains "$tmp/primary.db" "clean-sd" "primary DB now matches clean SD DB"
+  assert_contains "$tmp/mirror.db" "clean-sd" "other mirror receives promoted DB"
+  rm -rf "$tmp"
+  trap - EXIT
+}
+
 test_zero_audio_defer_avoids_mirror_copy
 test_locked_db_retries_then_mirrors_success
 test_zero_retry_survives_locked_retry
+test_clean_sd_db_promotes_over_stale_primary

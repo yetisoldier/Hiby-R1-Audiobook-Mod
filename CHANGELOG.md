@@ -2,6 +2,21 @@
 
 All public releases are for the normal HiBy R1 on stock firmware 1.6. Do not install these packages on the R1 MIDI.
 
+## v1.5.4 - 2026-06-22
+
+Firmware marker: `1.6.16.5-audiobook`
+
+Hotfix for `v1.5.3`.
+
+- Fixed SD-card swap behavior where Music -> Update Database could update the SD-card media DB while the internal active media DB still contained rows from the previous SD card.
+- The DB watcher now tracks SD-root media DB signature changes in addition to the internal DB.
+- When the SD-root `usrlocal_media.db` is clean/current and the internal DB needs repair, the watcher promotes the SD DB back to the internal DB, runs the maintainer, and mirrors the repaired DB back to all active DB locations.
+- Live installed-device regression test forced the internal DB to an old-card state with 298 audiobook rows while the current SD card had 135 audiobook files. The watcher logged `primary-copy reason=boot`, rebuilt 135 audiobook rows, regenerated catalogs, and left both primary and SD-root DBs with no maintenance needed.
+- Installed-device verification passed afterward with DB integrity `ok`, 135 audiobook rows across 6 books, zero audiobook album/genre/search leakage, one resume daemon, one DB watcher, and about 31 MB free under `/usr/data`.
+- Built package `r1-audiobooks-1.6.16.5-audiobook.upt`. MD5: `f6a0e65af41c7990f03e342fef995bad`; SHA256: `efd77a5a6f83879e76089ace072657891ff2e5475c4f0e82d812f728ad4e2816`.
+- Rootfs MD5: `1797f124a92177605e776615144f323a`; Rootfs SHA256: `cf2076de6c700abd24d66dc587ac3109786829e5f589f4068e61988b0a481325`.
+- All `v1.5.3` folder-based audiobook detection, resume, UI, Native DSD, Bluetooth SBC XQ, and USB DAC mode behavior is otherwise retained.
+
 ## v1.5.3 - 2026-06-22
 
 Firmware marker: `1.6.16.4-audiobook`
