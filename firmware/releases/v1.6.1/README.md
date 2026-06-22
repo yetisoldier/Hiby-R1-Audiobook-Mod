@@ -55,6 +55,6 @@ The genre tag does not need to be exactly `Audiobook`. Files under `/Audiobooks`
 The repository includes separate developer docs for people who want to build,
 modify, or audit the firmware:
 
-- `docs/modder_start_here.md`
-- `docs/audiobook_firmware_architecture.md`
-- `docs/build_flash_verify_runbook.md`
+- [Modder Start Here](https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/blob/main/docs/modder_start_here.md)
+- [Audiobook Firmware Architecture](https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/blob/main/docs/audiobook_firmware_architecture.md)
+- [Build, Flash, Verify, And Release Runbook](https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/blob/main/docs/build_flash_verify_runbook.md)
