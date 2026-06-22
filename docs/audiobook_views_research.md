@@ -665,3 +665,93 @@ it the sidecar catalog files. More title-row calls into the media route helper
 are likely to repeat the current failure pattern: `lw a0,0xd8(s0)` is stable
 but lands on the wrong global music route, while row/list objects such as `$s0`
 and `$s2` can reboot the player.
+
+## 1.6.16.6 Native View Rows / Sub-Back Candidate - 2026-06-22
+
+The current deeper UI candidate keeps the native Audiobooks hub but stops trying
+to make the stock title row call the music genre route. Instead, the hub rows
+open generated filesystem views:
+
+- `Titles` -> `a:\Audiobooks\_views\Titles\*`
+- `Authors` -> `a:\Audiobooks\_views\Authors\*`
+- `Series` -> `a:\Audiobooks\_views\Series\*`
+- `Folders` -> `a:\Audiobooks\.\*`
+
+The generated `*.m3u` rows are written by the DB maintainer, so playback still
+uses the stock media player path and the existing resume daemon can match the
+selected book. To keep the UI fast and avoid nested generated folders, the
+Author and Series views were flattened to single playlist rows such as
+`Author - Title.m3u` and `Series - 02 - Title.m3u`.
+
+Live RAM-only validation showed that simply opening the generated folders
+worked, but the page title remained `Files` and Back behavior could be sticky.
+The follow-up helper at `0x00760d50` now:
+
+1. clears any stale `vg_listview_explorer`;
+2. opens the requested generated view path with the stock explorer opener;
+3. registers a stock `hiby_set_sub_back` entry using the requested view label;
+4. installs the stock explorer Back callback on the created list object.
+
+Runtime testing after the RAM patch confirmed:
+
+- Titles, Authors, and Series show friendly headers instead of `Files`;
+- Folders opens the correct `/Audiobooks` root with a friendly `Folders`
+  header by routing through `a:\Audiobooks\.\*`;
+- Series only showed series-tagged books on the test card;
+- selecting a generated title playlist still played through Now Playing;
+- a saved multipart bookmark for `Ice Like Fire` restored around `26:05`;
+- Back from a generated view now goes to the Audiobooks folder root, then back
+  to the Audiobooks hub. One-back-to-hub is still not solved, but this is
+  predictable and did not freeze during the test.
+
+The public-labeled follow-up package is:
+
+```text
+work\audiobook-firmware-1.6.17-audiobook\r1-audiobooks-1.6.17-audiobook.upt
+
+package MD5        e8491f65ead4ef7a34163a67c7ee7007
+package SHA256     47b6b2aa85f0f14d13d659f0f3f987808f7d389a7a32bf7e54676388e6f82523
+rootfs MD5         d8c6a46cb4dc90624042f89224f611e6
+hiby_player MD5    cf6014c0a4e6188ce0823348af49aba1
+hiby_player SHA256 2c4fbcf817bc66b6e545d24a7a90d464bd720b5c069980c4e428e5e9f8a31d59
+```
+
+Offline verification passed with `--expect-native-hub-view-rows` and
+`--expect-native-hub-launcher`.
+
+Installed verification of the public-labeled `1.6.17-audiobook` package passed
+on 2026-06-22 with artifacts under
+`work\installed-release-verification\20260622-141615`. The device reported
+`1.6.17-audiobook`, DB integrity was `ok`, the test card had 135 audiobook rows
+across six books, title/author/series catalogs were present, one internal
+`Audiobook` route row was present, Music album/search leakage was zero, and one
+resume daemon plus one DB watcher were running. UI smoke opened the launcher
+Audiobooks hub, displayed `Scan`, `Titles`, `Authors`, `Series`, and `Folders`,
+and launched a generated title row into Now Playing with resume.
+
+Installed flash validation on 2026-06-22 confirmed the package reports
+`1.6.16.6-view-subback-dev`, passes installed-release verification, and has one
+resume daemon plus one DB watcher. Live UI checks showed:
+
+- Audiobooks opens to the native hub with `Scan`, `Titles`, `Authors`,
+  `Series`, and `Folders`.
+- `Titles`, `Authors`, and `Series` open the generated view folders with the
+  intended page headers.
+- `Series` lists only the series-tagged books on the test SD card.
+- `Folders` originally opened `TF:\Audiobooks\` with the stock `Files` page
+  header and close icon. A RAM-only path probe changed the route to
+  `a:\Audiobooks\.\*`, which kept the same folder contents but displayed the
+  intended `Folders` header and normal audiobook back arrow.
+- Edge-back from generated views returns to the Audiobooks hub, with a brief
+  transition ghost that clears after a second or two.
+- Starting `Ice Like Fire` from the generated `Titles` playlist switched to Now
+  Playing, restored to `26:05`, and the progress counter advanced.
+
+Post-flash validation of `1.6.16.6-folder-polish-dev` on 2026-06-22 passed the
+installed-release verifier with 135 audiobook rows, six books, one
+route-visible internal `Audiobook` genre row, and no Music album/genre/search
+leakage. The launcher shows the Audiobooks icon; opening Audiobooks from the
+tile label shows the native hub; `Folders` displays the intended `Folders`
+header with `TF:\Audiobooks\.\`; and `Titles` opens the generated title playlist
+view. From the Folders root, the left arrow can be sticky, but edge-back returns
+to the Audiobooks hub.

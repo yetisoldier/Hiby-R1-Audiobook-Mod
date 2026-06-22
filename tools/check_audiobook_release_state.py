@@ -126,6 +126,25 @@ def catalog_values(conn: sqlite3.Connection, table: str, column: str, failures: 
     return {denul(row[0]) for row in conn.execute(f"SELECT {column} FROM {table}")}
 
 
+def count_hidden_nul_text(conn: sqlite3.Connection, table: str, columns: list[str], failures: list[str]) -> int:
+    if not require_table(conn, table, failures):
+        return 0
+    predicates = " OR ".join(f"instr(COALESCE({column}, ''), char(0)) > 0" for column in columns)
+    return int(
+        conn.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE path LIKE ? COLLATE NOCASE AND ({predicates})",
+            (PREFIX + "%",),
+        ).fetchone()[0]
+    )
+
+
+def audiobook_route_genre_counts(conn: sqlite3.Connection, table: str, failures: list[str]) -> tuple[int, list[int]]:
+    if not require_table(conn, table, failures):
+        return 0, []
+    rows = conn.execute(f"SELECT cn FROM {table} WHERE genre = ?", ("Audiobook",)).fetchall()
+    return len(rows), [int(row[0]) for row in rows]
+
+
 def load_catalog(path: Path) -> tuple[dict[str, list[tuple[int, int, str]]], dict[str, set[str]]]:
     by_root: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
     keys_by_root: dict[str, set[str]] = defaultdict(set)
@@ -444,6 +463,20 @@ def check_database(
         album2_catalog = catalog_values(conn, "ALBUM2_TABLE", "album", failures)
         genre_catalog = catalog_values(conn, "GENRE_TABLE", "genre", failures)
         genre2_catalog = catalog_values(conn, "GENRE2_TABLE", "genre", failures)
+        route_genre_count, route_genre_cns = audiobook_route_genre_counts(conn, "GENRE_TABLE", failures)
+        route_genre2_count, route_genre2_cns = audiobook_route_genre_counts(conn, "GENRE2_TABLE", failures)
+        media_hidden_nul = count_hidden_nul_text(
+            conn,
+            "MEDIA_TABLE",
+            ["path", "name", "album", "artist", "album_artist", "genre", "character", "pinyin_charater"],
+            failures,
+        )
+        media2_hidden_nul = count_hidden_nul_text(
+            conn,
+            "MEDIA2_TABLE",
+            ["path", "name", "album", "artist", "album_artist", "genre", "character", "pinyin_charater"],
+            failures,
+        )
 
         if expect_audiobooks and not media_rows:
             failures.append("MEDIA_TABLE has no audiobook rows")
@@ -480,13 +513,31 @@ def check_database(
             failures.append(f"ALBUM_TABLE leaks audiobook albums: {leaked_albums[:5]}")
         if leaked_albums2:
             failures.append(f"ALBUM2_TABLE leaks audiobook albums: {leaked_albums2[:5]}")
-        if "Audiobook" in genre_catalog:
-            failures.append("GENRE_TABLE contains Audiobook")
-        if "Audiobook" in genre2_catalog:
-            failures.append("GENRE2_TABLE contains Audiobook")
+        if expect_audiobooks and media_rows:
+            if route_genre_count != 1:
+                failures.append(f"GENRE_TABLE should contain one Audiobook route row, found {route_genre_count}")
+            if route_genre2_count != 1:
+                failures.append(f"GENRE2_TABLE should contain one Audiobook route row, found {route_genre2_count}")
+            if route_genre_cns and route_genre_cns[0] != len(media_rows):
+                failures.append(
+                    f"GENRE_TABLE Audiobook route row count {route_genre_cns[0]} != audiobook rows {len(media_rows)}"
+                )
+            if route_genre2_cns and route_genre2_cns[0] != len(media_rows):
+                failures.append(
+                    f"GENRE2_TABLE Audiobook route row count {route_genre2_cns[0]} != audiobook rows {len(media_rows)}"
+                )
+        else:
+            if "Audiobook" in genre_catalog:
+                failures.append("GENRE_TABLE contains Audiobook without audiobook rows")
+            if "Audiobook" in genre2_catalog:
+                failures.append("GENRE2_TABLE contains Audiobook without audiobook rows")
         bad_genres = sorted(genre for genre in audiobook_genres if genre != "Audiobook")
         if bad_genres:
             failures.append(f"audiobook media rows have non-Audiobook genres: {bad_genres[:5]}")
+        if media_hidden_nul:
+            failures.append(f"MEDIA_TABLE audiobook rows contain embedded NUL text: {media_hidden_nul}")
+        if media2_hidden_nul:
+            failures.append(f"MEDIA2_TABLE audiobook rows contain embedded NUL text: {media2_hidden_nul}")
 
         ids = [row.media_id for row in media_rows]
         duplicate_ids = [item for item, count in Counter(ids).items() if count > 1]
@@ -507,7 +558,8 @@ def check_database(
         print(f"audiobook books: {len(roots)}")
         print(f"SEARCH_TABLE audiobook rows: {search_audiobooks}")
         print(f"ALBUM_TABLE audiobook leaks: {len(audiobook_albums & album_catalog)}")
-        print(f"GENRE_TABLE has Audiobook: {'Audiobook' in genre_catalog}")
+        print(f"GENRE_TABLE Audiobook route rows: {route_genre_count}")
+        print(f"MEDIA_TABLE audiobook rows with embedded NUL text: {media_hidden_nul}")
         if catalog is not None:
             print(f"catalog: {catalog}")
         if books_catalog is not None:

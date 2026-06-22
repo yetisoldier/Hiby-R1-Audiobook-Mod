@@ -51,10 +51,21 @@ def ins_beq(rs: int, rt: int, imm: int) -> int:
     return (4 << 26) | ((rs & 0x1F) << 21) | ((rt & 0x1F) << 16) | (imm & 0xFFFF)
 
 
+def ins_jr(rs: int) -> int:
+    return (rs & 0x1F) << 21 | 8
+
+
 def load_addr_words(reg: int, addr: int) -> tuple[int, int]:
     hi = (addr + 0x8000) >> 16
     lo = addr & 0xFFFF
     return ins_lui(reg, hi), ins_addiu(reg, reg, lo)
+
+
+TEXT_LOAD_BASE = 0x00400000
+
+
+def text_addr(offset: int) -> int:
+    return TEXT_LOAD_BASE + offset
 
 
 STOCK_MD5 = "ad69fa8377fb85b01ed5d65fe976b19a"
@@ -295,26 +306,109 @@ AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_CODE_OFFSET = AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BAS
 AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_CODE_OFFSET = AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_OFFSET + 0x30
 AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_CODE_OFFSET = AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_OFFSET + 0x60
 AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_CODE_OFFSET = AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_OFFSET + 0x90
+AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_LABEL_OFFSET = AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_OFFSET + 0xC0
+AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_LABEL_OFFSET = AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_OFFSET + 0xD0
+AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_LABEL_OFFSET = AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_OFFSET + 0xE0
+AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_LABEL_OFFSET = AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_OFFSET + 0xF0
 AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_PATH_OFFSET = AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_OFFSET + 0x100
 AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_PATH_OFFSET = AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_OFFSET + 0x180
 AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_PATH_OFFSET = AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_OFFSET + 0x200
 AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_PATH_OFFSET = AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_OFFSET + 0x280
+AUDIOBOOK_NATIVE_HUB_VIEW_OPEN_HELPER_OFFSET = 0x360D50
+AUDIOBOOK_NATIVE_HUB_VIEW_OPEN_HELPER_ADDR = text_addr(AUDIOBOOK_NATIVE_HUB_VIEW_OPEN_HELPER_OFFSET)
+
+AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_LABEL_ADDR = text_addr(AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_LABEL_OFFSET)
+AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_LABEL_ADDR = text_addr(AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_LABEL_OFFSET)
+AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_LABEL_ADDR = text_addr(AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_LABEL_OFFSET)
+AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_LABEL_ADDR = text_addr(AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_LABEL_OFFSET)
+AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_PATH_ADDR = text_addr(AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_PATH_OFFSET)
+AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_PATH_ADDR = text_addr(AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_PATH_OFFSET)
+AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_PATH_ADDR = text_addr(AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_PATH_OFFSET)
+AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_PATH_ADDR = text_addr(AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_PATH_OFFSET)
 
 
-def explorer_row_cave(path_addr: int) -> bytes:
-    a1_hi, a1_lo = load_addr_words(5, 0x0075C134)  # "vg_listview_explorer"
-    a2_hi, a2_lo = load_addr_words(6, path_addr)
+def explorer_open_helper() -> bytes:
+    view_a1_hi, view_a1_lo = load_addr_words(5, 0x0075C134)  # "vg_listview_explorer"
+    reopen_a1_hi, reopen_a1_lo = load_addr_words(5, 0x0075C134)
+    sub_back_a1_hi, sub_back_a1_lo = load_addr_words(5, 0x007605C0)  # "hiby_set_sub_back"
+    explorer_v0_hi, explorer_v0_lo = load_addr_words(2, 0x0075C134)
+    back_cb_a1_hi, back_cb_a1_lo = load_addr_words(5, 0x0053F360)
+    return pack_words(
+        ins_addiu(29, 29, -0x40),
+        ins_sw(31, 29, 0x3C),
+        ins_sw(16, 29, 0x38),
+        ins_sw(17, 29, 0x34),
+        ins_sw(18, 29, 0x30),
+        ins_sw(19, 29, 0x2C),
+        ins_addiu(16, 4, 0),
+        ins_addiu(17, 5, 0),
+        ins_addiu(18, 6, 0),
+        ins_sw(0, 29, 0x10),
+        ins_addiu(4, 16, 0),
+        view_a1_hi,
+        view_a1_lo,
+        ins_addiu(6, 29, 0x10),
+        ins_jal(0x004F13A0),
+        0,
+        ins_lw(2, 29, 0x10),
+        ins_beq(2, 0, 6),
+        0,
+        ins_lw(4, 2, 0x3B90),
+        ins_beq(4, 0, 3),
+        0,
+        ins_jal(0x004C64A0),
+        0,
+        ins_addiu(4, 16, 0),
+        reopen_a1_hi,
+        reopen_a1_lo,
+        ins_addiu(6, 17, 0),
+        ins_jal(0x004961E0),
+        0,
+        ins_beq(2, 0, 20),
+        ins_addiu(19, 2, 0),
+        ins_addiu(4, 16, 0),
+        sub_back_a1_hi,
+        sub_back_a1_lo,
+        ins_addiu(6, 18, 0),
+        ins_addiu(7, 0, 1),
+        explorer_v0_hi,
+        explorer_v0_lo,
+        ins_sw(2, 29, 0x10),
+        ins_jal(0x004C6760),
+        0,
+        ins_sw(2, 19, 0x3B90),
+        ins_lw(2, 19, 0x00E8),
+        ins_beq(2, 0, 6),
+        0,
+        ins_lw(4, 2, 0x00D8),
+        back_cb_a1_hi,
+        back_cb_a1_lo,
+        ins_jal(0x00456DC0),
+        0,
+        ins_lw(31, 29, 0x3C),
+        ins_lw(16, 29, 0x38),
+        ins_lw(17, 29, 0x34),
+        ins_lw(18, 29, 0x30),
+        ins_lw(19, 29, 0x2C),
+        ins_jr(31),
+        ins_addiu(29, 29, 0x40),
+    )
+
+
+def explorer_row_cave(path_addr: int, label_addr: int) -> bytes:
+    a1_hi, a1_lo = load_addr_words(5, path_addr)
+    a2_hi, a2_lo = load_addr_words(6, label_addr)
     return pack_words(
         ins_lw(4, 16, 0x00D8),
         a1_hi,
         a1_lo,
         a2_hi,
         a2_lo,
-        ins_jal(0x004961E0),
+        ins_jal(AUDIOBOOK_NATIVE_HUB_VIEW_OPEN_HELPER_ADDR),
         0,
         ins_j(0x00540D2C),
         0,
-    )
+    ).ljust(0x30, b"\x00")
 
 
 def wide_path(path: str, size: int = 0x80) -> bytes:
@@ -324,14 +418,50 @@ def wide_path(path: str, size: int = 0x80) -> bytes:
     return encoded.ljust(size, b"\x00")
 
 
-AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_CODE = explorer_row_cave(0x00760808)
-AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_CODE = explorer_row_cave(0x00760888)
-AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_CODE = explorer_row_cave(0x00760908)
-AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_CODE = explorer_row_cave(0x00760988)
+def wide_label(label: str, size: int = 0x10) -> bytes:
+    return wide_path(label, size)
+
+
+AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_CODE = explorer_row_cave(
+    AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_PATH_ADDR,
+    AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_LABEL_ADDR,
+)
+AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_CODE = explorer_row_cave(
+    AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_PATH_ADDR,
+    AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_LABEL_ADDR,
+)
+AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_CODE = explorer_row_cave(
+    AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_PATH_ADDR,
+    AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_LABEL_ADDR,
+)
+AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_CODE = explorer_row_cave(
+    AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_PATH_ADDR,
+    AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_LABEL_ADDR,
+)
+AUDIOBOOK_NATIVE_HUB_VIEW_OPEN_HELPER_CODE = explorer_open_helper()
+AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_LABEL = wide_label("Titles")
+AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_LABEL = wide_label("Authors")
+AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_LABEL = wide_label("Series")
+AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_LABEL = wide_label("Folders")
 AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_PATH = wide_path("a:\\Audiobooks\\_views\\Titles\\*")
 AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_PATH = wide_path("a:\\Audiobooks\\_views\\Authors\\*")
 AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_PATH = wide_path("a:\\Audiobooks\\_views\\Series\\*")
-AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_PATH = wide_path("a:\\Audiobooks\\*")
+AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_PATH = wide_path("a:\\Audiobooks\\.\\*")
+
+for name, blob, limit in (
+    ("native hub Titles row cave", AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_CODE, 0x30),
+    ("native hub Authors row cave", AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_CODE, 0x30),
+    ("native hub Series row cave", AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_CODE, 0x30),
+    ("native hub Folders row cave", AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_CODE, 0x30),
+    ("native hub Titles label", AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_LABEL, 0x10),
+    ("native hub Authors label", AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_LABEL, 0x10),
+    ("native hub Series label", AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_LABEL, 0x10),
+    ("native hub Folders label", AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_LABEL, 0x10),
+    ("native hub explorer helper", AUDIOBOOK_NATIVE_HUB_VIEW_OPEN_HELPER_CODE, 0x180),
+):
+    if len(blob) > limit:
+        raise ValueError(f"{name} is too large for its reserved patch cave: {len(blob)} > {limit}")
+
 AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_PATCHES = (
     (
         AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_CODE_OFFSET,
@@ -352,6 +482,31 @@ AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_PATCHES = (
         AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_CODE_OFFSET,
         b"\x00" * len(AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_CODE),
         AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_CODE,
+    ),
+    (
+        AUDIOBOOK_NATIVE_HUB_VIEW_OPEN_HELPER_OFFSET,
+        b"\x00" * len(AUDIOBOOK_NATIVE_HUB_VIEW_OPEN_HELPER_CODE),
+        AUDIOBOOK_NATIVE_HUB_VIEW_OPEN_HELPER_CODE,
+    ),
+    (
+        AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_LABEL_OFFSET,
+        b"\x00" * len(AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_LABEL),
+        AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_LABEL,
+    ),
+    (
+        AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_LABEL_OFFSET,
+        b"\x00" * len(AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_LABEL),
+        AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_LABEL,
+    ),
+    (
+        AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_LABEL_OFFSET,
+        b"\x00" * len(AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_LABEL),
+        AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_LABEL,
+    ),
+    (
+        AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_LABEL_OFFSET,
+        b"\x00" * len(AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_LABEL),
+        AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_LABEL,
     ),
     (
         AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_PATH_OFFSET,

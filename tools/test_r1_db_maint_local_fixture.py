@@ -138,6 +138,30 @@ def run_helper(helper: Path, work_dir: Path, runner: list[str] | None = None) ->
         print(proc.stdout)
         raise SystemExit(proc.returncode)
     assert_needs_maintenance(helper, db, runner, False, "repaired audiobook rows do not need maintenance", sd_root=sd_root)
+    seed_stale_audiobook_route_genre_count(db)
+    assert_needs_maintenance(
+        helper,
+        db,
+        runner,
+        True,
+        "stale audiobook route genre counts need maintenance",
+        sd_root=sd_root,
+    )
+    for generated in (catalog, album_patterns, books_catalog, titles_catalog, authors_catalog, series_catalog):
+        generated.unlink(missing_ok=True)
+    proc = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    (work_dir / "helper-route-repair.log").write_text(proc.stdout, encoding="utf-8", errors="replace")
+    if proc.returncode != 0:
+        print(proc.stdout)
+        raise SystemExit(proc.returncode)
+    assert_needs_maintenance(
+        helper,
+        db,
+        runner,
+        False,
+        "stale audiobook route genre counts repaired",
+        sd_root=sd_root,
+    )
     return db, catalog
 
 
@@ -326,6 +350,17 @@ def seed_problematic_stock_audiobook_rows(db: Path) -> None:
         conn.close()
 
 
+def seed_stale_audiobook_route_genre_count(db: Path) -> None:
+    """Simulate stale route-row counts left after an SD-card change."""
+    conn = sqlite3.connect(db)
+    try:
+        for table in ("GENRE_TABLE", "GENRE2_TABLE"):
+            conn.execute(f"UPDATE {table} SET cn = 1 WHERE genre = 'Audiobook'")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def verify_db(db: Path, catalog: Path) -> None:
     conn = sqlite3.connect(db)
     try:
@@ -371,6 +406,36 @@ def verify_db(db: Path, catalog: Path) -> None:
                 "SELECT genre FROM GENRE_TABLE UNION SELECT genre FROM GENRE2_TABLE"
             )
         }
+        audiobook_media_count = conn.execute(
+            "SELECT COUNT(*) FROM MEDIA_TABLE WHERE path LIKE 'a:\\Audiobooks\\%' COLLATE NOCASE"
+        ).fetchone()[0]
+        audiobook_route_counts = {
+            table: conn.execute(
+                f"SELECT COUNT(*), COALESCE(MIN(cn), 0), COALESCE(MAX(cn), 0) FROM {table} WHERE genre = 'Audiobook'"
+            ).fetchone()
+            for table in ("GENRE_TABLE", "GENRE2_TABLE")
+        }
+        hidden_nul_predicate = " OR ".join(
+            f"instr(COALESCE({column}, ''), char(0)) > 0"
+            for column in (
+                "path",
+                "name",
+                "album",
+                "artist",
+                "album_artist",
+                "genre",
+                "character",
+                "pinyin_charater",
+            )
+        )
+        audiobook_hidden_nul = conn.execute(
+            f"""
+            SELECT COUNT(*)
+              FROM MEDIA_TABLE
+             WHERE path LIKE 'a:\\Audiobooks\\%' COLLATE NOCASE
+               AND ({hidden_nul_predicate})
+            """
+        ).fetchone()[0]
         search_audiobooks = conn.execute(
             "SELECT COUNT(*) FROM SEARCH_TABLE WHERE path LIKE 'a:\\Audiobooks\\%' COLLATE NOCASE"
         ).fetchone()[0]
@@ -412,6 +477,12 @@ def verify_db(db: Path, catalog: Path) -> None:
     assert_equal(rows[second]["genre"], "Audiobook", "custom m4b genre normalized")
     assert_equal(rows[standalone]["genre"], "Audiobook", "blank audiobook genre normalized")
     assert_true("Tolkien Audiobook" not in normal_genres, "custom audiobook genre removed from music genres")
+    assert_true("Audiobook" in normal_genres, "route-visible audiobook genre retained")
+    for table, (count, min_cn, max_cn) in audiobook_route_counts.items():
+        assert_equal(count, 1, f"{table} has one Audiobook route row")
+        assert_equal(min_cn, audiobook_media_count, f"{table} Audiobook route min count")
+        assert_equal(max_cn, audiobook_media_count, f"{table} Audiobook route max count")
+    assert_equal(audiobook_hidden_nul, 0, "audiobook media text has no embedded NULs")
     assert_equal(search_audiobooks, 0, "audiobooks excluded from search table")
     assert_equal(rows[standalone]["album"], "Standalone Book", "standalone folder fallback book title")
     assert_equal(rows[standalone]["artist"], "Test Author", "standalone folder fallback artist")
@@ -515,8 +586,8 @@ def verify_db(db: Path, catalog: Path) -> None:
     authors_view = view_root / "Authors"
     series_view_dir = view_root / "Series"
     title_playlists = sorted(titles_view.glob("*.m3u"))
-    author_playlists = sorted(authors_view.glob("*/*.m3u"))
-    series_playlists = sorted(series_view_dir.glob("*/*.m3u"))
+    author_playlists = sorted(authors_view.glob("*.m3u"))
+    series_playlists = sorted(series_view_dir.glob("*.m3u"))
     assert_equal(len(title_playlists), len(book_rows), "generated title playlists per book")
     assert_equal(len(author_playlists), len(book_rows), "generated author/book playlists per book")
     assert_equal(len(series_playlists), len(series_rows), "generated series playlists omit standalone books")
@@ -525,17 +596,17 @@ def verify_db(db: Path, catalog: Path) -> None:
         "standalone title playlist visible",
     )
     assert_true(
-        (authors_view / "Test Author" / "Standalone Book.m3u").exists(),
-        "author view nests books under author",
+        (authors_view / "Test Author - Standalone Book.m3u").exists(),
+        "author view uses flat author-title playlists",
     )
     assert_true(
-        (series_view_dir / "Test Series" / "02 - Test Book.m3u").exists(),
-        "series view prefixes numeric series part",
+        (series_view_dir / "Test Series - 02 - Test Book.m3u").exists(),
+        "series view prefixes series and numeric part",
     )
-    standalone_playlist = (authors_view / "Test Author" / "Standalone Book.m3u").read_text(encoding="utf-8").splitlines()
+    standalone_playlist = (authors_view / "Test Author - Standalone Book.m3u").read_text(encoding="utf-8").splitlines()
     assert_equal(
         standalone_playlist,
-        [r"..\..\..\Test Author\2021 - Standalone Book\01 - Standalone.mp3"],
+        [r"..\..\Test Author\2021 - Standalone Book\01 - Standalone.mp3"],
         "author playlist uses path relative to generated view folder",
     )
     assert_true(

@@ -18,6 +18,22 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from patch_hiby_player import (
+    AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_CODE,
+    AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_LABEL,
+    AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_PATH,
+    AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_CODE,
+    AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_LABEL,
+    AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_PATH,
+    AUDIOBOOK_NATIVE_HUB_VIEW_OPEN_HELPER_CODE,
+    AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_CODE,
+    AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_LABEL,
+    AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_PATH,
+    AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_CODE,
+    AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_LABEL,
+    AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_PATH,
+)
+
 
 EXPECTED_CURRENT_HASHES = {
     "r1-audiobooks-1.6.28-sd-ready-dev.upt": {
@@ -236,35 +252,55 @@ PLAYER_NATIVE_HUB_FOLDER_ROW_BYTE_CHECKS = {
 PLAYER_NATIVE_HUB_VIEW_ROW_BYTE_CHECKS = {
     "native hub view Titles cave @0x360708": (
         0x360708,
-        bytes.fromhex("d800048e7600053c34c1a5247600063c0808c6247858120c000000004b03150800000000"),
+        AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_CODE,
     ),
     "native hub view Authors cave @0x360738": (
         0x360738,
-        bytes.fromhex("d800048e7600053c34c1a5247600063c8808c6247858120c000000004b03150800000000"),
+        AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_CODE,
     ),
     "native hub view Series cave @0x360768": (
         0x360768,
-        bytes.fromhex("d800048e7600053c34c1a5247600063c0809c6247858120c000000004b03150800000000"),
+        AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_CODE,
     ),
     "native hub view Folders cave @0x360798": (
         0x360798,
-        bytes.fromhex("d800048e7600053c34c1a5247600063c8809c6247858120c000000004b03150800000000"),
+        AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_CODE,
+    ),
+    "native hub view explorer cleanup helper @0x360D50": (
+        0x360D50,
+        AUDIOBOOK_NATIVE_HUB_VIEW_OPEN_HELPER_CODE,
+    ),
+    "native hub view Titles label @0x3607C8": (
+        0x3607C8,
+        AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_LABEL,
+    ),
+    "native hub view Authors label @0x3607D8": (
+        0x3607D8,
+        AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_LABEL,
+    ),
+    "native hub view Series label @0x3607E8": (
+        0x3607E8,
+        AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_LABEL,
+    ),
+    "native hub view Folders label @0x3607F8": (
+        0x3607F8,
+        AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_LABEL,
     ),
     "native hub view Titles path @0x360808": (
         0x360808,
-        ("a:\\Audiobooks\\_views\\Titles\\*".encode("utf-16le") + b"\x00\x00").ljust(0x80, b"\x00"),
+        AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_PATH,
     ),
     "native hub view Authors path @0x360888": (
         0x360888,
-        ("a:\\Audiobooks\\_views\\Authors\\*".encode("utf-16le") + b"\x00\x00").ljust(0x80, b"\x00"),
+        AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_PATH,
     ),
     "native hub view Series path @0x360908": (
         0x360908,
-        ("a:\\Audiobooks\\_views\\Series\\*".encode("utf-16le") + b"\x00\x00").ljust(0x80, b"\x00"),
+        AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_PATH,
     ),
     "native hub view Folders path @0x360988": (
         0x360988,
-        ("a:\\Audiobooks\\*".encode("utf-16le") + b"\x00\x00").ljust(0x80, b"\x00"),
+        AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_PATH,
     ),
     "native hub Titles row jump-table entry @0x38D27C": (
         0x38D27C,
@@ -1032,6 +1068,16 @@ def verify(
             require(
                 b"audiobook files missing from DB" in db_helper_bytes,
                 "db maint helper checks filesystem audiobook paths during repair-needed checks",
+                failures,
+            )
+            require(
+                b"audiobook route genre missing" in db_helper_bytes,
+                "db maint helper checks the route-visible Audiobook genre row",
+                failures,
+            )
+            require(
+                b"insert audiobook route genre" in db_helper_bytes,
+                "db maint helper repairs the route-visible Audiobook genre row",
                 failures,
             )
 

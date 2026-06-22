@@ -781,6 +781,10 @@ static void bind_text_plain(sqlite3_stmt *stmt, int index, const char *text) {
     sqlite3_bind_text(stmt, index, value, -1, SQLITE_TRANSIENT);
 }
 
+static void bind_text_media(sqlite3_stmt *stmt, int index, const char *text) {
+    bind_text_plain(stmt, index, text);
+}
+
 static int table_exists(sqlite3 *db, const char *table) {
     sqlite3_stmt *stmt = NULL;
     int exists = 0;
@@ -1234,11 +1238,11 @@ static void insert_media_rows(
         sqlite3_reset(stmt);
         sqlite3_clear_bindings(stmt);
         sqlite3_bind_int(stmt, 1, r->id);
-        bind_text0(stmt, 2, r->path);
-        bind_text0(stmt, 3, r->name);
-        bind_text0(stmt, 4, r->album);
-        bind_text0(stmt, 5, r->artist);
-        bind_text0(stmt, 6, r->genre);
+        bind_text_media(stmt, 2, r->path);
+        bind_text_media(stmt, 3, r->name);
+        bind_text_media(stmt, 4, r->album);
+        bind_text_media(stmt, 5, r->artist);
+        bind_text_media(stmt, 6, r->genre);
         sqlite3_bind_int(stmt, 7, r->year);
         sqlite3_bind_int(stmt, 8, r->dis_id);
         sqlite3_bind_int(stmt, 9, r->ck_id);
@@ -1246,22 +1250,22 @@ static void insert_media_rows(
         sqlite3_bind_int(stmt, 11, r->begin_time);
         sqlite3_bind_int(stmt, 12, r->end_time);
         sqlite3_bind_int(stmt, 13, r->cue_id);
-        bind_text0(stmt, 14, character);
+        bind_text_media(stmt, 14, character);
         sqlite3_bind_int64(stmt, 15, r->size);
         sqlite3_bind_int(stmt, 16, r->sample_rate);
         sqlite3_bind_int(stmt, 17, r->bit_rate);
         sqlite3_bind_int(stmt, 18, r->bit);
         sqlite3_bind_int(stmt, 19, r->channel);
         sqlite3_bind_int(stmt, 20, r->format);
-        bind_text0(stmt, 21, r->quality);
-        bind_text0(stmt, 22, r->album_pic_path);
-        bind_text0(stmt, 23, r->lrc_path);
+        bind_text_media(stmt, 21, r->quality);
+        bind_text_media(stmt, 22, r->album_pic_path);
+        bind_text_media(stmt, 23, r->lrc_path);
         sqlite3_bind_double(stmt, 24, r->track_gain);
         sqlite3_bind_double(stmt, 25, r->track_peak);
         sqlite3_bind_int64(stmt, 26, r->ctime);
         sqlite3_bind_int64(stmt, 27, r->mtime);
-        bind_text0(stmt, 28, pinyin);
-        bind_text0(stmt, 29, r->album_artist);
+        bind_text_media(stmt, 28, pinyin);
+        bind_text_media(stmt, 29, r->album_artist);
         if (sqlite3_step(stmt) != SQLITE_DONE) die_sql(db, "insert media row");
         free(album_character);
         free(album_pinyin);
@@ -1325,16 +1329,16 @@ static void rebuild_named_catalog(sqlite3 *db, const char *table, const char *co
         sqlite3_reset(insert_stmt);
         sqlite3_clear_bindings(insert_stmt);
         sqlite3_bind_int(insert_stmt, 1, sqlite3_column_int(select_stmt, 2));
-        bind_text0(insert_stmt, 2, value);
-        bind_text0(insert_stmt, 3, character);
+        bind_text_plain(insert_stmt, 2, value);
+        bind_text_plain(insert_stmt, 3, character);
         sqlite3_bind_int(insert_stmt, 4, sqlite3_column_int(select_stmt, 1));
         sqlite3_bind_int64(insert_stmt, 5, sqlite3_column_int64(select_stmt, 3));
         sqlite3_bind_int64(insert_stmt, 6, sqlite3_column_int64(select_stmt, 4));
         if (has_mqa) {
             sqlite3_bind_int(insert_stmt, 7, 0);
-            bind_text0(insert_stmt, 8, pinyin);
+            bind_text_plain(insert_stmt, 8, pinyin);
         } else {
-            bind_text0(insert_stmt, 7, pinyin);
+            bind_text_plain(insert_stmt, 7, pinyin);
         }
         if (sqlite3_step(insert_stmt) != SQLITE_DONE) die_sql(db, "insert named catalog row");
         free(value);
@@ -1496,14 +1500,13 @@ static int scalar_count_misnormalized_audiobooks(sqlite3 *db, const char *table)
         sizeof(sql),
         "SELECT COUNT(*) FROM %s "
         "WHERE path LIKE ? COLLATE NOCASE "
-        "AND (genre IS NULL OR (genre != ? AND genre != ?))",
+        "AND (genre IS NULL OR genre != ?)",
         table);
     sqlite3_stmt *stmt = NULL;
     int value = 0;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) die_sql(db, "prepare audiobook normalization count");
     bind_text_plain(stmt, 1, HIBY_PREFIX_LIKE);
-    bind_text0(stmt, 2, "Audiobook");
-    bind_text_plain(stmt, 3, "Audiobook");
+    bind_text_plain(stmt, 2, "Audiobook");
     if (sqlite3_step(stmt) == SQLITE_ROW) value = sqlite3_column_int(stmt, 0);
     sqlite3_finalize(stmt);
     return value;
@@ -1543,6 +1546,8 @@ static int audiobook_files_need_maintenance(sqlite3 *db, const Options *opts, in
     return needs;
 }
 
+static int audiobook_route_genre_missing(sqlite3 *db, int audiobook_count);
+
 static int check_database_needs_maintenance(const Options *opts) {
     sqlite3 *db = NULL;
     if (sqlite3_open(opts->db_path, &db) != SQLITE_OK) die_sql(db, "open database");
@@ -1553,12 +1558,14 @@ static int check_database_needs_maintenance(const Options *opts) {
     int media_bad = scalar_count_misnormalized_audiobooks(db, "MEDIA_TABLE");
     int media2_bad = scalar_count_misnormalized_audiobooks(db, "MEDIA2_TABLE");
     int search_audiobooks = scalar_count_path_like(db, "SEARCH_TABLE");
+    int route_genre_missing = audiobook_route_genre_missing(db, media_audiobooks);
     int fs_audiobooks = 0;
     int missing_db_paths = 0;
     int filesystem_needs = audiobook_files_need_maintenance(db, opts, &fs_audiobooks, &missing_db_paths);
     int needs = 0;
     if (media_audiobooks != media2_audiobooks) needs = 1;
     if (media_bad > 0 || media2_bad > 0 || search_audiobooks > 0) needs = 1;
+    if (route_genre_missing) needs = 1;
     if (filesystem_needs) needs = 1;
 
     if (opts->verbose) {
@@ -1569,6 +1576,7 @@ static int check_database_needs_maintenance(const Options *opts) {
         fprintf(stderr, "misnormalized MEDIA_TABLE: %d\n", media_bad);
         fprintf(stderr, "misnormalized MEDIA2_TABLE: %d\n", media2_bad);
         fprintf(stderr, "audiobook rows SEARCH_TABLE: %d\n", search_audiobooks);
+        fprintf(stderr, "audiobook route genre missing: %d\n", route_genre_missing);
         fprintf(stderr, "needs maintenance: %s\n", needs ? "yes" : "no");
     }
 
@@ -1598,6 +1606,108 @@ static void rebuild_count_table(sqlite3 *db) {
         if (sqlite3_step(stmt) != SQLITE_DONE) die_sql(db, "insert count row");
     }
     sqlite3_finalize(stmt);
+}
+
+static int audiobook_route_genre_needs_repair(sqlite3 *db, const char *table, int audiobook_count) {
+    if (!table_exists(db, table)) return 1;
+    char sql[256];
+    snprintf(
+        sql,
+        sizeof(sql),
+        "SELECT COUNT(*), COALESCE(MIN(cn),0), COALESCE(MAX(cn),0), "
+        "SUM(CASE WHEN genre = ? THEN 1 ELSE 0 END) "
+        "FROM %s WHERE genre = ? OR genre = ?",
+        table);
+    sqlite3_stmt *stmt = NULL;
+    int rows = 0;
+    int min_cn = 0;
+    int max_cn = 0;
+    int plain_rows = 0;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) die_sql(db, "prepare route genre count");
+    bind_text_plain(stmt, 1, "Audiobook");
+    bind_text_plain(stmt, 2, "Audiobook");
+    bind_text0(stmt, 3, "Audiobook");
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        rows = sqlite3_column_int(stmt, 0);
+        min_cn = sqlite3_column_int(stmt, 1);
+        max_cn = sqlite3_column_int(stmt, 2);
+        plain_rows = sqlite3_column_int(stmt, 3);
+    }
+    sqlite3_finalize(stmt);
+    return rows != 1 || plain_rows != 1 || min_cn != audiobook_count || max_cn != audiobook_count;
+}
+
+static int audiobook_route_genre_missing(sqlite3 *db, int audiobook_count) {
+    if (audiobook_count <= 0) return 0;
+    if (audiobook_route_genre_needs_repair(db, "GENRE_TABLE", audiobook_count)) return 1;
+    if (audiobook_route_genre_needs_repair(db, "GENRE2_TABLE", audiobook_count)) return 1;
+    return 0;
+}
+
+static void ensure_audiobook_route_genre_table(sqlite3 *db, const char *table) {
+    if (!table_exists(db, table)) return;
+
+    sqlite3_stmt *summary = NULL;
+    const char *summary_sql =
+        "SELECT MIN(id), COUNT(*), MIN(COALESCE(ctime,0)), MAX(COALESCE(mtime,0)) "
+        "FROM MEDIA_TABLE WHERE path LIKE ? COLLATE NOCASE";
+    if (sqlite3_prepare_v2(db, summary_sql, -1, &summary, NULL) != SQLITE_OK) {
+        die_sql(db, "prepare audiobook genre summary");
+    }
+    bind_text_plain(summary, 1, HIBY_PREFIX_LIKE);
+    int first_id = 0;
+    int count = 0;
+    sqlite3_int64 ctime = 0;
+    sqlite3_int64 mtime = 0;
+    if (sqlite3_step(summary) == SQLITE_ROW) {
+        first_id = sqlite3_column_int(summary, 0);
+        count = sqlite3_column_int(summary, 1);
+        ctime = sqlite3_column_int64(summary, 2);
+        mtime = sqlite3_column_int64(summary, 3);
+    }
+    sqlite3_finalize(summary);
+
+    char sql[512];
+    snprintf(sql, sizeof(sql), "DELETE FROM %s WHERE genre = ? OR genre = ?", table);
+    sqlite3_stmt *delete_stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &delete_stmt, NULL) != SQLITE_OK) {
+        die_sql(db, "prepare delete audiobook route genre");
+    }
+    bind_text_plain(delete_stmt, 1, "Audiobook");
+    bind_text0(delete_stmt, 2, "Audiobook");
+    if (sqlite3_step(delete_stmt) != SQLITE_DONE) die_sql(db, "delete audiobook route genre");
+    sqlite3_finalize(delete_stmt);
+
+    if (count <= 0) return;
+
+    snprintf(
+        sql,
+        sizeof(sql),
+        "INSERT INTO %s (id,genre,character,cn,ctime,mtime,pinyin_charater) VALUES (?,?,?,?,?,?,?)",
+        table);
+    sqlite3_stmt *insert_stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &insert_stmt, NULL) != SQLITE_OK) {
+        die_sql(db, "prepare insert audiobook route genre");
+    }
+    sqlite3_bind_int(insert_stmt, 1, first_id > 0 ? first_id : 1);
+    bind_text_plain(insert_stmt, 2, "Audiobook");
+    bind_text_plain(insert_stmt, 3, "A");
+    sqlite3_bind_int(insert_stmt, 4, count);
+    sqlite3_bind_int64(insert_stmt, 5, ctime);
+    sqlite3_bind_int64(insert_stmt, 6, mtime);
+    bind_text_plain(insert_stmt, 7, "AUDIOBOOK");
+    if (sqlite3_step(insert_stmt) != SQLITE_DONE) die_sql(db, "insert audiobook route genre");
+    sqlite3_finalize(insert_stmt);
+}
+
+static void ensure_audiobook_route_genre(sqlite3 *db) {
+    ensure_audiobook_route_genre_table(db, "GENRE_TABLE");
+    ensure_audiobook_route_genre_table(db, "GENRE2_TABLE");
+    if (table_exists(db, "COUNT_TABLE")) {
+        if (exec_sql(db, "UPDATE COUNT_TABLE SET cn = (SELECT COUNT(*) FROM GENRE_TABLE) WHERE rowid = 4") != SQLITE_OK) {
+            die_sql(db, "update route genre count");
+        }
+    }
 }
 
 static void rebuild_time_tables(sqlite3 *db) {
@@ -1635,6 +1745,7 @@ static void rebuild_catalog_tables(sqlite3 *db) {
     rebuild_named_catalog(db, "ALBUM_ARTIST2_TABLE", "album_artist", 1);
     rebuild_format_tables(db);
     rebuild_count_table(db);
+    ensure_audiobook_route_genre(db);
     rebuild_time_tables(db);
 }
 
@@ -1902,24 +2013,21 @@ static int write_m3u_view_for_book(
     if (unique_m3u_path(path, sizeof(path), titles_dir, stem) != 0) return -1;
     if (write_book_m3u_file(path, "..\\..", items, group_start, group_end) != 0) return -1;
 
-    char author_dir[PATH_MAX];
-    if (join_path2(author_dir, sizeof(author_dir), authors_dir, safe_author) != 0) return -1;
-    if (mkdir_p(author_dir) != 0) return -1;
-    if (unique_m3u_path(path, sizeof(path), author_dir, safe_title) != 0) return -1;
-    if (write_book_m3u_file(path, "..\\..\\..", items, group_start, group_end) != 0) return -1;
+    snprintf(stem, sizeof(stem), "%s - %s", safe_author, safe_title);
+    sanitize_path_component(stem, "Audiobook", stem, sizeof(stem));
+    if (unique_m3u_path(path, sizeof(path), authors_dir, stem) != 0) return -1;
+    if (write_book_m3u_file(path, "..\\..", items, group_start, group_end) != 0) return -1;
 
     if (series && *series) {
-        char one_book_series_dir[PATH_MAX];
-        if (join_path2(one_book_series_dir, sizeof(one_book_series_dir), series_dir, safe_series) != 0) return -1;
-        if (mkdir_p(one_book_series_dir) != 0) return -1;
         if (*safe_series_part) {
-            snprintf(stem, sizeof(stem), "%s - %s", safe_series_part, safe_title);
+            snprintf(stem, sizeof(stem), "%s - %s - %s", safe_series, safe_series_part, safe_title);
             sanitize_path_component(stem, safe_title, stem, sizeof(stem));
         } else {
-            snprintf(stem, sizeof(stem), "%s", safe_title);
+            snprintf(stem, sizeof(stem), "%s - %s", safe_series, safe_title);
+            sanitize_path_component(stem, safe_title, stem, sizeof(stem));
         }
-        if (unique_m3u_path(path, sizeof(path), one_book_series_dir, stem) != 0) return -1;
-        if (write_book_m3u_file(path, "..\\..\\..", items, group_start, group_end) != 0) return -1;
+        if (unique_m3u_path(path, sizeof(path), series_dir, stem) != 0) return -1;
+        if (write_book_m3u_file(path, "..\\..", items, group_start, group_end) != 0) return -1;
     }
 
     (void)opts;

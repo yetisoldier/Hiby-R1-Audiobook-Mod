@@ -2,6 +2,33 @@
 
 All public releases are for the normal HiBy R1 on stock firmware 1.6. Do not install these packages on the R1 MIDI.
 
+## v1.6.0 - 2026-06-22
+
+Firmware marker: `1.6.17-audiobook`
+
+Feature release after `v1.5.4`.
+
+- Reworked the Audiobooks entry from the direct title-list flow into a native Audiobooks hub.
+- The Audiobooks hub now contains `Scan`, `Titles`, `Authors`, `Series`, and `Folders`.
+- `Titles` opens generated book-title playlist rows.
+- `Authors` opens generated `Author - Title` playlist rows.
+- `Series` opens generated series rows for books that have series metadata or series-like folders. Standalone books remain out of the Series view instead of being forced into a fake series.
+- `Folders` opens the SD-card `/Audiobooks` folder and now displays a friendly `Folders` page header instead of the stock `Files` header when opened from the Audiobooks hub.
+- Added a native sub-back helper for generated Audiobooks views so Titles, Authors, Series, and Folders use Audiobooks-specific page labels and return paths.
+- The DB watcher/helper now generates the `/Audiobooks/_views` playlist folders used by the Titles, Authors, and Series hub views after Music -> Update Database.
+- The DB helper now preserves and repairs one internal `Audiobook` route row with the correct audiobook count so the Audiobooks hub can keep finding books after scans and SD-card swaps.
+- The `--needs-maintenance` check now detects missing or stale audiobook route rows and triggers repair instead of silently accepting a DB that would break the Audiobooks hub.
+- Audiobook media rows now use normal SQLite text binding instead of embedded-NUL text binding, and release verification now checks for embedded-NUL audiobook text fields.
+- Release-state verification now checks the internal Audiobook route row count, generated view catalogs, and route-row repair strings.
+- Kept `v1.5.4` SD-card swap behavior: the watcher still tracks SD-root DB changes, can promote a clean/current SD database back to internal storage, and mirrors repaired databases.
+- Kept folder-based audiobook detection: files under `/Audiobooks` do not need an exact `Audiobook` genre tag.
+- Kept per-book resume, multipart resume, completed-book restart behavior, the 15-second save guard, Native DSD enablement, Bluetooth SBC XQ, and unlocked USB DAC-related settings.
+- Known quirk: `Folders` may show the generated `_views` folder because that is where the on-device title/author/series playlist views live.
+- Known quirk: from the Folders root, edge-back is more reliable than the left arrow for returning to the Audiobooks hub.
+- Built package `r1-audiobooks-1.6.17-audiobook.upt`. MD5: `e8491f65ead4ef7a34163a67c7ee7007`; SHA256: `47b6b2aa85f0f14d13d659f0f3f987808f7d389a7a32bf7e54676388e6f82523`.
+- Rootfs MD5: `d8c6a46cb4dc90624042f89224f611e6`; Rootfs SHA256: `687b83dff23319af917e19af9bb1bc1c95a7f6c915e852d175385b1c4e9d6b5f`.
+- Local package verification passed with native hub view rows, DB maintenance, Audiobooks icon, Native DSD, Bluetooth SBC XQ, and USB DAC mode enabled. Installed-device verification passed on the test R1 after flashing this public-labeled package: version markers reported `1.6.17-audiobook`, DB integrity was `ok`, 135 audiobook rows across six books were present, title/author/series catalogs were pulled, one resume daemon and one DB watcher were running, and the title flow reached Now Playing with resume.
+
 ## v1.5.4 - 2026-06-22
 
 Firmware marker: `1.6.16.5-audiobook`

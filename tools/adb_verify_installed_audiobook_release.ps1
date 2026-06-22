@@ -257,6 +257,15 @@ if ($RequireDbMaintenance) {
     Assert-Contains $dbMaintFiles "r1_audiobook_db_maint" "DB maintenance helper files"
     Assert-Contains $dbMaintFiles "r1_audiobook_db_watch.sh" "DB maintenance watcher files"
 
+    $dbMaintHelperStrings = Invoke-AdbText "grep -a 'audiobook route genre missing' /usr/data/audiobooks/bin/r1_audiobook_db_maint 2>/dev/null || true"
+    Set-Content -LiteralPath (Join-Path $verifyDir "db_maint_helper_route_strings.txt") -Value $dbMaintHelperStrings
+    Assert-Contains $dbMaintHelperStrings "audiobook route genre missing" "DB maintenance helper binary"
+
+    $dbMaintNeedsText = Invoke-AdbText "/usr/data/audiobooks/bin/r1_audiobook_db_maint --db /usr/data/usrlocal_media.db --needs-maintenance --verbose 2>&1; echo rc=\$?"
+    Set-Content -LiteralPath (Join-Path $verifyDir "db_maint_needs_maintenance.txt") -Value $dbMaintNeedsText
+    Assert-Contains $dbMaintNeedsText "audiobook route genre missing: 0" "DB maintenance helper needs-maintenance output"
+    Assert-Contains $dbMaintNeedsText "needs maintenance: no" "DB maintenance helper needs-maintenance output"
+
     $dbWatchScript = Invoke-AdbText "cat /usr/data/audiobooks/bin/r1_audiobook_db_watch.sh 2>/dev/null || cat /usr/bin/r1_audiobook_db_watch.sh 2>/dev/null"
     Set-Content -LiteralPath (Join-Path $verifyDir "runtime_db_watch.sh") -Value $dbWatchScript
     Assert-Contains $dbWatchScript 'LOG_MAX_BYTES=${AUDIOBOOK_DB_MAINT_LOG_MAX_BYTES:-524288}' "runtime DB watcher"
