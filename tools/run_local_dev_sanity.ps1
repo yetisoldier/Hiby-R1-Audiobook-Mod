@@ -40,6 +40,7 @@ $psFiles = @(
     "tools\adb_probe_usb_mode_toggle.ps1",
     "tools\compare_r1_settings_snapshots.ps1",
     "tools\adb_install_audiobook_resume_runtime.ps1",
+    "tools\adb_live_audiobook_smoke.ps1",
     "tools\adb_install_release_audiobook_db.ps1",
     "tools\adb_manage_boot_adb.ps1",
     "tools\adb_monitor_r1_runtime.ps1",
@@ -71,7 +72,7 @@ foreach ($file in $psFiles) {
 }
 
 Invoke-Checked {
-    wsl -d $Distro --cd $repoRoot --exec sh -lc 'sh -n tools/r1_audiobook_resume_daemon.sh && sh -n tools/r1_audiobook_db_watch.sh && sh -n tools/test_r1_resume_daemon_logic.sh'
+    wsl -d $Distro --cd $repoRoot --exec sh -lc 'sh -n tools/r1_audiobook_resume_daemon.sh && sh -n tools/r1_audiobook_db_watch.sh && sh -n tools/test_r1_resume_daemon_logic.sh && sh -n tools/test_r1_db_watch_logic.sh'
 } "Shell syntax"
 
 Invoke-Checked {
@@ -90,10 +91,14 @@ Invoke-Checked {
         tools\adb_test_audiobook_ui_seek_fallback.py `
         tools\adb_test_audiobook_seek_restore.py `
         tools\adb_probe_music_row.py `
+        tools\adb_probe_native_audiobook_hub.py `
         tools\adb_send_dmr_command.py `
+        tools\generate_audiobook_m3u_views.py `
         tools\r1_adb_control.py `
         tools\r1_audiobook_ui_route_lab.py `
         tools\r1_hiby_player_cave_audit.py `
+        tools\r1_hiby_player_listview_descriptor_report.py `
+        tools\r1_hiby_player_ui_callsite_report.py `
         tools\r1_hiby_player_static_xrefs.py `
         tools\generate_audiobook_launcher_icons.py
 } "Python compile"
@@ -101,6 +106,10 @@ Invoke-Checked {
 Invoke-Checked {
     powershell -NoProfile -ExecutionPolicy Bypass -File tools\test_r1_resume_daemon_logic_wsl.ps1 -Distro $Distro
 } "Resume daemon logic"
+
+Invoke-Checked {
+    wsl -d $Distro --cd $repoRoot --exec sh tools/test_r1_db_watch_logic.sh
+} "DB watcher logic"
 
 if (-not $SkipDbFixtures) {
     if (Test-Path -LiteralPath $WindowsHelper) {

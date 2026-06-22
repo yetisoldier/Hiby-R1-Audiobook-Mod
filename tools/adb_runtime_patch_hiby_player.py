@@ -37,6 +37,17 @@ DATA_VADDR = 0x84CD60
 DEFAULT_ADB = r"C:\Program Files\Software Fix\adb.exe"
 LAST_REMOTE_FILE = Path("work/audiobook-firmware/last-runtime-patch-remote.txt")
 PAGE_SIZE = 4096
+HEAP_SCAN_CHUNK_SIZE = 64 * 1024
+KNOWN_AUDIOBOOK_PLAYER_MD5S = {
+    # Early audiobook launcher/resume builds.
+    "09997a636c94112ff76c85a6d4a8d0ff",
+    # Public 1.6.15-audiobook release.
+    "dac7b58717097ef2a75ae5887478ef16",
+    # 1.6.28-sd-ready-dev route/listview build.
+    "c161af12bd050aca6f3fc2f67979d792",
+    # 1.6.16.8-private-route-dev, used only for route diagnostics.
+    "c168c57b3f22e8bfc4ee5fccb1b9455a",
+}
 
 AUDIOBOOK_LAUNCHER_HEAP_LABEL = b"launcher_apps_vg_ebook"
 AUDIOBOOK_LAUNCHER_HEAP_CALLBACK_DELTA = 0x148
@@ -92,11 +103,12 @@ def find_stock_player_pid(adb: str) -> str:
     return pid
 
 
-def verify_stock_binary(adb: str) -> None:
+def verify_known_binary(adb: str) -> str:
     out = shell(adb, "md5sum /usr/bin/hiby_player").strip()
     digest = out.split()[0].lower()
-    if digest != STOCK_MD5:
-        raise RuntimeError(f"/usr/bin/hiby_player is not stock 1.6: {digest}")
+    if digest not in {STOCK_MD5, *KNOWN_AUDIOBOOK_PLAYER_MD5S}:
+        raise RuntimeError(f"/usr/bin/hiby_player is not a known stock/audiobook 1.6 binary: {digest}")
+    return digest
 
 
 def file_offset_to_runtime_addr(file_offset: int) -> int:
@@ -171,12 +183,15 @@ def read_memory_bytes(
 
 def read_memory_to_remote(adb: str, pid: str, addr: int, size: int, remote_path: str) -> None:
     last_status = ""
+    if addr % PAGE_SIZE == 0 and size % PAGE_SIZE == 0:
+        dd_args = f"bs={PAGE_SIZE} skip={addr // PAGE_SIZE} count={size // PAGE_SIZE}"
+    else:
+        dd_args = f"bs=1 skip={addr} count={size}"
     for _attempt in range(3):
         status = shell(
             adb,
             f"rm -f '{remote_path}'; "
-            f"dd if=/proc/{pid}/mem of='{remote_path}' bs=1 skip={addr} "
-            f"count={size} 2>&1; "
+            f"dd if=/proc/{pid}/mem of='{remote_path}' {dd_args} 2>&1; "
             f"echo __SIZE__:$(wc -c < '{remote_path}' 2>/dev/null || echo missing)",
         )
         last_status = status
@@ -259,30 +274,55 @@ def find_live_launcher_callbacks(
     local_dir: Path,
 ) -> list[LiveLauncherCallback]:
     callbacks: list[LiveLauncherCallback] = []
+    seen_addrs: set[int] = set()
+    overlap = len(AUDIOBOOK_LAUNCHER_HEAP_LABEL) + AUDIOBOOK_LAUNCHER_HEAP_CALLBACK_DELTA + len(AUDIOBOOK_LAUNCHER_CALLBACK_OLD)
     heap_maps = [
         item
         for item in parse_memory_maps(adb, pid)
         if "r" in item.perms and "w" in item.perms and "[heap]" in item.path
     ]
     for index, mapping in enumerate(heap_maps):
-        data = read_mapping_bytes(adb, pid, mapping, remote_dir, local_dir, f"heap-{index}")
-        start = 0
-        while True:
-            label_index = data.find(AUDIOBOOK_LAUNCHER_HEAP_LABEL, start)
-            if label_index < 0:
-                break
-            callback_index = label_index + AUDIOBOOK_LAUNCHER_HEAP_CALLBACK_DELTA
-            actual = data[callback_index : callback_index + len(AUDIOBOOK_LAUNCHER_CALLBACK_OLD)]
-            if actual in (AUDIOBOOK_LAUNCHER_CALLBACK_OLD, AUDIOBOOK_LAUNCHER_CALLBACK_NEW):
-                label_addr = mapping.start + label_index
-                callbacks.append(
-                    LiveLauncherCallback(
-                        label_addr=label_addr,
-                        callback_addr=mapping.start + callback_index,
-                        actual=actual,
+        offset = 0
+        previous_tail = b""
+        while mapping.start + offset < mapping.end:
+            remaining = mapping.end - (mapping.start + offset)
+            size = min(HEAP_SCAN_CHUNK_SIZE, remaining)
+            data = read_memory_bytes(
+                adb,
+                pid,
+                mapping.start + offset,
+                size,
+                remote_dir,
+                local_dir,
+                f"heap-{index}-{offset:x}",
+                "scan",
+            )
+            combined_base = mapping.start + offset - len(previous_tail)
+            combined = previous_tail + data
+            start = 0
+            while True:
+                label_index = combined.find(AUDIOBOOK_LAUNCHER_HEAP_LABEL, start)
+                if label_index < 0:
+                    break
+                callback_index = label_index + AUDIOBOOK_LAUNCHER_HEAP_CALLBACK_DELTA
+                actual = combined[callback_index : callback_index + len(AUDIOBOOK_LAUNCHER_CALLBACK_OLD)]
+                callback_addr = combined_base + callback_index
+                if (
+                    len(actual) == len(AUDIOBOOK_LAUNCHER_CALLBACK_OLD)
+                    and actual in (AUDIOBOOK_LAUNCHER_CALLBACK_OLD, AUDIOBOOK_LAUNCHER_CALLBACK_NEW)
+                    and callback_addr not in seen_addrs
+                ):
+                    seen_addrs.add(callback_addr)
+                    callbacks.append(
+                        LiveLauncherCallback(
+                            label_addr=combined_base + label_index,
+                            callback_addr=callback_addr,
+                            actual=actual,
+                        )
                     )
-                )
-            start = label_index + 1
+                start = label_index + 1
+            previous_tail = combined[-overlap:]
+            offset += size
     return callbacks
 
 
@@ -615,9 +655,10 @@ def main() -> int:
     if args.apply and args.revert:
         parser.error("choose only one of --apply or --revert")
 
-    verify_stock_binary(args.adb)
+    player_md5 = verify_known_binary(args.adb)
     pid = find_stock_player_pid(args.adb)
-    print(f"stock player pid: {pid}")
+    print(f"player pid: {pid}")
+    print(f"player md5: {player_md5}")
     print(f"patch set: {args.patch_set}")
 
     if not args.apply and not args.revert:

@@ -439,6 +439,8 @@ BOOK_TITLE_DIRECT_OPEN_ENABLED=1
 BOOK_TITLE_DIRECT_TRACK_CALIBRATE_ENABLED=0
 DIRECT_OPEN_ARM_DELAY_US=0
 direct_open_args_file=$(mktemp)
+direct_open_log_file=$(mktemp)
+LOG=$direct_open_log_file
 direct_open_helper=$(mktemp)
 cat >"$direct_open_helper" <<'EOF'
 #!/bin/sh
@@ -515,7 +517,7 @@ assert_true "preplay direct start uses direct-open helper" book_title_direct_sta
 assert_eq "preplay direct-open forces zero-based saved index" "--pid 321 --row-index 19 --probe-addr 0x760708 --scratch-addr 0x8e4400 --timeout-ms 6000" "$(cat "$direct_open_args_file")"
 assert_eq "preplay direct-open taps only trigger row" "1,:0" "$row_taps:$swipe_taps"
 assert_file_contains "main loop settles before position restore after track jump" "$DAEMON" "restore settle after track restore path="
-rm -f "$direct_open_args_file" "$direct_open_helper" "$test_record"
+rm -f "$direct_open_args_file" "$direct_open_log_file" "$direct_open_helper" "$test_record"
 
 RESTORE_ENABLED=1
 BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED=1
@@ -785,6 +787,89 @@ assert_false "near-miss transport refuses non-audiobook play mode" maybe_restore
 assert_eq "non-audiobook mode prevents transport taps" "0:0:$near_path" "$transport_next_calls:$transport_prev_calls:$selected_path"
 rm -f "$test_record"
 
+RESTORE_ENABLED=1
+TRACK_RESTORE_ENABLED=1
+TRACK_RESTORE_FIRST_TRACK_ENTRY_ENABLED=0
+RESTORE_MIN_MS=10000
+RESTORE_ONLY_BEFORE_MS=15000
+autostart_restore_active=0
+test_record=$(mktemp)
+: >"$test_record"
+start_path='a:\Audiobooks\Author\Book\01.mp3'
+saved_path='a:\Audiobooks\Author\Book\04.mp3'
+direct_calls=0
+
+existing_record_for_path() {
+  printf '%s\n' "$test_record"
+}
+
+record_saved_path_for_current() {
+  printf '%s\n' "$saved_path"
+}
+
+book_root_for_path() {
+  printf '%s\n' 'a:\Audiobooks\Author\Book'
+}
+
+same_book_root() {
+  return 0
+}
+
+json_bool() {
+  printf '%s\n' false
+}
+
+json_number() {
+  case "$1" in
+    position_ms) printf '%s\n' 270200 ;;
+    *) printf '\n' ;;
+  esac
+}
+
+catalog_field_for_path() {
+  case "$2" in
+    "$start_path") printf '%s\n' 1 ;;
+    "$saved_path") printf '%s\n' 4 ;;
+    *) printf '\n' ;;
+  esac
+}
+
+book_title_direct_track_select() {
+  direct_calls=$((direct_calls + 1))
+  return 1
+}
+
+assert_true "first-track entry restore disabled by default" maybe_restore_track "$start_path" 1000
+assert_eq "first-track entry disabled does not select track" "0" "$direct_calls"
+rm -f "$test_record"
+
+RESTORE_ENABLED=1
+TRACK_RESTORE_ENABLED=1
+TRACK_RESTORE_FIRST_TRACK_ENTRY_ENABLED=1
+TRACK_RESTORE_FIRST_TRACK_ENTRY_MAX_MS=15000
+TRACK_RESTORE_MAX_STEPS=50
+autostart_restore_active=0
+test_record=$(mktemp)
+: >"$test_record"
+start_path='a:\Audiobooks\Author\Book\01.mp3'
+saved_path='a:\Audiobooks\Author\Book\04.mp3'
+selected_path=$start_path
+direct_calls=0
+
+current_path() {
+  printf '%s\n' "$selected_path"
+}
+
+book_title_direct_track_select() {
+  direct_calls=$((direct_calls + 1))
+  selected_path=$saved_path
+  return 0
+}
+
+assert_true "first-track entry restore can jump to saved track" maybe_restore_track "$start_path" 1000
+assert_eq "first-track entry uses direct selector" "1:$saved_path" "$direct_calls:$selected_path"
+rm -f "$test_record"
+
 PLAY_MODE_ENFORCE_ENABLED=1
 PLAY_MODE_TARGET=3
 PLAY_MODE_MAX_TAPS=4
@@ -855,6 +940,9 @@ test_catalog_scan_ptr_addr=$((test_album_ptr + BOOK_TITLE_CATALOG_SCAN_PTR_OFFSE
 direct_start_calls=0
 direct_start_allow_root=
 touch_first_calls=0
+launcher_wait_calls=0
+track_list_visible_result=0
+launcher_wait_result=0
 
 player_pid() {
   printf '%s\n' 1234
@@ -890,19 +978,67 @@ touch_first_track() {
   return 0
 }
 
+launcher_back_calls=0
+touch_back_to_track_list() {
+  launcher_back_calls=$((launcher_back_calls + 1))
+  return 0
+}
+
 title_list_visible_result=1
 audiobook_title_list_visible() {
   [ "$title_list_visible_result" = 1 ]
 }
 
+book_title_wait_for_launcher_track_list() {
+  launcher_wait_calls=$((launcher_wait_calls + 1))
+  [ "$launcher_wait_result" = 1 ]
+}
+
+audiobook_track_list_visible() {
+  [ "$track_list_visible_result" = 1 ]
+}
+
 assert_true "launcher-only marker without fresh path is ignored safely" maybe_autostart_book_title "$test_source_seq"
 assert_eq "launcher-only marker skips direct-start scan" "0:" "$direct_start_calls:$direct_start_allow_root"
 assert_eq "launcher-only marker does not tap first row" "0" "$touch_first_calls"
+assert_eq "launcher-only marker does not wait for track list" "0" "$launcher_wait_calls"
+assert_eq "launcher-only title list does not back out" "0" "$launcher_back_calls"
+
+direct_start_calls=0
+direct_start_allow_root=
+touch_first_calls=0
+launcher_wait_calls=0
+launcher_back_calls=0
+title_list_visible_result=0
+track_list_visible_result=1
+launcher_wait_result=0
+test_source_seq=902
+assert_true "launcher marker backs out when restored track list is already visible" maybe_autostart_book_title "$test_source_seq"
+assert_eq "launcher visible track list skips direct-start scan" "0:" "$direct_start_calls:$direct_start_allow_root"
+assert_eq "launcher visible track list does not tap first row" "0" "$touch_first_calls"
+assert_eq "launcher visible track list does not wait" "0" "$launcher_wait_calls"
+assert_eq "launcher visible track list backs to title list" "1" "$launcher_back_calls"
+
+direct_start_calls=0
+direct_start_allow_root=
+touch_first_calls=0
+launcher_wait_calls=0
+launcher_back_calls=0
+track_list_visible_result=0
+launcher_wait_result=1
+test_source_seq=903
+assert_true "launcher marker skips delayed track-list fallback" maybe_autostart_book_title "$test_source_seq"
+assert_eq "launcher delayed track list skips direct-start scan" "0:" "$direct_start_calls:$direct_start_allow_root"
+assert_eq "launcher delayed track list does not tap first row" "0" "$touch_first_calls"
+assert_eq "launcher delayed track list does not wait" "0" "$launcher_wait_calls"
+assert_eq "launcher delayed track list does not back without visible track list" "0" "$launcher_back_calls"
 
 direct_start_calls=0
 direct_start_allow_root=
 touch_first_calls=0
 title_list_visible_result=0
+track_list_visible_result=0
+launcher_wait_result=0
 test_context_seq=901
 book_title_context_until=$(( $(date +%s) + 60 ))
 assert_true "context title marker keeps first-row fallback" maybe_autostart_book_title "$test_context_seq"

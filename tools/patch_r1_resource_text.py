@@ -31,6 +31,28 @@ REPLACEMENTS = {
     },
 }
 
+NATIVE_HUB_BOOK_REPLACEMENTS = {
+    "search": "Scan",
+    "ebook": "Audiobooks",
+    "collect": "Authors",
+    "explorer": "Folders",
+    "recent": "Recent",
+    "no_file": "No audiobooks found",
+}
+
+NATIVE_HUB_BOOK_INSERTIONS = {
+    "titles": "Titles",
+}
+
+NATIVE_HUB_VIEW_BOOK_REPLACEMENTS = {
+    "search": "Scan",
+    "ebook": "Audiobooks",
+    "collect": "Authors",
+    "explorer": "Series",
+    "recent": "Folders",
+    "no_file": "No audiobooks found",
+}
+
 
 def replace_tag(text: str, tag: str, value: str) -> tuple[str, bool]:
     start = f"<{tag}>"
@@ -45,7 +67,24 @@ def replace_tag(text: str, tag: str, value: str) -> tuple[str, bool]:
     return text[:value_start] + value + text[value_end:], True
 
 
-def patch_file(path: Path, replacements: dict[str, str]) -> list[str]:
+def insert_tag_if_missing(text: str, tag: str, value: str) -> tuple[str, bool]:
+    start = f"<{tag}>"
+    if start in text:
+        return text, False
+    marker = "</resources>"
+    pos = text.rfind(marker)
+    if pos == -1:
+        return text, False
+    line_break = "\r\n" if "\r\n" in text else "\n"
+    insertion = f"  <{tag}>{value}</{tag}>{line_break}"
+    return text[:pos] + insertion + text[pos:], True
+
+
+def patch_file(
+    path: Path,
+    replacements: dict[str, str],
+    insertions: dict[str, str] | None = None,
+) -> list[str]:
     raw = path.read_bytes()
     encoding = "utf-16" if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff") else "utf-8"
     text = raw.decode(encoding)
@@ -53,6 +92,11 @@ def patch_file(path: Path, replacements: dict[str, str]) -> list[str]:
     changed: list[str] = []
     for tag, value in replacements.items():
         text, did_change = replace_tag(text, tag, value)
+        if did_change:
+            changed.append(tag)
+
+    for tag, value in (insertions or {}).items():
+        text, did_change = insert_tag_if_missing(text, tag, value)
         if did_change:
             changed.append(tag)
 
@@ -102,12 +146,29 @@ def main() -> None:
         default="1.6.4-audiobook",
         help="Product version string shown by the stock About screen.",
     )
+    parser.add_argument(
+        "--audiobook-native-hub-labels",
+        action="store_true",
+        help="Use native Audiobooks hub labels such as Titles, Authors, and Folders.",
+    )
+    parser.add_argument(
+        "--audiobook-native-hub-view-labels",
+        action="store_true",
+        help="Use native Audiobooks hub labels for generated Titles, Authors, Series, and Folders views.",
+    )
     args = parser.parse_args()
 
     replacements_by_file = {
         filename: replacements.copy() for filename, replacements in REPLACEMENTS.items()
     }
+    insertions_by_file: dict[str, dict[str, str]] = {}
     replacements_by_file.setdefault("about_dev.ini", {})["model"] = args.about_model
+    if args.audiobook_native_hub_labels:
+        replacements_by_file.setdefault("book.ini", {}).update(NATIVE_HUB_BOOK_REPLACEMENTS)
+        insertions_by_file.setdefault("book.ini", {}).update(NATIVE_HUB_BOOK_INSERTIONS)
+    if args.audiobook_native_hub_view_labels:
+        replacements_by_file.setdefault("book.ini", {}).update(NATIVE_HUB_VIEW_BOOK_REPLACEMENTS)
+        insertions_by_file.setdefault("book.ini", {}).update(NATIVE_HUB_BOOK_INSERTIONS)
 
     str_root = args.rootfs / "usr" / "resource" / "str"
     if not str_root.is_dir():
@@ -121,7 +182,7 @@ def main() -> None:
             path = lang_dir / filename
             if not path.exists():
                 continue
-            changed = patch_file(path, replacements)
+            changed = patch_file(path, replacements, insertions_by_file.get(filename))
             if changed:
                 print(f"{path}: {', '.join(changed)}")
 

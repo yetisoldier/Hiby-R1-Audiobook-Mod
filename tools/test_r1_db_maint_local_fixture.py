@@ -47,6 +47,7 @@ def run_helper(helper: Path, work_dir: Path, runner: list[str] | None = None) ->
     sd_root = work_dir / "sdroot"
     db = work_dir / "usrlocal_media.db"
     base_dir = work_dir / "state"
+    view_root = sd_root / "Audiobooks" / "_views"
     catalog = work_dir / "catalog.tsv"
     album_patterns = work_dir / "catalog-albums.txt"
     books_catalog = work_dir / "catalog-books.tsv"
@@ -91,8 +92,16 @@ def run_helper(helper: Path, work_dir: Path, runner: list[str] | None = None) ->
     write_text(number_dir / "10 - Later.mp3", "placeholder number mp3")
     write_text(number_dir / "2 - Middle.mp3", "placeholder number mp3")
     write_text(long_dir / "01 - Long Path.mp3", "placeholder long path mp3")
+    assert_needs_maintenance(
+        helper,
+        db,
+        runner,
+        True,
+        "missing audiobook rows need maintenance",
+        sd_root=sd_root,
+    )
     seed_problematic_stock_audiobook_rows(db)
-    assert_needs_maintenance(helper, db, runner, True, "stock audiobook rows need maintenance")
+    assert_needs_maintenance(helper, db, runner, True, "stock audiobook rows need maintenance", sd_root=sd_root)
 
     cmd = [
         *(runner or []),
@@ -105,6 +114,8 @@ def run_helper(helper: Path, work_dir: Path, runner: list[str] | None = None) ->
         str(sd_root / "Music"),
         "--audiobooks-dir",
         str(sd_root / "Audiobooks"),
+        "--view-root",
+        str(view_root),
         "--base-dir",
         str(base_dir),
         "--catalog",
@@ -126,7 +137,7 @@ def run_helper(helper: Path, work_dir: Path, runner: list[str] | None = None) ->
     if proc.returncode != 0:
         print(proc.stdout)
         raise SystemExit(proc.returncode)
-    assert_needs_maintenance(helper, db, runner, False, "repaired audiobook rows do not need maintenance")
+    assert_needs_maintenance(helper, db, runner, False, "repaired audiobook rows do not need maintenance", sd_root=sd_root)
     return db, catalog
 
 
@@ -136,6 +147,7 @@ def assert_needs_maintenance(
     runner: list[str] | None,
     expected: bool,
     label: str,
+    sd_root: Path | None = None,
 ) -> None:
     cmd = [
         *(runner or []),
@@ -145,6 +157,17 @@ def assert_needs_maintenance(
         "--needs-maintenance",
         "--verbose",
     ]
+    if sd_root is not None:
+        cmd.extend(
+            [
+                "--sd-root",
+                str(sd_root),
+                "--music-dir",
+                str(sd_root / "Music"),
+                "--audiobooks-dir",
+                str(sd_root / "Audiobooks"),
+            ]
+        )
     proc = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     if expected:
         if proc.returncode != 10:
@@ -486,6 +509,39 @@ def verify_db(db: Path, catalog: Path) -> None:
         if row[series_header.index("series")] == "Test Series"
     ]
     assert_equal(test_series_titles, ["Test Book", "The Amber Book"], "series-view sorts numeric series parts")
+
+    view_root = catalog.parent / "sdroot" / "Audiobooks" / "_views"
+    titles_view = view_root / "Titles"
+    authors_view = view_root / "Authors"
+    series_view_dir = view_root / "Series"
+    title_playlists = sorted(titles_view.glob("*.m3u"))
+    author_playlists = sorted(authors_view.glob("*/*.m3u"))
+    series_playlists = sorted(series_view_dir.glob("*/*.m3u"))
+    assert_equal(len(title_playlists), len(book_rows), "generated title playlists per book")
+    assert_equal(len(author_playlists), len(book_rows), "generated author/book playlists per book")
+    assert_equal(len(series_playlists), len(series_rows), "generated series playlists omit standalone books")
+    assert_true(
+        any(path.name == "Standalone Book - Test Author.m3u" for path in title_playlists),
+        "standalone title playlist visible",
+    )
+    assert_true(
+        (authors_view / "Test Author" / "Standalone Book.m3u").exists(),
+        "author view nests books under author",
+    )
+    assert_true(
+        (series_view_dir / "Test Series" / "02 - Test Book.m3u").exists(),
+        "series view prefixes numeric series part",
+    )
+    standalone_playlist = (authors_view / "Test Author" / "Standalone Book.m3u").read_text(encoding="utf-8").splitlines()
+    assert_equal(
+        standalone_playlist,
+        [r"..\..\..\Test Author\2021 - Standalone Book\01 - Standalone.mp3"],
+        "author playlist uses path relative to generated view folder",
+    )
+    assert_true(
+        all("_views" not in row[header.index("path")] for row in catalog_entries),
+        "generated views are not scanned as audiobook tracks",
+    )
 
     check = subprocess.run(
         [

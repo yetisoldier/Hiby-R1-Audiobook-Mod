@@ -8,6 +8,8 @@ SD_ROOT=${AUDIOBOOK_SD_ROOT:-/usr/data/mnt/sd_0}
 AUDIOBOOK_DB_MIRROR_PATHS=${AUDIOBOOK_DB_MIRROR_PATHS:-/data/usrlocal_media.db $SD_ROOT/usrlocal_media.db}
 AUDIOBOOKS_DIR=${AUDIOBOOK_DB_AUDIOBOOKS_DIR:-$SD_ROOT/Audiobooks}
 MUSIC_DIR=${AUDIOBOOK_DB_MUSIC_DIR:-$SD_ROOT/Music}
+VIEW_ROOT=${AUDIOBOOK_VIEW_ROOT:-$SD_ROOT/Audiobooks/_views}
+VIEW_GENERATION_ENABLED=${AUDIOBOOK_VIEW_GENERATION_ENABLED:-0}
 CATALOG=${AUDIOBOOK_CATALOG:-$BASE/catalog.tsv}
 CATALOG_ALBUM_PATTERNS=${AUDIOBOOK_CATALOG_ALBUM_PATTERNS:-$BASE/catalog-albums.txt}
 CATALOG_BOOKS=${AUDIOBOOK_CATALOG_BOOKS:-$BASE/catalog-books.tsv}
@@ -28,9 +30,13 @@ STABLE_SECONDS=${AUDIOBOOK_DB_STABLE_SECONDS:-15}
 FULL_REFRESH_INTERVAL_SECONDS=${AUDIOBOOK_DB_FULL_REFRESH_INTERVAL_SECONDS:-0}
 RUN_ON_MTIME_ONLY=${AUDIOBOOK_DB_RUN_ON_MTIME_ONLY:-0}
 MTIME_ONLY_MIN_RERUN_SECONDS=${AUDIOBOOK_DB_MTIME_ONLY_MIN_RERUN_SECONDS:-0}
-ZERO_AUDIO_RETRY_TIMEOUT_SECONDS=${AUDIOBOOK_DB_ZERO_AUDIO_RETRY_TIMEOUT_SECONDS:-180}
+ZERO_AUDIO_RETRY_TIMEOUT_SECONDS=${AUDIOBOOK_DB_ZERO_AUDIO_RETRY_TIMEOUT_SECONDS:-600}
 ZERO_AUDIO_RETRY_POLL_SECONDS=${AUDIOBOOK_DB_ZERO_AUDIO_RETRY_POLL_SECONDS:-5}
+LOCKED_DB_RETRY_TIMEOUT_SECONDS=${AUDIOBOOK_DB_LOCKED_DB_RETRY_TIMEOUT_SECONDS:-600}
+LOCKED_DB_RETRY_POLL_SECONDS=${AUDIOBOOK_DB_LOCKED_DB_RETRY_POLL_SECONDS:-5}
 LAST_AUDIOBOOK_TRACKS=
+TRANSIENT_ZERO_AUDIO_RC=20
+TRANSIENT_LOCKED_DB_RC=21
 
 rotate_log_if_needed() {
   case "$LOG_MAX_BYTES" in ''|*[!0-9]*|0) return 0 ;; esac
@@ -181,11 +187,17 @@ run_maint_one_db() {
   }
   log "run reason=$reason role=$role db=$target_db music=$MUSIC_DIR audiobooks=$AUDIOBOOKS_DIR"
   helper_output="$BASE/db-maint-run.$$.$role"
+  view_args=
+  case "$VIEW_GENERATION_ENABLED" in
+    1|true|yes|on) view_args="--view-root $VIEW_ROOT" ;;
+  esac
+  # shellcheck disable=SC2086
   "$HELPER" \
     --db "$target_db" \
     --sd-root "$SD_ROOT" \
     --music-dir "$MUSIC_DIR" \
     --audiobooks-dir "$AUDIOBOOKS_DIR" \
+    $view_args \
     --base-dir "$BASE" \
     --catalog "$CATALOG" \
     --album-patterns "$CATALOG_ALBUM_PATTERNS" \
@@ -195,15 +207,27 @@ run_maint_one_db() {
     --series-catalog "$CATALOG_SERIES" \
     --verbose >"$helper_output" 2>&1
   rc=$?
+  helper_locked=0
   if [ -f "$helper_output" ]; then
+    if grep -qi "database is locked" "$helper_output" 2>/dev/null; then
+      helper_locked=1
+    fi
     cat "$helper_output" >>"$LOG"
     LAST_AUDIOBOOK_TRACKS=$(awk -F': ' '/^audiobook tracks:/ { print $2 }' "$helper_output" | tail -n 1 | awk '{ print $1 }')
     rm -f "$helper_output"
   fi
   rotate_log_if_needed
   if [ "$rc" -eq 0 ]; then
+    if [ "${LAST_AUDIOBOOK_TRACKS:-}" = 0 ] && has_audiobook_audio_files; then
+      log "defer-zero-audiobooks reason=$reason role=$role db=$target_db audio-files-present=1"
+      return "$TRANSIENT_ZERO_AUDIO_RC"
+    fi
     log "done reason=$reason role=$role db=$target_db audiobook_tracks=${LAST_AUDIOBOOK_TRACKS:-unknown}"
   else
+    if [ "$helper_locked" = 1 ]; then
+      log "failed-locked reason=$reason role=$role db=$target_db rc=$rc"
+      return "$TRANSIENT_LOCKED_DB_RC"
+    fi
     log "failed reason=$reason role=$role db=$target_db rc=$rc"
   fi
   return "$rc"
@@ -246,6 +270,12 @@ run_maint() {
       *" $mirror_db "*) continue ;;
     esac
     mirror_seen="$mirror_seen$mirror_db "
+    case "$primary_rc" in
+      "$TRANSIENT_ZERO_AUDIO_RC"|"$TRANSIENT_LOCKED_DB_RC")
+        log "mirror-skip reason=$reason db=$mirror_db primary-transient rc=$primary_rc"
+        continue
+        ;;
+    esac
     if [ -s "$mirror_db" ]; then
       if [ "$primary_rc" -eq 0 ]; then
         copy_primary_to_mirror "$reason" "$mirror_db" || run_maint_one_db "$reason" "$mirror_db" mirror || true
@@ -324,8 +354,30 @@ retry_zero_audiobooks_if_needed() {
   while :; do
     if has_audiobook_audio_files; then
       log "zero-audiobook-retry-ready reason=$reason"
-      run_maint "$reason-audiobook-ready" || true
-      return 0
+      run_maint "$reason-audiobook-ready"
+      retry_rc=$?
+      case "$retry_rc" in
+        "$TRANSIENT_LOCKED_DB_RC")
+          log "zero-audiobook-retry-locked reason=$reason"
+          ;;
+        *)
+          case "${LAST_AUDIOBOOK_TRACKS:-}" in
+            0)
+              log "zero-audiobook-retry-still-empty reason=$reason"
+              ;;
+            *)
+              return 0
+              ;;
+          esac
+          ;;
+      esac
+      case "$retry_rc" in
+        "$TRANSIENT_ZERO_AUDIO_RC"|"$TRANSIENT_LOCKED_DB_RC"|0) ;;
+        *)
+          log "zero-audiobook-retry-stop reason=$reason rc=$retry_rc"
+          return 0
+          ;;
+      esac
     fi
 
     now=$(now_seconds)
@@ -336,6 +388,62 @@ retry_zero_audiobooks_if_needed() {
     fi
     sleep "$retry_poll"
   done
+}
+
+retry_locked_db_if_needed() {
+  reason=$1
+  rc=$2
+  [ "$rc" = "$TRANSIENT_LOCKED_DB_RC" ] || return 0
+  case "$LOCKED_DB_RETRY_TIMEOUT_SECONDS" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$LOCKED_DB_RETRY_TIMEOUT_SECONDS" -gt 0 ] || return 0
+  case "$LOCKED_DB_RETRY_POLL_SECONDS" in ''|*[!0-9]*|0) retry_poll=5 ;; *) retry_poll=$LOCKED_DB_RETRY_POLL_SECONDS ;; esac
+
+  start_time=$(now_seconds)
+  log "locked-db-retry-start reason=$reason timeout=${LOCKED_DB_RETRY_TIMEOUT_SECONDS}s poll=${retry_poll}s"
+  while :; do
+    now=$(now_seconds)
+    elapsed=$((now - start_time))
+    if [ "$elapsed" -ge "$LOCKED_DB_RETRY_TIMEOUT_SECONDS" ]; then
+      log "locked-db-retry-timeout reason=$reason timeout=${LOCKED_DB_RETRY_TIMEOUT_SECONDS}s"
+      return 0
+    fi
+
+    sleep "$retry_poll"
+    run_maint "$reason-db-unlocked"
+    retry_rc=$?
+    case "$retry_rc" in
+      "$TRANSIENT_LOCKED_DB_RC")
+        log "locked-db-retry-still-locked reason=$reason"
+        ;;
+      "$TRANSIENT_ZERO_AUDIO_RC")
+        retry_zero_audiobooks_if_needed "$reason-db-unlocked" || true
+        return 0
+        ;;
+      0)
+        retry_zero_audiobooks_if_needed "$reason-db-unlocked" || true
+        return 0
+        ;;
+      *)
+        log "locked-db-retry-stop reason=$reason rc=$retry_rc"
+        return 0
+        ;;
+    esac
+  done
+}
+
+run_maint_with_retries() {
+  reason=$1
+  run_maint "$reason"
+  rc=$?
+  case "$rc" in
+    "$TRANSIENT_LOCKED_DB_RC")
+      retry_locked_db_if_needed "$reason" "$rc" || true
+      ;;
+    "$TRANSIENT_ZERO_AUDIO_RC"|0)
+      retry_zero_audiobooks_if_needed "$reason" || true
+      ;;
+  esac
+  return 0
 }
 
 wait_for_stable_db() {
@@ -393,7 +501,7 @@ echo $$ >"$PID_FILE"
 case "$RUN_ON_MTIME_ONLY" in 1|true|yes) RUN_ON_MTIME_ONLY=1 ;; *) RUN_ON_MTIME_ONLY=0 ;; esac
 case "$MTIME_ONLY_MIN_RERUN_SECONDS" in ''|*[!0-9]*) MTIME_ONLY_MIN_RERUN_SECONDS=0 ;; esac
 
-log "start interval=${INTERVAL_SECONDS}s stable=${STABLE_SECONDS}s boot_stable_timeout=${BOOT_STABLE_TIMEOUT_SECONDS}s zero_audio_retry=${ZERO_AUDIO_RETRY_TIMEOUT_SECONDS}s full_refresh=${FULL_REFRESH_INTERVAL_SECONDS}s run_on_mtime_only=${RUN_ON_MTIME_ONLY} mtime_only_min_rerun=${MTIME_ONLY_MIN_RERUN_SECONDS}s helper=$HELPER seed=$SEED_DB"
+log "start interval=${INTERVAL_SECONDS}s stable=${STABLE_SECONDS}s boot_stable_timeout=${BOOT_STABLE_TIMEOUT_SECONDS}s zero_audio_retry=${ZERO_AUDIO_RETRY_TIMEOUT_SECONDS}s locked_db_retry=${LOCKED_DB_RETRY_TIMEOUT_SECONDS}s full_refresh=${FULL_REFRESH_INTERVAL_SECONDS}s run_on_mtime_only=${RUN_ON_MTIME_ONLY} mtime_only_min_rerun=${MTIME_ONLY_MIN_RERUN_SECONDS}s view_generation=${VIEW_GENERATION_ENABLED} view_root=$VIEW_ROOT helper=$HELPER seed=$SEED_DB"
 
 sleep "$BOOT_DELAY_SECONDS"
 
@@ -406,8 +514,7 @@ last_run_at=0
 
 ensure_db_seeded boot || true
 wait_for_stable_db boot "$BOOT_STABLE_TIMEOUT_SECONDS" || true
-run_maint boot || true
-retry_zero_audiobooks_if_needed boot || true
+run_maint_with_retries boot || true
 last_sig=$(db_signature 2>/dev/null || true)
 last_size=$(db_size_signature 2>/dev/null || true)
 last_seen_sig=$last_sig
@@ -457,8 +564,7 @@ while :; do
       fi
     fi
     if [ "$should_run" = 1 ]; then
-      run_maint "$run_reason" || true
-      retry_zero_audiobooks_if_needed "$run_reason" || true
+      run_maint_with_retries "$run_reason" || true
       last_sig=$(db_signature 2>/dev/null || echo "$sig")
       last_size=$(db_size_signature 2>/dev/null || true)
       [ -n "$last_size" ] || last_size=$(signature_size "$last_sig")
@@ -477,7 +583,7 @@ while :; do
     continue
   fi
   if [ "$FULL_REFRESH_INTERVAL_SECONDS" -gt 0 ] && [ "$since_run" -ge "$FULL_REFRESH_INTERVAL_SECONDS" ]; then
-    run_maint periodic || true
+    run_maint_with_retries periodic || true
     last_sig=$(db_signature 2>/dev/null || echo "$sig")
     last_size=$(db_size_signature 2>/dev/null || echo "$size")
     last_seen_sig=$last_sig

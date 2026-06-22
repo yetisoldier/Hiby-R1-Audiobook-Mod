@@ -48,6 +48,8 @@ KNOWN_AUDIOBOOK_PLAYER_MD5S = {
     "dac7b58717097ef2a75ae5887478ef16",
     # 1.6.28-sd-ready-dev is the current dev build used for route/listview work.
     "c161af12bd050aca6f3fc2f67979d792",
+    # 1.6.16.8-private-route-dev, used only for route diagnostics.
+    "c168c57b3f22e8bfc4ee5fccb1b9455a",
 }
 
 # Normal file/list selection dispatch in stock 1.6. We intercept a few

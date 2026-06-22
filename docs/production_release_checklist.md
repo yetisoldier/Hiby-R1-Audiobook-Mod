@@ -5,40 +5,39 @@ the verification evidence that should be checked before publishing.
 
 ## Current Public Release
 
-- GitHub release: `v1.5.2`
-- Firmware marker: `1.6.16.2-audiobook`
+- GitHub release: `v1.5.3`
+- Firmware marker: `1.6.16.4-audiobook`
 - Base firmware: stock HiBy R1 1.6 for the normal R1, not R1 MIDI.
-- Package: `work\audiobook-firmware-1.6.16.2-audiobook\r1-audiobooks-1.6.16.2-audiobook.upt`
-- Package MD5: `80c0d7295c2d55575870c4d226e83be9`
-- Package SHA256: `3109fea179b816dcdd4c1536b8973f527ef8f8b2d628942317f6b4ded62ca4c6`
-- Rootfs MD5: `35ffdbb9b401c03f1742782da0104b55`
-- Rootfs SHA256: `127b90ddfc92ecf2e668368e31422b5eb090c47e86011c391c30dd4b4ec4c475`
+- Package: `work\audiobook-firmware-1.6.16.4-audiobook\r1-audiobooks-1.6.16.4-audiobook.upt`
+- Package MD5: `d6ebce37c653f3756b54a7b5c3725788`
+- Package SHA256: `eefd1f060babf5930d7bae4be481d7f580edf225a128d17ab6130beced4dd404`
+- Rootfs MD5: `8728cd7ad4734f3f36efdfe6d0c1093a`
+- Rootfs SHA256: `394db7b39571f3cc95f04ceec1195f1fedb0abe3ac2a3dec3dbf5f7c3461c152`
 - Visible About version is expected to truncate because the stock UI does not
   show the full suffix.
 
-## Verified Changes Since 1.6.16.1
+## Verified Changes Since 1.6.16.2
 
-- Hotfix for the remaining new-SD-card scan case where the stock scanner could
-  rewrite audiobook rows back to their original genre tags without changing the
-  DB file size.
-- The DB helper now supports a cheap `--needs-maintenance` check.
-- The watcher uses that check before skipping same-size DB changes and repairs
-  with `content-repair-mtime` when needed.
-- The watcher repairs the primary DB once and copies it to mirror DB paths,
-  reducing heavy post-scan DB work on large cards.
-- Active audiobook resume polling is reduced from 1 second to 2 seconds while
-  preserving the 15-second save cadence.
+- Hotfix for the case where Music -> Update Database creates a valid media DB
+  with zero audiobook rows even though files exist under `/Audiobooks`.
+- The DB helper's fast `--needs-maintenance` check now scans `/Audiobooks` and
+  compares those file paths with DB audiobook rows.
+- Folder location now wins over genre metadata; audiobook files do not need an
+  exact `Audiobook` genre tag.
+- The watcher repairs this state with `content-repair-mtime`, regenerates the
+  audiobook catalogs, and mirrors the repaired DB to `/data` and the SD-root
+  DB copy.
 
 ## Local Verification
 
-Local package verification passed on 2026-06-17:
+Local package verification passed on 2026-06-22:
 
 ```powershell
 python tools\verify_r1_audiobook_build.py `
-  --out-dir work\audiobook-firmware-1.6.16.2-audiobook `
-  --upt-name r1-audiobooks-1.6.16.2-audiobook.upt `
-  --expected-version 1.6.16.2-audiobook `
-  --expected-label "HiBy R1 Audiobook FW 1.6.16.2" `
+  --out-dir work\audiobook-firmware-1.6.16.4-audiobook `
+  --upt-name r1-audiobooks-1.6.16.4-audiobook.upt `
+  --expected-version 1.6.16.4-audiobook `
+  --expected-label "HiBy R1 Audiobook FW 1.6.16.4" `
   --require-db-maintenance `
   --expect-audiobook-launcher-icon `
   --expect-native-dsd `
@@ -60,13 +59,13 @@ python tools\verify_r1_audiobook_build.py `
 
 ## Device Verification
 
-The public `1.6.16.2` hotfix package was flashed on the test R1 on 2026-06-17.
+The public `1.6.16.4` hotfix package was flashed on the test R1 on 2026-06-22.
 Installed verification passed under
-`work\installed-release-verification\20260617-170615`:
+`work\installed-release-verification\20260622-084707`:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\adb_verify_installed_audiobook_release.ps1 `
-  -ExpectedVersion 1.6.16.2-audiobook `
+  -ExpectedVersion 1.6.16.4-audiobook `
   -RequirePlayModeGuard `
   -RequireDbBootStabilityGuard `
   -RequireContextStartGuard `
@@ -78,47 +77,45 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\adb_verify_installed_a
 Verified installed state:
 
 - `/etc/r1_audiobook_version` and `/usr/resource/config.json` report
-  `1.6.16.2-audiobook`.
+  `1.6.16.4-audiobook`.
 - Native DSD, Bluetooth SBC XQ, and USB DAC markers are present.
 - Resume daemon and DB watcher are running.
 - Play-mode guard is active.
-- SD-root `r1.upt` was renamed after flashing.
-- `/usr/data` free space is about 26 MB.
+- SD-root `r1.upt` is allowed during staged verification; remove or rename it
+  after manual install.
+- `/usr/data` free space is about 18 MB after cleanup.
 - DB integrity is `ok`.
 - Audiobooks contains 298 media rows across 52 books on the regression SD card.
 - SD-root `/usr/data/mnt/sd_0/usrlocal_media.db` has integrity `ok` and 298
-  audiobook rows with normalized `Audiobook` genre values.
+  audiobook rows.
+- Forced live regression test: replacing the primary DB with a same-size copy
+  containing zero audiobook rows while 298 audiobook files existed triggered
+  `content-repair-mtime`, rebuilt 298 audiobook rows, and mirrored the fixed DB.
 - Title, author, and series sidecar catalogs are present.
 - Music search, album, and genre tables have no audiobook leakage.
 - No known active development artifacts remain under `/usr/data/audiobooks`.
-- A screenshot-assisted ADB check opened Audiobooks to the title list instead of
-  `No music found`: `work\adb-control\screenshots\20260617-170213-preset-main-audiobooks.png`.
-
-The installed package archive on the SD card is:
-
-```text
-/usr/data/mnt/sd_0/r1-audiobooks-1.6.16.2-audiobook-installed-20260617-1703.upt
-```
+- Audiobook detection is based on `/Audiobooks` folder location, not an exact
+  genre tag.
 
 ## Publish Commands
 
-After release assets are staged under `firmware\releases\v1.5.2`:
+After release assets are staged under `firmware\releases\v1.5.3`:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\publish_github_release.ps1 `
-  -Tag v1.5.2 `
-  -Name "HiBy R1 Audiobook Mod v1.5.2" `
-  -BodyFile firmware\releases\v1.5.2\README.md `
-  -Assets "firmware\releases\v1.5.2\r1-audiobooks-1.6.16.2-audiobook.upt,firmware\releases\v1.5.2\MD5SUMS.txt,firmware\releases\v1.5.2\SHA256SUMS.txt"
+  -Tag v1.5.3 `
+  -Name "HiBy R1 Audiobook Mod v1.5.3" `
+  -BodyFile firmware\releases\v1.5.3\README.md `
+  -Assets "firmware\releases\v1.5.3\r1-audiobooks-1.6.16.4-audiobook.upt,firmware\releases\v1.5.3\MD5SUMS.txt,firmware\releases\v1.5.3\SHA256SUMS.txt"
 ```
 
 Then verify:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\publish_github_release.ps1 `
-  -Tag v1.5.2 `
+  -Tag v1.5.3 `
   -VerifyOnly `
-  -Assets "firmware\releases\v1.5.2\r1-audiobooks-1.6.16.2-audiobook.upt,firmware\releases\v1.5.2\MD5SUMS.txt,firmware\releases\v1.5.2\SHA256SUMS.txt"
+  -Assets "firmware\releases\v1.5.3\r1-audiobooks-1.6.16.4-audiobook.upt,firmware\releases\v1.5.3\MD5SUMS.txt,firmware\releases\v1.5.3\SHA256SUMS.txt"
 ```
 
 ## Known Limitations

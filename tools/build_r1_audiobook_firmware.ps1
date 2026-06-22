@@ -20,6 +20,19 @@ param(
 
     [switch]$IncludeAudiobookLauncherGenre,
 
+    [switch]$IncludeAudiobookPrivateDirectRoute,
+
+    [switch]$IncludeAudiobookNativeHubTitleRow,
+
+
+    [switch]$AllowUnsafeNativeHubTitleRow,
+
+    [switch]$IncludeAudiobookNativeHubLauncher,
+
+    [switch]$IncludeAudiobookNativeHubFolderRows,
+
+    [switch]$IncludeAudiobookNativeHubViewRows,
+
     [switch]$IncludeAudiobookTitleAutoStartMarker,
 
     [switch]$IncludeSelectDispatchBranch,
@@ -37,6 +50,8 @@ param(
     [switch]$UnlockUsbDacMode,
 
     [switch]$IncludeAudiobookResumeRuntime,
+
+    [switch]$UseConservativeResumeRuntime,
 
     [Parameter(Mandatory=$false)]
     [string]$AudiobookResumeHelper = "work\device-audiobook-helper-20260609\audiobooks\bin\r1_audiobook_resume_helper",
@@ -65,10 +80,10 @@ param(
     [string]$MediaDbSeed = "firmware\seed\usrlocal_media.seed.db",
 
     [Parameter(Mandatory=$false)]
-    [string]$CustomVersionId = "1.6.16.2-audiobook",
+    [string]$CustomVersionId = "1.6.16.4-audiobook",
 
     [Parameter(Mandatory=$false)]
-    [string]$CustomVersionLabel = "HiBy R1 Audiobook FW 1.6.16.2",
+    [string]$CustomVersionLabel = "HiBy R1 Audiobook FW 1.6.16.4",
 
     [Parameter(Mandatory=$false)]
     [int]$OtaVersion = 0,
@@ -107,6 +122,13 @@ $xImagePath = Resolve-PathStrict $XImage
 $mksquashfs = Resolve-PathStrict (Join-Path $SquashfsTools "mksquashfs.exe")
 $unsquashfs = Resolve-PathStrict (Join-Path $SquashfsTools "unsquashfs.exe")
 
+if ($IncludeAudiobookNativeHubTitleRow -and !$AllowUnsafeNativeHubTitleRow) {
+    throw "IncludeAudiobookNativeHubTitleRow is unsafe after live testing rebooted the R1. Pass -AllowUnsafeNativeHubTitleRow only for controlled flash-test builds."
+}
+if ($IncludeAudiobookNativeHubViewRows -and $IncludeAudiobookLauncherGenre) {
+    throw "IncludeAudiobookNativeHubViewRows and IncludeAudiobookLauncherGenre are alternative audiobook entry paths. Choose only one."
+}
+
 if (Test-Path -LiteralPath $OutDir) {
     Remove-Item -Recurse -Force -LiteralPath $OutDir
 }
@@ -134,6 +156,25 @@ if ($IncludeExperimentalBookAudioShim) {
 if ($IncludeAudiobookLauncherGenre) {
     $playerPatchArgs += "--audiobook-launcher-genre"
 }
+if ($IncludeAudiobookPrivateDirectRoute) {
+    $playerPatchArgs += "--audiobook-private-direct-route"
+}
+if ($IncludeAudiobookNativeHubTitleRow) {
+    $playerPatchArgs += "--audiobook-native-hub-title-row"
+}
+if ($IncludeAudiobookNativeHubLauncher) {
+    $playerPatchArgs += "--audiobook-native-hub-launcher"
+}
+if ($IncludeAudiobookNativeHubFolderRows) {
+    $playerPatchArgs += "--audiobook-native-hub-folder-rows"
+}
+if ($IncludeAudiobookNativeHubViewRows) {
+    if (!$IncludeAudiobookNativeHubLauncher) {
+        $IncludeAudiobookNativeHubLauncher = $true
+        $playerPatchArgs += "--audiobook-native-hub-launcher"
+    }
+    $playerPatchArgs += "--audiobook-native-hub-view-rows"
+}
 if ($IncludeAudiobookTitleAutoStartMarker) {
     $playerPatchArgs += "--audiobook-title-autostart-marker"
 }
@@ -142,9 +183,21 @@ if ($IncludeSelectDispatchBranch) {
 }
 
 python tools\patch_hiby_player.py @playerPatchArgs
+if ($LASTEXITCODE -ne 0) {
+    throw "failed to patch hiby_player"
+}
 Copy-Item -Force -LiteralPath $patchedPlayer -Destination $playerPath
 
-python tools\patch_r1_resource_text.py $rootTree --about-model $CustomVersionLabel --product-version $CustomVersionId
+$resourcePatchArgs = @($rootTree, "--about-model", $CustomVersionLabel, "--product-version", $CustomVersionId)
+if ($IncludeAudiobookNativeHubViewRows) {
+    $resourcePatchArgs += "--audiobook-native-hub-view-labels"
+} elseif ($IncludeAudiobookNativeHubTitleRow -or $IncludeAudiobookNativeHubFolderRows) {
+    $resourcePatchArgs += "--audiobook-native-hub-labels"
+}
+python tools\patch_r1_resource_text.py @resourcePatchArgs
+if ($LASTEXITCODE -ne 0) {
+    throw "failed to patch resource text"
+}
 if ($IncludeAudiobookLauncherIcon) {
     python tools\generate_audiobook_launcher_icons.py $rootTree
     if ($LASTEXITCODE -ne 0) {
@@ -187,24 +240,57 @@ if ($audioUnlockArgs.Count -gt 1) {
 }
 
 $customVersionMarker = Join-Path $rootTree "etc\r1_audiobook_version"
+$audiobookEntryMarker = "stock-book"
+if ($IncludeAudiobookLauncherGenre) {
+    $audiobookEntryMarker = "direct-genre"
+}
+if ($IncludeAudiobookPrivateDirectRoute) {
+    $audiobookEntryMarker = "direct-private-route"
+}
+if ($IncludeAudiobookNativeHubTitleRow) {
+    $audiobookEntryMarker = "native-hub-title-row"
+}
+if ($IncludeAudiobookNativeHubLauncher) {
+    $audiobookEntryMarker = "native-hub-launcher-title-row"
+}
+if ($IncludeAudiobookNativeHubFolderRows) {
+    if ($IncludeAudiobookNativeHubLauncher) {
+        $audiobookEntryMarker = "native-hub-launcher-title-folders"
+    } else {
+        $audiobookEntryMarker = "native-hub-title-folders"
+    }
+}
+if ($IncludeAudiobookNativeHubViewRows) {
+    $audiobookEntryMarker = "native-hub-view-rows"
+}
 $bootAdbMarker = if ($EnableBootAdb) { "enabled" } else { "disabled" }
 $batdLoggerMarker = if ($DisableBatdLogger) { "disabled" } else { "enabled" }
 $launcherIconMarker = if ($IncludeAudiobookLauncherIcon) { "audiobook" } else { "stock-book" }
 $nativeDsdMarker = if ($UnlockNativeDsd) { "enabled" } else { "stock" }
 $sbcXqMarker = if ($EnableBluetoothSbcXq) { "enabled" } else { "stock" }
 $usbDacMarker = if ($UnlockUsbDacMode) { "enabled" } else { "stock" }
+$nativeHubLauncherMarker = if ($IncludeAudiobookNativeHubLauncher) { "enabled" } else { "disabled" }
+$nativeHubFolderRowsMarker = if ($IncludeAudiobookNativeHubFolderRows) { "enabled" } else { "disabled" }
+$nativeHubViewRowsMarker = if ($IncludeAudiobookNativeHubViewRows) { "enabled" } else { "disabled" }
+$audiobookViewGenerationEnabled = if ($IncludeAudiobookNativeHubViewRows) { "1" } else { "0" }
+$resumeRuntimeProfileMarker = if ($UseConservativeResumeRuntime) { "conservative" } else { "direct" }
 @"
 version=$CustomVersionId
 label=$CustomVersionLabel
 base_firmware=1.6
 ota_version=$OtaVersion
 ota_site=$effectiveOtaSite
+audiobook_entry=$audiobookEntryMarker
 boot_adb=$bootAdbMarker
 batd_logger=$batdLoggerMarker
 launcher_icon=$launcherIconMarker
 native_dsd=$nativeDsdMarker
 bluetooth_sbc_xq=$sbcXqMarker
 usb_dac_mode=$usbDacMarker
+native_hub_launcher=$nativeHubLauncherMarker
+native_hub_folder_rows=$nativeHubFolderRowsMarker
+native_hub_view_rows=$nativeHubViewRowsMarker
+resume_runtime_profile=$resumeRuntimeProfileMarker
 "@ | Set-Content -LiteralPath $customVersionMarker -Encoding ASCII
 
 # Stock R1 1.6 includes a guarded batd launch block in hiby_player.sh. If a batd
@@ -418,6 +504,17 @@ if ($IncludeAudiobookResumeRuntime) {
     }
 
     $resumeBootScript = Join-Path $rootTree "etc\init.d\S91audiobook_resume.sh"
+    $audiobookTrackRestoreEnabled = if ($UseConservativeResumeRuntime) { "0" } else { "1" }
+    $audiobookBookTitleAutostartEnabled = if ($UseConservativeResumeRuntime) { "0" } else { "1" }
+    $audiobookDirectTrackSelectEnabled = if ($UseConservativeResumeRuntime) { "0" } else { "1" }
+    $audiobookDirectTrackPreplayEnabled = if ($UseConservativeResumeRuntime) { "0" } else { "1" }
+    $audiobookBookTitleMemscanEnabled = if ($UseConservativeResumeRuntime) { "0" } else { "1" }
+    $audiobookDirectTrackCalibrateEnabled = if ($UseConservativeResumeRuntime) { "0" } else { "1" }
+    $audiobookDirectTrackRecoveryEnabled = if ($UseConservativeResumeRuntime) { "0" } else { "1" }
+    $audiobookDirectOpenEnabled = if ($UseConservativeResumeRuntime) { "0" } else { "1" }
+    $audiobookUiSeekFallbackEnabled = if ($UseConservativeResumeRuntime) { "0" } else { "1" }
+    $audiobookBackGuardEnabled = if ($UseConservativeResumeRuntime -or $IncludeAudiobookNativeHubLauncher) { "0" } else { "1" }
+    $audiobookFirstTrackEntryRestoreEnabled = if (!$UseConservativeResumeRuntime -and $IncludeAudiobookNativeHubViewRows) { "1" } else { "0" }
     $resumeBootScriptText = @'
 #!/bin/sh
 
@@ -496,22 +593,29 @@ for file in "$BASE/input/"*.bin; do
   fi
 done
 
+old_pid=$(cat "$BASE/resume-daemon.pid" 2>/dev/null || true)
+[ -n "$old_pid" ] && kill "$old_pid" 2>/dev/null || true
 start-stop-daemon -K -p "$BASE/resume-daemon.ssd.pid" 2>/dev/null || true
+sleep 1
+[ -n "$old_pid" ] && kill -9 "$old_pid" 2>/dev/null || true
 rm -f "$BASE/resume-daemon.pid" "$BASE/resume-daemon.ssd.pid"
 
 AUDIOBOOK_POSITION_SOURCE=memory
 AUDIOBOOK_RESTORE_ENABLED=1
-AUDIOBOOK_TRACK_RESTORE_ENABLED=1
-AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED=1
-AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED=1
+AUDIOBOOK_TRACK_RESTORE_ENABLED=__AUDIOBOOK_TRACK_RESTORE_ENABLED__
+AUDIOBOOK_TRACK_RESTORE_FIRST_TRACK_ENTRY_ENABLED=__AUDIOBOOK_TRACK_RESTORE_FIRST_TRACK_ENTRY_ENABLED__
+AUDIOBOOK_TRACK_RESTORE_FIRST_TRACK_ENTRY_MAX_MS=15000
+AUDIOBOOK_BOOK_TITLE_AUTOSTART_ENABLED=__AUDIOBOOK_BOOK_TITLE_AUTOSTART_ENABLED__
+AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED=__AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED__
+AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED=__AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED__
 AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_MAX_SWIPES=20
 AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_VISIBLE_ROWS=5
 AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_ROWS_PER_SWIPE=4
-AUDIOBOOK_BOOK_TITLE_MEMSCAN_ENABLED=1
-AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_CALIBRATE_ENABLED=1
-AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_RECOVERY_TRANSPORT_ENABLED=1
+AUDIOBOOK_BOOK_TITLE_MEMSCAN_ENABLED=__AUDIOBOOK_BOOK_TITLE_MEMSCAN_ENABLED__
+AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_CALIBRATE_ENABLED=__AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_CALIBRATE_ENABLED__
+AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_RECOVERY_TRANSPORT_ENABLED=__AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_RECOVERY_TRANSPORT_ENABLED__
 AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_RECOVERY_MAX_STEPS=20
-AUDIOBOOK_BOOK_TITLE_DIRECT_OPEN_ENABLED=1
+AUDIOBOOK_BOOK_TITLE_DIRECT_OPEN_ENABLED=__AUDIOBOOK_BOOK_TITLE_DIRECT_OPEN_ENABLED__
 AUDIOBOOK_DIRECT_OPEN_PROBE_ADDR=0x760708
 AUDIOBOOK_DIRECT_OPEN_SCRATCH_ADDR=0x8e4400
 AUDIOBOOK_DIRECT_OPEN_TIMEOUT_MS=6000
@@ -523,6 +627,7 @@ AUDIOBOOK_BOOK_TITLE_MARKER_IDLE_POLL_SECONDS=5
 AUDIOBOOK_BOOK_TITLE_MARKER_MUSIC_POLL_SECONDS=15
 AUDIOBOOK_DIAGNOSTICS_INTERVAL_SECONDS=60
 AUDIOBOOK_BOOK_TITLE_AUTOSTART_DELAY_SECONDS=1
+AUDIOBOOK_BOOK_TITLE_LAUNCHER_TRACKLIST_WAIT_SECONDS=4
 AUDIOBOOK_BOOK_TITLE_CONTEXT_SECONDS=300
 AUDIOBOOK_SAVE_BUCKET_MS=15000
 AUDIOBOOK_NEW_TRACK_COMMIT_MS=15000
@@ -530,16 +635,18 @@ AUDIOBOOK_RESTORE_RETRY_MAX_AFTER_FAILURE_SECONDS=300
 AUDIOBOOK_FAILED_RESTORE_SKIP_LOG_BUCKET_MS=30000
 AUDIOBOOK_BOOK_TITLE_RESTORE_LOG_BUCKET_MS=5000
 AUDIOBOOK_RESUME_LOG_MAX_BYTES=524288
-AUDIOBOOK_UI_SEEK_FALLBACK_ENABLED=1
+AUDIOBOOK_UI_SEEK_FALLBACK_ENABLED=__AUDIOBOOK_UI_SEEK_FALLBACK_ENABLED__
 AUDIOBOOK_UI_SEEK_SCREEN_GUARD_ENABLED=1
 AUDIOBOOK_UI_SEEK_SCREEN_MIN_BAR_PIXELS=300
 AUDIOBOOK_UI_SEEK_TOUCH_FRAMES=2
-AUDIOBOOK_BACK_GUARD_ENABLED=1
+AUDIOBOOK_BACK_GUARD_ENABLED=__AUDIOBOOK_BACK_GUARD_ENABLED__
 AUDIOBOOK_BACK_GUARD_WINDOW_SECONDS=60
 AUDIOBOOK_BACK_GUARD_AFTER_SCREEN_SECONDS=8
 AUDIOBOOK_BACK_GUARD_IDLE_INTERVAL_SECONDS=1
 AUDIOBOOK_BACK_GUARD_EXTRA_BACKS=2
 export AUDIOBOOK_POSITION_SOURCE AUDIOBOOK_RESTORE_ENABLED AUDIOBOOK_TRACK_RESTORE_ENABLED
+export AUDIOBOOK_TRACK_RESTORE_FIRST_TRACK_ENTRY_ENABLED AUDIOBOOK_TRACK_RESTORE_FIRST_TRACK_ENTRY_MAX_MS
+export AUDIOBOOK_BOOK_TITLE_AUTOSTART_ENABLED
 export AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED
 export AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_MAX_SWIPES AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_VISIBLE_ROWS AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_ROWS_PER_SWIPE
 export AUDIOBOOK_BOOK_TITLE_MEMSCAN_ENABLED
@@ -548,7 +655,9 @@ export AUDIOBOOK_BOOK_TITLE_DIRECT_OPEN_ENABLED AUDIOBOOK_DIRECT_OPEN_PROBE_ADDR
 export AUDIOBOOK_DIRECT_OPEN_TIMEOUT_MS AUDIOBOOK_DIRECT_OPEN_ARM_DELAY_US
 export AUDIOBOOK_BOOK_TITLE_AUTOSTART_REQUIRE_PATH
 export AUDIOBOOK_INTERVAL_SECONDS AUDIOBOOK_IDLE_INTERVAL_SECONDS AUDIOBOOK_BOOK_TITLE_MARKER_IDLE_POLL_SECONDS AUDIOBOOK_BOOK_TITLE_MARKER_MUSIC_POLL_SECONDS
-export AUDIOBOOK_DIAGNOSTICS_INTERVAL_SECONDS AUDIOBOOK_BOOK_TITLE_AUTOSTART_DELAY_SECONDS AUDIOBOOK_BOOK_TITLE_CONTEXT_SECONDS
+export AUDIOBOOK_DIAGNOSTICS_INTERVAL_SECONDS AUDIOBOOK_BOOK_TITLE_AUTOSTART_DELAY_SECONDS
+export AUDIOBOOK_BOOK_TITLE_LAUNCHER_TRACKLIST_WAIT_SECONDS
+export AUDIOBOOK_BOOK_TITLE_CONTEXT_SECONDS
 export AUDIOBOOK_SAVE_BUCKET_MS AUDIOBOOK_NEW_TRACK_COMMIT_MS AUDIOBOOK_RESTORE_RETRY_MAX_AFTER_FAILURE_SECONDS AUDIOBOOK_FAILED_RESTORE_SKIP_LOG_BUCKET_MS
 export AUDIOBOOK_BOOK_TITLE_RESTORE_LOG_BUCKET_MS AUDIOBOOK_RESUME_LOG_MAX_BYTES AUDIOBOOK_UI_SEEK_FALLBACK_ENABLED
 export AUDIOBOOK_UI_SEEK_SCREEN_GUARD_ENABLED AUDIOBOOK_UI_SEEK_SCREEN_MIN_BAR_PIXELS AUDIOBOOK_UI_SEEK_TOUCH_FRAMES
@@ -557,6 +666,17 @@ export AUDIOBOOK_BACK_GUARD_IDLE_INTERVAL_SECONDS
 export AUDIOBOOK_BACK_GUARD_EXTRA_BACKS
 start-stop-daemon -S -b -m -p "$BASE/resume-daemon.ssd.pid" -x /bin/sh -- "$BASE/bin/r1_audiobook_resume_daemon.sh" >>"$BASE/resume-daemon.stdout.log" 2>&1
 '@
+    $resumeBootScriptText = $resumeBootScriptText -replace "__AUDIOBOOK_BACK_GUARD_ENABLED__", $audiobookBackGuardEnabled
+    $resumeBootScriptText = $resumeBootScriptText -replace "__AUDIOBOOK_TRACK_RESTORE_FIRST_TRACK_ENTRY_ENABLED__", $audiobookFirstTrackEntryRestoreEnabled
+    $resumeBootScriptText = $resumeBootScriptText -replace "__AUDIOBOOK_TRACK_RESTORE_ENABLED__", $audiobookTrackRestoreEnabled
+    $resumeBootScriptText = $resumeBootScriptText -replace "__AUDIOBOOK_BOOK_TITLE_AUTOSTART_ENABLED__", $audiobookBookTitleAutostartEnabled
+    $resumeBootScriptText = $resumeBootScriptText -replace "__AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED__", $audiobookDirectTrackSelectEnabled
+    $resumeBootScriptText = $resumeBootScriptText -replace "__AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED__", $audiobookDirectTrackPreplayEnabled
+    $resumeBootScriptText = $resumeBootScriptText -replace "__AUDIOBOOK_BOOK_TITLE_MEMSCAN_ENABLED__", $audiobookBookTitleMemscanEnabled
+    $resumeBootScriptText = $resumeBootScriptText -replace "__AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_CALIBRATE_ENABLED__", $audiobookDirectTrackCalibrateEnabled
+    $resumeBootScriptText = $resumeBootScriptText -replace "__AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_RECOVERY_TRANSPORT_ENABLED__", $audiobookDirectTrackRecoveryEnabled
+    $resumeBootScriptText = $resumeBootScriptText -replace "__AUDIOBOOK_BOOK_TITLE_DIRECT_OPEN_ENABLED__", $audiobookDirectOpenEnabled
+    $resumeBootScriptText = $resumeBootScriptText -replace "__AUDIOBOOK_UI_SEEK_FALLBACK_ENABLED__", $audiobookUiSeekFallbackEnabled
     $resumeBootScriptText = $resumeBootScriptText -replace "`r`n", "`n"
     [System.IO.File]::WriteAllText($resumeBootScript, $resumeBootScriptText, [System.Text.Encoding]::ASCII)
 }
@@ -649,16 +769,22 @@ AUDIOBOOK_DB_FULL_REFRESH_INTERVAL_SECONDS=0
 AUDIOBOOK_DB_MAINT_LOG_MAX_BYTES=524288
 AUDIOBOOK_DB_RUN_ON_MTIME_ONLY=0
 AUDIOBOOK_DB_MTIME_ONLY_MIN_RERUN_SECONDS=0
-AUDIOBOOK_DB_ZERO_AUDIO_RETRY_TIMEOUT_SECONDS=180
+AUDIOBOOK_DB_ZERO_AUDIO_RETRY_TIMEOUT_SECONDS=600
 AUDIOBOOK_DB_ZERO_AUDIO_RETRY_POLL_SECONDS=5
+AUDIOBOOK_DB_LOCKED_DB_RETRY_TIMEOUT_SECONDS=600
+AUDIOBOOK_DB_LOCKED_DB_RETRY_POLL_SECONDS=5
+AUDIOBOOK_VIEW_GENERATION_ENABLED=__AUDIOBOOK_VIEW_GENERATION_ENABLED__
 export AUDIOBOOK_DB_BOOT_DELAY_SECONDS AUDIOBOOK_DB_BOOT_STABLE_TIMEOUT_SECONDS AUDIOBOOK_DB_STABLE_POLL_SECONDS
 export AUDIOBOOK_DB_INTERVAL_SECONDS AUDIOBOOK_DB_STABLE_SECONDS
 export AUDIOBOOK_DB_FULL_REFRESH_INTERVAL_SECONDS AUDIOBOOK_DB_MAINT_LOG_MAX_BYTES
 export AUDIOBOOK_DB_RUN_ON_MTIME_ONLY AUDIOBOOK_DB_MTIME_ONLY_MIN_RERUN_SECONDS
 export AUDIOBOOK_DB_ZERO_AUDIO_RETRY_TIMEOUT_SECONDS AUDIOBOOK_DB_ZERO_AUDIO_RETRY_POLL_SECONDS
+export AUDIOBOOK_DB_LOCKED_DB_RETRY_TIMEOUT_SECONDS AUDIOBOOK_DB_LOCKED_DB_RETRY_POLL_SECONDS
+export AUDIOBOOK_VIEW_GENERATION_ENABLED
 
 start-stop-daemon -S -b -m -p "$BASE/db-maint.ssd.pid" -x /bin/sh -- "$BASE/bin/r1_audiobook_db_watch.sh" >>"$BASE/db-maint.stdout.log" 2>&1
 '@
+    $dbMaintBootScriptText = $dbMaintBootScriptText -replace "__AUDIOBOOK_VIEW_GENERATION_ENABLED__", $audiobookViewGenerationEnabled
     $dbMaintBootScriptText = $dbMaintBootScriptText -replace "`r`n", "`n"
     [System.IO.File]::WriteAllText($dbMaintBootScript, $dbMaintBootScriptText, [System.Text.Encoding]::ASCII)
 }

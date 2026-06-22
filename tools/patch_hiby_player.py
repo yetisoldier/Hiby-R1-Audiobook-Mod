@@ -15,6 +15,48 @@ import shutil
 from pathlib import Path
 
 
+def pack_u32(value: int) -> bytes:
+    return (value & 0xFFFFFFFF).to_bytes(4, "little")
+
+
+def pack_words(*words: int) -> bytes:
+    return b"".join(pack_u32(word) for word in words)
+
+
+def ins_j(addr: int) -> int:
+    return (2 << 26) | ((addr >> 2) & 0x03FFFFFF)
+
+
+def ins_jal(addr: int) -> int:
+    return (3 << 26) | ((addr >> 2) & 0x03FFFFFF)
+
+
+def ins_lui(rt: int, imm: int) -> int:
+    return (15 << 26) | ((rt & 0x1F) << 16) | (imm & 0xFFFF)
+
+
+def ins_addiu(rt: int, rs: int, imm: int) -> int:
+    return (9 << 26) | ((rs & 0x1F) << 21) | ((rt & 0x1F) << 16) | (imm & 0xFFFF)
+
+
+def ins_lw(rt: int, base: int, off: int) -> int:
+    return (35 << 26) | ((base & 0x1F) << 21) | ((rt & 0x1F) << 16) | (off & 0xFFFF)
+
+
+def ins_sw(rt: int, base: int, off: int) -> int:
+    return (43 << 26) | ((base & 0x1F) << 21) | ((rt & 0x1F) << 16) | (off & 0xFFFF)
+
+
+def ins_beq(rs: int, rt: int, imm: int) -> int:
+    return (4 << 26) | ((rs & 0x1F) << 21) | ((rt & 0x1F) << 16) | (imm & 0xFFFF)
+
+
+def load_addr_words(reg: int, addr: int) -> tuple[int, int]:
+    hi = (addr + 0x8000) >> 16
+    lo = addr & 0xFFFF
+    return ins_lui(reg, hi), ins_addiu(reg, reg, lo)
+
+
 STOCK_MD5 = "ad69fa8377fb85b01ed5d65fe976b19a"
 STOCK_SHA256 = "8398e1e1295e83b033bf7b8c39932fff3f620831f5a91682869554047b26f6b2"
 
@@ -65,9 +107,15 @@ AUDIOBOOK_LAUNCHER_ROUTE_OFFSET_IN_CAVE = 0x94
 _AUDIOBOOK_LAUNCHER_ROUTE_FIELD_SIZE = len(
     "Audiobook\\Audiobook".encode("utf-16le") + b"\x00\x00"
 )
+AUDIOBOOK_LAUNCHER_ROUTE_OFFSET = (
+    AUDIOBOOK_LAUNCHER_CAVE_OFFSET + AUDIOBOOK_LAUNCHER_ROUTE_OFFSET_IN_CAVE
+)
 AUDIOBOOK_LAUNCHER_ROUTE = (
     "genre\\Audiobook".encode("utf-16le") + b"\x00\x00"
 ).ljust(_AUDIOBOOK_LAUNCHER_ROUTE_FIELD_SIZE, b"\x00")
+AUDIOBOOK_LAUNCHER_SELECTED_GENRE_OFFSET = (
+    AUDIOBOOK_LAUNCHER_ROUTE_OFFSET + len(AUDIOBOOK_LAUNCHER_ROUTE)
+)
 AUDIOBOOK_LAUNCHER_SELECTED_GENRE = (
     "Audiobook".encode("utf-16le") + b"\x00\x00"
 ).ljust(24, b"\x00")
@@ -109,6 +157,32 @@ AUDIOBOOK_LAUNCHER_PATCHES = (
     ),
 )
 
+AUDIOBOOK_PRIVATE_DIRECT_ROUTE_RECORD_OFFSET = 0x35DF40
+AUDIOBOOK_PRIVATE_DIRECT_ROUTE_RECORD_ADDR = 0x0075DF40
+AUDIOBOOK_PRIVATE_DIRECT_ROUTE_RECORD = pack_words(
+    # Clone the stock genre-chain route record header, but start directly at
+    # Albums-of-Genre for the Audiobooks launcher only. This avoids modifying
+    # the global Music genre route table at 0x007870a0.
+    0x0075CAC8,
+    0x00786E98,
+    0x0077F284,
+    0x0077F2A4,
+    0x00000000,
+    0x004F01C0,
+)
+AUDIOBOOK_PRIVATE_DIRECT_ROUTE_PATCHES = (
+    (
+        AUDIOBOOK_LAUNCHER_CAVE_OFFSET + 0x3C,
+        pack_words(ins_lui(5, 0x78), ins_addiu(5, 5, 0x70A0)),
+        pack_words(ins_lui(5, 0x76), ins_addiu(5, 5, -0x20C0)),
+    ),
+    (
+        AUDIOBOOK_PRIVATE_DIRECT_ROUTE_RECORD_OFFSET,
+        b"\x00" * len(AUDIOBOOK_PRIVATE_DIRECT_ROUTE_RECORD),
+        AUDIOBOOK_PRIVATE_DIRECT_ROUTE_RECORD,
+    ),
+)
+
 AUDIOBOOK_TITLE_MARKER_CAVE_OFFSET = 0x35DE00
 AUDIOBOOK_TITLE_MARKER_HOOK = (
     0x09FE40,
@@ -127,6 +201,275 @@ AUDIOBOOK_TITLE_MARKER_PATCHES = (
         AUDIOBOOK_TITLE_MARKER_CODE,
     ),
     AUDIOBOOK_TITLE_MARKER_HOOK,
+)
+
+AUDIOBOOK_NATIVE_HUB_TITLE_ROW_CAVE_OFFSET = 0x35DE60
+AUDIOBOOK_NATIVE_HUB_TITLE_ROW_CODE = bytes.fromhex(
+    # move a0, s2
+    # jal 0x0075dbc0
+    # nop
+    # j 0x00540d2c
+    # nop
+    "25204002"
+    "f0761d0c"
+    "00000000"
+    "4b031508"
+    "00000000"
+)
+AUDIOBOOK_NATIVE_HUB_TITLE_ROW_PATCHES = (
+    (
+        AUDIOBOOK_BOOK_OPEN_ROOT_OFFSET,
+        b"\x00" * len(AUDIOBOOK_BOOK_OPEN_ROOT_CODE),
+        AUDIOBOOK_BOOK_OPEN_ROOT_CODE,
+    ),
+    (
+        AUDIOBOOK_LAUNCHER_ROUTE_OFFSET,
+        b"\x00" * len(AUDIOBOOK_LAUNCHER_ROUTE),
+        AUDIOBOOK_LAUNCHER_ROUTE,
+    ),
+    (
+        AUDIOBOOK_LAUNCHER_SELECTED_GENRE_OFFSET,
+        b"\x00" * len(AUDIOBOOK_LAUNCHER_SELECTED_GENRE),
+        AUDIOBOOK_LAUNCHER_SELECTED_GENRE,
+    ),
+    (
+        AUDIOBOOK_NATIVE_HUB_TITLE_ROW_CAVE_OFFSET,
+        b"\x00" * len(AUDIOBOOK_NATIVE_HUB_TITLE_ROW_CODE),
+        AUDIOBOOK_NATIVE_HUB_TITLE_ROW_CODE,
+    ),
+    (
+        0x38D27C,
+        bytes.fromhex("080d5400"),
+        bytes.fromhex("60de7500"),
+    ),
+)
+
+AUDIOBOOK_NATIVE_HUB_FOLDER_ROWS_CAVE_OFFSET = 0x35DEA0
+AUDIOBOOK_NATIVE_HUB_FOLDER_ROWS_PATH_OFFSET = 0x35DF00
+AUDIOBOOK_NATIVE_HUB_FOLDER_ROWS_CAVE_CODE = pack_words(
+    # lw a0, 0xd8(s0)
+    ins_lw(4, 16, 0x00D8),
+    # a1 = "vg_listview_explorer"
+    ins_lui(5, 0x0076),
+    ins_addiu(5, 5, -0x3ECC),
+    # a2 = L"a:\\Audiobooks\\*"
+    ins_lui(6, 0x0076),
+    ins_addiu(6, 6, -0x2100),
+    # create native explorer subpage, then return through the stock hub epilogue
+    ins_jal(0x004961E0),
+    0,
+    ins_j(0x00540D2C),
+    0,
+)
+AUDIOBOOK_NATIVE_HUB_FOLDER_ROWS_PATH = (
+    "a:\\Audiobooks\\*".encode("utf-16le") + b"\x00\x00"
+).ljust(0x40, b"\x00")
+AUDIOBOOK_NATIVE_HUB_FOLDER_ROWS_PATCHES = (
+    (
+        AUDIOBOOK_NATIVE_HUB_FOLDER_ROWS_CAVE_OFFSET,
+        b"\x00" * len(AUDIOBOOK_NATIVE_HUB_FOLDER_ROWS_CAVE_CODE),
+        AUDIOBOOK_NATIVE_HUB_FOLDER_ROWS_CAVE_CODE,
+    ),
+    (
+        AUDIOBOOK_NATIVE_HUB_FOLDER_ROWS_PATH_OFFSET,
+        b"\x00" * len(AUDIOBOOK_NATIVE_HUB_FOLDER_ROWS_PATH),
+        AUDIOBOOK_NATIVE_HUB_FOLDER_ROWS_PATH,
+    ),
+    (
+        # Stock Favorites row -> audiobook folder explorer.
+        0x38D280,
+        bytes.fromhex("2c0e5400"),
+        pack_u32(0x0075DEA0),
+    ),
+    (
+        # Stock Files row -> audiobook folder explorer.
+        0x38D284,
+        bytes.fromhex("480d5400"),
+        pack_u32(0x0075DEA0),
+    ),
+)
+
+AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_OFFSET = 0x360708
+AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_ADDR = 0x00760708
+AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_CODE_OFFSET = AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_OFFSET
+AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_CODE_OFFSET = AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_OFFSET + 0x30
+AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_CODE_OFFSET = AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_OFFSET + 0x60
+AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_CODE_OFFSET = AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_OFFSET + 0x90
+AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_PATH_OFFSET = AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_OFFSET + 0x100
+AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_PATH_OFFSET = AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_OFFSET + 0x180
+AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_PATH_OFFSET = AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_OFFSET + 0x200
+AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_PATH_OFFSET = AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_OFFSET + 0x280
+
+
+def explorer_row_cave(path_addr: int) -> bytes:
+    a1_hi, a1_lo = load_addr_words(5, 0x0075C134)  # "vg_listview_explorer"
+    a2_hi, a2_lo = load_addr_words(6, path_addr)
+    return pack_words(
+        ins_lw(4, 16, 0x00D8),
+        a1_hi,
+        a1_lo,
+        a2_hi,
+        a2_lo,
+        ins_jal(0x004961E0),
+        0,
+        ins_j(0x00540D2C),
+        0,
+    )
+
+
+def wide_path(path: str, size: int = 0x80) -> bytes:
+    encoded = path.encode("utf-16le") + b"\x00\x00"
+    if len(encoded) > size:
+        raise ValueError(f"wide path is too large for patch field: {path}")
+    return encoded.ljust(size, b"\x00")
+
+
+AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_CODE = explorer_row_cave(0x00760808)
+AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_CODE = explorer_row_cave(0x00760888)
+AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_CODE = explorer_row_cave(0x00760908)
+AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_CODE = explorer_row_cave(0x00760988)
+AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_PATH = wide_path("a:\\Audiobooks\\_views\\Titles\\*")
+AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_PATH = wide_path("a:\\Audiobooks\\_views\\Authors\\*")
+AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_PATH = wide_path("a:\\Audiobooks\\_views\\Series\\*")
+AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_PATH = wide_path("a:\\Audiobooks\\*")
+AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_PATCHES = (
+    (
+        AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_CODE_OFFSET,
+        b"\x00" * len(AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_CODE),
+        AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_CODE,
+    ),
+    (
+        AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_CODE_OFFSET,
+        b"\x00" * len(AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_CODE),
+        AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_CODE,
+    ),
+    (
+        AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_CODE_OFFSET,
+        b"\x00" * len(AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_CODE),
+        AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_CODE,
+    ),
+    (
+        AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_CODE_OFFSET,
+        b"\x00" * len(AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_CODE),
+        AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_CODE,
+    ),
+    (
+        AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_PATH_OFFSET,
+        b"\x00" * len(AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_PATH),
+        AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_PATH,
+    ),
+    (
+        AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_PATH_OFFSET,
+        b"\x00" * len(AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_PATH),
+        AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_PATH,
+    ),
+    (
+        AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_PATH_OFFSET,
+        b"\x00" * len(AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_PATH),
+        AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_PATH,
+    ),
+    (
+        AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_PATH_OFFSET,
+        b"\x00" * len(AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_PATH),
+        AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_PATH,
+    ),
+    (
+        # Row 1: Titles.
+        0x38D27C,
+        bytes.fromhex("080d5400"),
+        pack_u32(AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_ADDR),
+    ),
+    (
+        # Row 2: Authors.
+        0x38D280,
+        bytes.fromhex("2c0e5400"),
+        pack_u32(AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_ADDR + 0x30),
+    ),
+    (
+        # Row 3: Series.
+        0x38D284,
+        bytes.fromhex("480d5400"),
+        pack_u32(AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_ADDR + 0x60),
+    ),
+    (
+        # Row 4: Folders.
+        0x38D288,
+        bytes.fromhex("b40d5400"),
+        pack_u32(AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_ADDR + 0x90),
+    ),
+)
+
+AUDIOBOOK_NATIVE_HUB_LAUNCHER_CAVE_OFFSET = AUDIOBOOK_LAUNCHER_CAVE_OFFSET
+AUDIOBOOK_NATIVE_HUB_TITLE_LABEL_OFFSET = 0x35DF40
+AUDIOBOOK_NATIVE_HUB_LAUNCHER_CODE = bytes.fromhex(
+    # Clone the stock Books launcher callback body after its initial
+    # already-active guard. This preserves the stock cleanup/open sequence:
+    # find/remove vg_listview_main_book if present, then call the native
+    # Books hub opener at 0x00540f20.
+    "d8ffbd27"
+    "2400bfaf"
+    "2000b1af"
+    "1c00b0af"
+    "5000b08c"
+    "e0381c0c"
+    "2800048e"
+    "07004014"
+    "01000324"
+    "2400bf8f"
+    "2000b18f"
+    "1c00b08f"
+    "25106000"
+    "0800e003"
+    "2800bd27"
+    "7800113c"
+    "2cc12526"
+    "d0c9100c"
+    "25200002"
+    "03004010"
+    "2cc12526"
+    "78cf100c"
+    "25200002"
+    "c803150c"
+    "25200002"
+    "2400bf8f"
+    "01000324"
+    "2000b18f"
+    "1c00b08f"
+    "25106000"
+    "0800e003"
+    "2800bd27"
+)
+AUDIOBOOK_NATIVE_HUB_TITLE_LABEL = b"titles\x00"
+AUDIOBOOK_NATIVE_HUB_LAUNCHER_PATCHES = (
+    (
+        AUDIOBOOK_NATIVE_HUB_LAUNCHER_CAVE_OFFSET,
+        b"\x00" * len(AUDIOBOOK_NATIVE_HUB_LAUNCHER_CODE),
+        AUDIOBOOK_NATIVE_HUB_LAUNCHER_CODE,
+    ),
+    (
+        AUDIOBOOK_NATIVE_HUB_TITLE_LABEL_OFFSET,
+        b"\x00" * len(AUDIOBOOK_NATIVE_HUB_TITLE_LABEL),
+        AUDIOBOOK_NATIVE_HUB_TITLE_LABEL,
+    ),
+    (
+        # The native hub's row-2 label normally reuses the shared "ebook"
+        # resource key, which also names the launcher entry. Point just this
+        # row at a private resource key so the launcher can still say
+        # Audiobooks while the row displays as Titles.
+        0x1407A0,
+        bytes.fromhex("7800023c"),
+        pack_u32(ins_lui(2, 0x0076)),
+    ),
+    (
+        0x1407A8,
+        bytes.fromhex("182a4224"),
+        pack_u32(ins_addiu(2, 2, -0x20C0)),
+    ),
+    (
+        AUDIOBOOK_LAUNCHER_CALLBACK_OFFSET,
+        bytes.fromhex("20bb5300"),
+        pack_u32(0x0075DAEC),
+    ),
 )
 
 
@@ -154,6 +497,11 @@ def apply_patches(
     scan_skip: bool,
     book_audio_shim: bool,
     audiobook_launcher_genre: bool,
+    audiobook_private_direct_route: bool,
+    audiobook_native_hub_title_row: bool,
+    audiobook_native_hub_launcher: bool,
+    audiobook_native_hub_folder_rows: bool,
+    audiobook_native_hub_view_rows: bool,
     audiobook_title_autostart_marker: bool,
     select_dispatch: bool,
 ) -> None:
@@ -178,6 +526,30 @@ def apply_patches(
             "The Books audio shim and Audiobooks launcher patch both use the same code cave. "
             "Choose only one."
         )
+    if book_audio_shim and audiobook_native_hub_launcher:
+        raise SystemExit(
+            "The Books audio shim and native Audiobooks hub launcher patch both use the same "
+            "code cave. Choose only one."
+        )
+    if audiobook_launcher_genre and (audiobook_native_hub_title_row or audiobook_native_hub_view_rows):
+        raise SystemExit(
+            "The Audiobooks direct launcher and native Audiobooks hub patches are alternative "
+            "entry paths. Choose only one."
+        )
+    if audiobook_native_hub_launcher and not (audiobook_native_hub_title_row or audiobook_native_hub_view_rows):
+        raise SystemExit(
+            "The native Audiobooks hub launcher requires --audiobook-native-hub-title-row "
+            "or --audiobook-native-hub-view-rows."
+        )
+    if audiobook_native_hub_view_rows and not audiobook_native_hub_launcher:
+        raise SystemExit(
+            "The native Audiobooks hub view rows require --audiobook-native-hub-launcher."
+        )
+    if audiobook_native_hub_folder_rows and not audiobook_native_hub_title_row:
+        raise SystemExit(
+            "The native Audiobooks hub folder rows require --audiobook-native-hub-title-row "
+            "so the launcher uses the native hub entry path."
+        )
 
     if scan_skip:
         patch_bytes(data, SCAN_SKIP_OFFSET, SCAN_SKIP_ORIGINAL, SCAN_SKIP_PATCHED)
@@ -191,7 +563,34 @@ def apply_patches(
     if audiobook_launcher_genre:
         for offset, expected, replacement in AUDIOBOOK_LAUNCHER_PATCHES:
             patch_bytes(data, offset, expected, replacement)
+        if audiobook_private_direct_route:
+            for offset, expected, replacement in AUDIOBOOK_PRIVATE_DIRECT_ROUTE_PATCHES:
+                patch_bytes(data, offset, expected, replacement)
         applied.append("audiobook-launcher-genre")
+        if audiobook_private_direct_route:
+            applied.append("audiobook-private-direct-route")
+    elif audiobook_private_direct_route:
+        raise SystemExit("--audiobook-private-direct-route requires --audiobook-launcher-genre")
+
+    if audiobook_native_hub_title_row:
+        for offset, expected, replacement in AUDIOBOOK_NATIVE_HUB_TITLE_ROW_PATCHES:
+            patch_bytes(data, offset, expected, replacement)
+        applied.append("audiobook-native-hub-title-row")
+
+    if audiobook_native_hub_launcher:
+        for offset, expected, replacement in AUDIOBOOK_NATIVE_HUB_LAUNCHER_PATCHES:
+            patch_bytes(data, offset, expected, replacement)
+        applied.append("audiobook-native-hub-launcher")
+
+    if audiobook_native_hub_folder_rows:
+        for offset, expected, replacement in AUDIOBOOK_NATIVE_HUB_FOLDER_ROWS_PATCHES:
+            patch_bytes(data, offset, expected, replacement)
+        applied.append("audiobook-native-hub-folder-rows")
+
+    if audiobook_native_hub_view_rows:
+        for offset, expected, replacement in AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_PATCHES:
+            patch_bytes(data, offset, expected, replacement)
+        applied.append("audiobook-native-hub-view-rows")
 
     if audiobook_title_autostart_marker:
         for offset, expected, replacement in AUDIOBOOK_TITLE_MARKER_PATCHES:
@@ -252,6 +651,49 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--audiobook-private-direct-route",
+        action="store_true",
+        help=(
+            "With --audiobook-launcher-genre, point the Audiobooks launcher at a private "
+            "Albums-of-Genre route record instead of the stock global genre-chain record. "
+            "Experimental and off by default."
+        ),
+    )
+    parser.add_argument(
+        "--audiobook-native-hub-title-row",
+        action="store_true",
+        help=(
+            "Keep the stock Books/Audiobooks hub and redirect its title row to the existing "
+            "audiobook title route. Known unsafe after live testing rebooted the R1; "
+            "off by default and intended only for controlled flash-test builds."
+        ),
+    )
+    parser.add_argument(
+        "--audiobook-native-hub-launcher",
+        action="store_true",
+        help=(
+            "With --audiobook-native-hub-title-row, make the launcher always open the native "
+            "Audiobooks hub root instead of restoring the previous subpage."
+        ),
+    )
+    parser.add_argument(
+        "--audiobook-native-hub-folder-rows",
+        action="store_true",
+        help=(
+            "With --audiobook-native-hub-title-row, redirect the native hub Favorites/Files "
+            "rows to the stock explorer rooted at /Audiobooks. Experimental and off by default."
+        ),
+    )
+    parser.add_argument(
+        "--audiobook-native-hub-view-rows",
+        action="store_true",
+        help=(
+            "With --audiobook-native-hub-launcher, route the native Audiobooks hub "
+            "Titles/Authors/Series/Folders rows to generated /Audiobooks/_views folders. "
+            "Experimental and off by default."
+        ),
+    )
+    parser.add_argument(
         "--audiobook-title-autostart-marker",
         action="store_true",
         help=(
@@ -267,6 +709,11 @@ def main() -> None:
         scan_skip=args.scan_skip,
         book_audio_shim=args.book_audio_shim,
         audiobook_launcher_genre=args.audiobook_launcher_genre,
+        audiobook_private_direct_route=args.audiobook_private_direct_route,
+        audiobook_native_hub_title_row=args.audiobook_native_hub_title_row,
+        audiobook_native_hub_launcher=args.audiobook_native_hub_launcher,
+        audiobook_native_hub_folder_rows=args.audiobook_native_hub_folder_rows,
+        audiobook_native_hub_view_rows=args.audiobook_native_hub_view_rows,
         audiobook_title_autostart_marker=args.audiobook_title_autostart_marker,
         select_dispatch=args.select_dispatch_branch,
     )

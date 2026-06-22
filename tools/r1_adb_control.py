@@ -26,7 +26,7 @@ HEIGHT = 800
 STRIDE = WIDTH * 2
 DEFAULT_REMOTE_DIR = "/usr/data/r1_adb_control"
 DEFAULT_TOUCH_EVENT = "event1"
-DEFAULT_TOUCH_FRAMES = 8
+DEFAULT_TOUCH_FRAMES = 12
 DEFAULT_PROCESS_PATTERN = "r1_audiobook_db_watch|r1_audiobook_resume_daemon|hiby_player"
 
 
@@ -48,17 +48,17 @@ TOUCH_PRESETS: dict[str, TouchPreset] = {
     "main-music": TouchPreset(120, 220, "launcher Music tile label/hit area"),
     "main-stream": TouchPreset(360, 145, "launcher Stream media tile"),
     "main-wireless": TouchPreset(120, 390, "launcher Wireless tile"),
-    "main-audiobooks": TouchPreset(360, 430, "launcher Audiobooks icon/hit area"),
+    "main-audiobooks": TouchPreset(360, 390, "launcher Audiobooks icon center"),
     "main-system": TouchPreset(120, 640, "launcher System tile"),
     "main-about": TouchPreset(360, 640, "launcher About tile"),
     "soft-back": TouchPreset(34, 88, "top-left back arrow"),
     "top-left-back": TouchPreset(34, 88, "top-left back arrow"),
     "now-playing-back": TouchPreset(28, 38, "Now Playing top-left back arrow"),
-    "title-row-1": TouchPreset(240, 234, "visible audiobook title row 1"),
-    "title-row-2": TouchPreset(240, 358, "visible audiobook title row 2"),
-    "title-row-3": TouchPreset(240, 485, "visible audiobook title row 3"),
-    "title-row-4": TouchPreset(240, 611, "visible audiobook title row 4"),
-    "title-row-5": TouchPreset(240, 738, "visible audiobook title row 5"),
+    "title-row-1": TouchPreset(330, 234, "visible audiobook title row 1"),
+    "title-row-2": TouchPreset(330, 358, "visible audiobook title row 2"),
+    "title-row-3": TouchPreset(330, 485, "visible audiobook title row 3"),
+    "title-row-4": TouchPreset(330, 611, "visible audiobook title row 4"),
+    "title-row-5": TouchPreset(330, 738, "visible audiobook title row 5"),
     "list-row-1": TouchPreset(240, 234, "visible list row 1"),
     "list-row-2": TouchPreset(240, 358, "visible list row 2"),
     "list-row-3": TouchPreset(240, 485, "visible list row 3"),
@@ -215,6 +215,72 @@ def capture_screenshot(
     return output, raw_path
 
 
+def rgb565_pixel(raw: bytes, x: int, y: int) -> tuple[int, int, int]:
+    offset = y * STRIDE + x * 2
+    value = raw[offset] | (raw[offset + 1] << 8)
+    r5 = (value >> 11) & 0x1F
+    g6 = (value >> 5) & 0x3F
+    b5 = value & 0x1F
+    return (
+        (r5 << 3) | (r5 >> 2),
+        (g6 << 2) | (g6 >> 4),
+        (b5 << 3) | (b5 >> 2),
+    )
+
+
+def count_pixels(raw: bytes, x1: int, y1: int, x2: int, y2: int, predicate, *, step: int = 1) -> int:
+    count = 0
+    x1 = max(0, min(WIDTH, x1))
+    x2 = max(0, min(WIDTH, x2))
+    y1 = max(0, min(HEIGHT, y1))
+    y2 = max(0, min(HEIGHT, y2))
+    for y in range(y1, y2, step):
+        for x in range(x1, x2, step):
+            if predicate(*rgb565_pixel(raw, x, y)):
+                count += 1
+    return count
+
+
+def classify_screen(raw: bytes) -> tuple[str, dict[str, int]]:
+    def is_white(r: int, g: int, b: int) -> bool:
+        return r >= 220 and g >= 220 and b >= 220
+
+    def is_blue_control(r: int, g: int, b: int) -> bool:
+        return r <= 90 and 120 <= g <= 230 and b >= 180
+
+    def is_saturated_icon(r: int, g: int, b: int) -> bool:
+        return max(r, g, b) >= 110 and max(r, g, b) - min(r, g, b) >= 55
+
+    now_button_white = count_pixels(raw, 185, 680, 295, 775, is_white, step=2)
+    now_button_blue = count_pixels(raw, 210, 695, 270, 755, is_blue_control, step=2)
+    back_white = count_pixels(raw, 8, 18, 72, 116, is_white, step=2)
+    launcher_icon_color = 0
+    for x1, y1, x2, y2 in (
+        (72, 88, 170, 205),
+        (310, 88, 410, 205),
+        (72, 335, 170, 455),
+        (310, 335, 410, 455),
+        (72, 580, 170, 700),
+        (310, 580, 410, 700),
+    ):
+        launcher_icon_color += count_pixels(raw, x1, y1, x2, y2, is_saturated_icon, step=3)
+
+    metrics = {
+        "now_button_white": now_button_white,
+        "now_button_blue": now_button_blue,
+        "back_white": back_white,
+        "launcher_icon_color": launcher_icon_color,
+    }
+
+    if now_button_white >= 900 and now_button_blue >= 45:
+        return "now-playing", metrics
+    if launcher_icon_color >= 1200 and back_white < 120:
+        return "launcher", metrics
+    if back_white >= 35:
+        return "list", metrics
+    return "unknown", metrics
+
+
 def input_event(event_type: int, code: int, value: int) -> bytes:
     return struct.pack("<llHHl", 0, 0, event_type, code, value)
 
@@ -240,7 +306,14 @@ def tap_stream(x: int, y: int, frames: int) -> bytes:
     events.extend(abs_frame(x, y, include_press=True))
     for _ in range(frames - 1):
         events.extend(abs_frame(x, y, include_press=False))
-    events.extend([input_event(1, 330, 0), input_event(0, 2, 0), input_event(0, 0, 0)])
+    events.extend(
+        [
+            input_event(1, 330, 0),
+            input_event(3, 57, -1),
+            input_event(0, 2, 0),
+            input_event(0, 0, 0),
+        ]
+    )
     return b"".join(events)
 
 
@@ -257,7 +330,14 @@ def drag_stream(x: int, y: int, to_x: int, to_y: int, frames: int) -> bytes:
                 include_press=False,
             )
         )
-    events.extend([input_event(1, 330, 0), input_event(0, 2, 0), input_event(0, 0, 0)])
+    events.extend(
+        [
+            input_event(1, 330, 0),
+            input_event(3, 57, -1),
+            input_event(0, 2, 0),
+            input_event(0, 0, 0),
+        ]
+    )
     return b"".join(events)
 
 
@@ -330,16 +410,25 @@ def command_processes(args: argparse.Namespace) -> int:
     ensure_adb(args.adb)
     check_device(args.adb)
     pattern = args.pattern or DEFAULT_PROCESS_PATTERN
-    output = adb_shell(
-        args.adb,
-        f"ps | grep -E {quote_remote(pattern)} | grep -v grep || true",
-        check=False,
-    )
+    if args.top_level_only:
+        command = (
+            f"for p in $(ps | grep -E {quote_remote(pattern)} | grep -v grep | awk '{{print $1}}'); do "
+            "ppid=$(awk '/^PPid:/ {print $2}' /proc/$p/status 2>/dev/null); "
+            "if [ \"$ppid\" = 1 ]; then "
+            "cmd=$(cat /proc/$p/cmdline 2>/dev/null | tr '\\000' ' '); "
+            "printf '%s %s\\n' \"$p\" \"$cmd\"; "
+            "fi; "
+            "done"
+        )
+    else:
+        command = f"ps | grep -E {quote_remote(pattern)} | grep -v grep || true"
+    output = adb_shell(args.adb, command, check=False)
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     if lines:
         print("\n".join(lines))
     else:
-        print(f"no matching processes: {pattern}")
+        qualifier = "top-level " if args.top_level_only else ""
+        print(f"no matching {qualifier}processes: {pattern}")
     return 0
 
 
@@ -348,7 +437,26 @@ def command_screenshot(args: argparse.Namespace) -> int:
     check_device(args.adb)
     output = args.output or default_screenshot_path(args.label)
     png, raw = capture_screenshot(args.adb, output, raw_output=args.raw_output, remote_raw=args.remote_raw)
+    if args.classify:
+        state, metrics = classify_screen(raw.read_bytes())
+        print(f"state: {state}")
+        for key in sorted(metrics):
+            print(f"{key}: {metrics[key]}")
     print(f"raw: {raw} ({raw.stat().st_size} bytes)")
+    print(f"png: {png} ({png.stat().st_size} bytes)")
+    return 0
+
+
+def command_classify(args: argparse.Namespace) -> int:
+    ensure_adb(args.adb)
+    check_device(args.adb)
+    output = args.output or default_screenshot_path(args.label)
+    png, raw_path = capture_screenshot(args.adb, output, raw_output=args.raw_output, remote_raw=args.remote_raw)
+    state, metrics = classify_screen(raw_path.read_bytes())
+    print(f"state: {state}")
+    for key in sorted(metrics):
+        print(f"{key}: {metrics[key]}")
+    print(f"raw: {raw_path} ({raw_path.stat().st_size} bytes)")
     print(f"png: {png} ({png.stat().st_size} bytes)")
     return 0
 
@@ -388,6 +496,17 @@ def command_drag(args: argparse.Namespace) -> int:
         dry_run=args.dry_run,
     )
     maybe_after_screenshot(args, f"drag-{args.x}-{args.y}")
+    return 0
+
+
+def command_back(args: argparse.Namespace) -> int:
+    start_x, start_y, end_x, end_y = 30, 400, 360, 400
+    validate_point(start_x, start_y)
+    validate_point(end_x, end_y)
+    print(f"back_drag: {start_x},{start_y} -> {end_x},{end_y}")
+    data = drag_stream(start_x, start_y, end_x, end_y, args.frames)
+    inject_stream(args.adb, args.event, data, label="back-edge-drag", dry_run=args.dry_run)
+    maybe_after_screenshot(args, "back-edge-drag")
     return 0
 
 
@@ -544,6 +663,7 @@ def build_parser() -> argparse.ArgumentParser:
     processes = sub.add_parser("processes", help="show R1 player and audiobook helper processes")
     processes.add_argument("--adb", default=DEFAULT_ADB)
     processes.add_argument("--pattern", help="custom grep -E pattern")
+    processes.add_argument("--top-level-only", action="store_true", help="show only matching process roots with PPid 1")
     processes.set_defaults(func=command_processes)
 
     screenshot = sub.add_parser("screenshot", help="capture /dev/fb0 as PNG")
@@ -552,7 +672,16 @@ def build_parser() -> argparse.ArgumentParser:
     screenshot.add_argument("--raw-output", type=Path)
     screenshot.add_argument("--remote-raw", default=f"{DEFAULT_REMOTE_DIR}/fb0.raw")
     screenshot.add_argument("--label", default="screen")
+    screenshot.add_argument("--classify", action="store_true", help="print coarse UI state metrics with the capture")
     screenshot.set_defaults(func=command_screenshot)
+
+    classify = sub.add_parser("classify", help="capture the screen and classify the coarse UI state")
+    classify.add_argument("--adb", default=DEFAULT_ADB)
+    classify.add_argument("--output", type=Path)
+    classify.add_argument("--raw-output", type=Path)
+    classify.add_argument("--remote-raw", default=f"{DEFAULT_REMOTE_DIR}/fb0.raw")
+    classify.add_argument("--label", default="classify")
+    classify.set_defaults(func=command_classify)
 
     tap = sub.add_parser("tap", help="tap raw coordinates or a named preset")
     add_input_common(tap)
@@ -567,6 +696,10 @@ def build_parser() -> argparse.ArgumentParser:
     drag.add_argument("to_x", type=int)
     drag.add_argument("to_y", type=int)
     drag.set_defaults(func=command_drag)
+
+    back = sub.add_parser("back", help="send the R1 edge-back gesture")
+    add_input_common(back, frames_default=18)
+    back.set_defaults(func=command_back)
 
     key = sub.add_parser("key", help="press a playback key")
     key.add_argument("--adb", default=DEFAULT_ADB)
@@ -613,7 +746,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         dry_run = bool(getattr(args, "dry_run", False))
         after_screenshot = bool(getattr(args, "after_screenshot", False))
-        needs_adb = args.command in {"devices", "screenshot"} or not dry_run or after_screenshot
+        needs_adb = args.command in {"devices", "screenshot", "classify"} or not dry_run or after_screenshot
         if needs_adb:
             args.adb = ensure_adb(args.adb)
         if args.command != "devices" and needs_adb:

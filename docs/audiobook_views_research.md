@@ -316,3 +316,352 @@ small code-cave changes. If stock routes cannot do this, a true Author / Title /
 Series submenu will require deeper `hiby_player` UI/query patching. The
 extended catalog gives that future work author/title/series data to build on,
 but the visible submenu itself remains higher risk.
+
+## Native Listview Descriptor Pass - 2026-06-17
+
+The next deeper integration target is the native listview descriptor table, not
+only the media route records. `tools\r1_hiby_player_listview_descriptor_report.py`
+now scans `hiby_player` for listview descriptors and records their generator and
+selection callbacks. The focused stock report is saved at:
+
+```text
+work\static-xrefs\hiby_player-stock-book-listview-descriptors.md
+```
+
+The key stock Books descriptors are:
+
+```text
+vg_listview_main_book   generator 0x00540b60   select 0x00540ca0
+vg_listview_book_list   generator 0x005408a0   select 0x00540a80
+vg_listview_book_recent generator 0x00540a40   select 0x00540f00
+vg_listview_book_collect generator 0x00540a60  select 0x00540ee0
+vg_listview_book        generator 0x0053fae0   select 0x0053fca0
+```
+
+This confirms the R1 still contains a real native Books hub and native Books
+sub-list screens. The current public firmware bypasses that hub to open
+`genre\Audiobook` directly, which is why it needs runtime help for title taps
+and Back-stack cleanup. A cleaner long-term path is to restore the native hub
+and replace selected Books list sources with audiobook-aware sources.
+
+A RAM-only proof already showed that restoring `vg_listview_main_book` gives a
+clean native Audiobooks hub. Patching the hub row-1 jump-table entry from
+`0x00540d08` to a small cave at `0x0075de60` made the visible Audiobooks row open
+the current title list successfully. That exact title-row patch is now available
+as an opt-in local firmware patch:
+
+```powershell
+python tools\patch_hiby_player.py work\rootfs\usr\bin\hiby_player `
+  -o work\patched\hiby_player.native-hub-title-row `
+  --audiobook-native-hub-title-row `
+  --audiobook-title-autostart-marker
+```
+
+Local guarded patching passed. The resulting player hash is:
+
+```text
+MD5    2f3402ac9c164c2d2d3e0b24da8af1f5
+SHA256 7ba414fb3d6d2c22a05fefcc057a96092bd514565670f86325a5eb63a70ff678
+```
+
+The production direct-entry patch still reproduces the known
+`1.6.16.2-audiobook` player hash, so this native hub work is isolated and
+opt-in.
+
+The next native-hub candidate also reuses the stock Books -> Files opening path
+instead of a music route. The stock firmware already opens the old text-book
+folder through `vg_listview_explorer` with an `a:\book\*` argument. The
+development patch redirects two hub rows to the same native explorer screen but
+passes `a:\Audiobooks\*` from a code cave instead. This is still folder-based
+browsing, not true metadata Authors or Series, but it is a deeper integration
+than the current release because it stays inside the stock hub/listview system.
+
+Current expected behavior for
+`work\audiobook-firmware-1.6.16-nativehub-folders-dev\r1-audiobooks-1.6.16-nativehub-folders-dev.upt`:
+
+```text
+Main menu -> Audiobooks        opens the native Audiobooks hub
+Audiobooks -> Titles           opens the current audiobook title/resume path
+Audiobooks -> Authors          opens the native explorer rooted at /Audiobooks
+Audiobooks -> Folders          opens the native explorer rooted at /Audiobooks
+Audiobooks -> Recently played  still uses the stock Books recent row
+```
+
+The row labels are patched through `book.ini`; the row behavior is patched in
+`hiby_player`. The native hub labels are kept short for the R1 screen:
+`Scan`, `Titles`, `Authors`, `Folders`, and `Recent`. The folder rows use this
+guarded byte patch:
+
+```text
+row 1 jump 0x0078d27c -> 0x0075de60  (Titles -> audiobook title path)
+row 2 jump 0x0078d280 -> 0x0075dea0  (Authors -> /Audiobooks explorer)
+row 3 jump 0x0078d284 -> 0x0075dea0  (Folders -> /Audiobooks explorer)
+path cave 0x0075df00 -> UTF-16 "a:\Audiobooks\*"
+```
+
+The verified local package hashes are:
+
+```text
+r1-audiobooks-1.6.16-nativehub-folders-dev.upt
+  MD5    1df1a5b731b55b0f4d23efaf781c1415
+  SHA256 2b644bcbd4608773b665f54f593bbc1470cb8eddb0ace967bfe2a40ed4546b49
+
+hiby_player
+  MD5    e694128fbf286bd360529a58f3848a36
+  SHA256 0969904b12edda54ee7e6f82b3f97f187f61a776d18cfe1f1a1fbdd147f5238a
+```
+
+Cave-aware static reports for this candidate are saved at:
+
+```text
+work\static-xrefs\hiby_player-nativehub-folders-book-listview-descriptors.md
+work\static-xrefs\hiby_player-nativehub-folders-title-cave-calls.md
+work\static-xrefs\hiby_player-nativehub-folders-ui-create-calls-with-caves.md
+work\static-xrefs\hiby_player-nativehub-folders-xrefs-with-caves.md
+```
+
+Those reports confirm that the stock Books listview descriptors are unchanged,
+the title cave calls the existing audiobook root opener at `0x0075dbc0`, and
+the folder cave calls the native listview creator with
+`vg_listview_explorer` plus `a:\Audiobooks\*`.
+
+This candidate is useful for device testing, but it should not be treated as a
+release candidate yet. `Authors` and `Folders` currently duplicate the same
+folder browser. True metadata views still require a custom list source backed
+by the audiobook sidecars. `Recently played` also needs either a redirect or a
+real audiobook-aware recent list before the hub feels fully polished.
+
+Live testing of the follow-up native hub work confirmed that the folder rows
+can open the native explorer rooted at `/Audiobooks`. It also exposed a native
+state restore issue: after visiting the explorer rows and backing out to the
+launcher, tapping the Audiobooks launcher could restore the previous Files
+subpage instead of opening the hub root. The next guarded candidate therefore
+adds a native hub launcher callback at `0x0075daec`. That callback follows the
+stock launcher shape but always creates `vg_listview_main_book` with the stock
+`a:\book` key, so the Audiobooks tile should enter the hub root each time.
+
+The same candidate also stops the hub title row from reusing the shared `ebook`
+resource string. The launcher and page title can keep saying `Audiobooks`,
+while the row label points to a private code-cave string, `Titles`.
+
+The first native launcher build opened the hub root correctly, but its title
+label patch used literal `Titles` as a resource key. The stock hub generator
+stopped after `Scan`. The next build added a private `titles` resource key and
+`<titles>Titles</titles>` in `book.ini`; that fixed the visible row list:
+`Scan`, `Titles`, `Authors`, `Folders`, and `Recent`.
+
+Live testing of that `titleskey` build showed the row-label fix is good, but
+the Titles action still opened the global Music `Genres` root. Adding a
+temporary `Audiobook` row back into `GENRE_TABLE` and `GENRE2_TABLE` did not
+fix it, so this is not just a hidden-genre catalog issue. A `rowctx` candidate
+changed the title-row cave at `0x0075de60` from:
+
+```text
+lw a0, 0xd8(s0)
+```
+
+to:
+
+```text
+move a0, s0
+```
+
+The intent was to pass the same higher-level list object used by the older
+launcher route instead of the stock child-parent pointer used by `0x004961e0`.
+Live testing on 2026-06-18 showed that tapping `Titles` on this build rebooted
+the R1, so this candidate is unsafe and is not kept as the default native-hub
+patch.
+
+Current recovery/dev package after the failed row-context test:
+
+```text
+work\audiobook-firmware-1.6.16.2-recovery-dev\r1-audiobooks-1.6.16.2-recovery-dev.upt
+
+hiby_player MD5    dac7b58717097ef2a75ae5887478ef16
+hiby_player SHA256 0f7622d5674a1ecdb00c228251e29be543c3a6eb1d4cfdd86f74c8eb8e30d782
+package MD5        99601a6d7d3563344b27061896a05d7d
+package SHA256     349235ff69f898f200c31d6463dbaf55246d9e33a4c24fab912a362c78af50a1
+```
+
+Local verification passes with:
+
+```powershell
+python tools\verify_r1_audiobook_build.py `
+  --out-dir work\audiobook-firmware-1.6.16.2-recovery-dev `
+  --upt-name r1-audiobooks-1.6.16.2-recovery-dev.upt `
+  --expected-version 1.6.16.2-recovery-dev `
+  --expected-label "HiBy R1 Audiobook FW 1.6.16.2 recovery dev" `
+  --require-db-maintenance `
+  --expect-audiobook-launcher-icon `
+  --expect-native-dsd `
+  --expect-sbc-xq `
+  --expect-usb-dac-mode
+```
+
+Device validation still needs to confirm:
+
+```text
+Main menu -> Audiobooks returns to the known-good direct title list.
+Title taps still resume correctly.
+The DB watcher logs zero_audio_retry=600s.
+Normal Music playback still feels responsive.
+```
+
+Deeper static mapping of the stock Books hub gives the future custom-list hook
+points:
+
+```text
+vg_listview_main_book generator 0x00540b60 creates the 5-row hub.
+vg_listview_main_book select    0x00540ca0 reads the selected row and jumps
+                                through the table at 0x0078d278.
+
+row 1 stock target 0x00540d08 -> open vg_listview_book_list with key "book"
+row 2 stock target 0x00540e2c -> open vg_listview_book_collect with key "book_collect"
+row 3 stock target 0x00540d48 -> open vg_listview_explorer with path a:\book\*
+row 4 stock target 0x00540db4 -> open vg_listview_book_recent with key "book_recent"
+```
+
+`vg_listview_book_collect` and `vg_listview_book_recent` both reuse the same
+tap handler as `vg_listview_book_list`:
+
+```text
+book_collect_select 0x00540ee0 -> jump to 0x00540a80
+book_recent_select  0x00540f00 -> jump to 0x00540a80
+```
+
+That means a real custom Title / Author / Series implementation probably needs
+only one patched list select path once the generator can present the right
+rows. The current stock select handler at `0x00540a80` eventually calls
+`0x005401c0(parent_view, selected_path)` to open the old TXT-reader book path.
+For audiobooks, that final open step is the place to replace TXT reader launch
+with the existing audiobook title/resume opener or with a direct media-id/book
+root opener.
+
+The generator side is harder but now scoped. `book_list_generator` at
+`0x005408a0` allocates standard row objects and fills them through the stock
+list item virtual methods. It reads its source from HiBy's existing Books data
+structures. The R3 Pro II DB Manager patch gives a practical pattern for
+customizing this kind of list without adding a brand-new UI framework:
+
+1. Set a small global mode flag before opening the reused listview.
+2. Redirect the stock generator to a wrapper.
+3. In stock mode, jump back to the original generator body.
+4. In audiobook mode, load labels/actions from our sidecar files.
+5. Redirect the shared select handler so the selected row opens audio instead
+   of the TXT reader.
+
+That is the best current path toward true `Titles`, `Authors`, and `Series`
+views. It is more invasive than the folder-row candidate, but it should remove
+more runtime UI tricks once implemented.
+
+Author and Series should not be implemented by populating the stock Music
+artist/album-artist tables unless we accept audiobook leakage into Music views.
+The better path is a sidecar-backed native Books sub-list:
+
+1. Keep `vg_listview_main_book` as the Audiobooks hub.
+2. Relabel the hub rows as Title, Author, Series, Files, and Recently Played.
+3. Patch hub row entries to open native list screens in a mode flag, following
+   the mode-flag pattern used by the R3 Pro II DB Manager patch.
+4. Replace or wrap the Books list generator so it reads
+   `/usr/data/audiobooks/catalog-view-title.tsv`,
+   `/usr/data/audiobooks/catalog-view-author.tsv`, or
+   `/usr/data/audiobooks/catalog-view-series.tsv`.
+5. Replace or wrap the Books list selection handler so row taps call the
+   existing audiobook title-open/resume path instead of the old TXT reader.
+
+This would remove a large part of the current UI workaround layer. It does not
+yet remove the resume daemon entirely, because saving per-book progress,
+completed-book handling, and failed seek recovery still need runtime state.
+However, a native list source would make Title / Author / Series browsing and
+Back behavior much more like stock firmware.
+
+One caution from the live research session: device-side ADB can become wedged
+after failed process-memory probes even while `adb devices` still lists the R1.
+Keep large temporary memory reads under `/tmp`, not `/usr/data`, and reboot /
+re-enable ADB before continuing live tests if `adb shell` reports
+`error: closed`.
+
+## 1.6.16.5 Static Refresh - 2026-06-18
+
+After flashing `1.6.16.5-tracklist-return-dev`, the installed-device verifier
+and live smoke test passed. The smoke tool now uses a longer synthetic tap and
+retries the Audiobooks launcher open once if the first injected tap is ignored.
+
+Fresh static reports were generated from the exact `1.6.16.5` `hiby_player`
+binary:
+
+```text
+work\static-xrefs\hiby_player-1.6.16.5-tracklist-return-xrefs.md
+work\static-xrefs\hiby_player-1.6.16.5-tracklist-return-listview-descriptors.md
+work\static-xrefs\hiby_player-1.6.16.5-tracklist-return-ui-calls.md
+```
+
+The reports confirm the current player still has the stock Books listview
+descriptors and that the known Books hub row actions are descriptor/table
+driven rather than directly called. `vg_listview_book_list`,
+`vg_listview_book_collect`, and `vg_listview_book_recent` still share the same
+selection path, so a real Title / Author / Series implementation should focus
+on wrapping the native Books list generator/select path instead of trying more
+simple launcher-route string swaps.
+
+The native hub probe now checks whether `/proc/<pid>/mem` is still readable
+before each process-memory read and retries with a fresh `hiby_player` PID if
+the player restarts mid-probe. This does not make native-hub RAM probes risk
+free, but it removes one stale-PID failure mode observed during read-only
+inspection.
+
+Follow-up live testing showed that even chunked heap scans can make ADB return
+`error: closed` on the R1. The device recovered without rebooting, but this is
+too fragile for routine live development. Future native-hub work should prefer
+flash-time static patches and avoid live heap-object patching unless the test
+explicitly needs it.
+
+Static cave analysis showed why the native hub title row is sensitive to the
+parent pointer. The direct Audiobooks launcher cave obtains a context pointer
+from the launcher object, validates it, then calls the route callback. The old
+native title-row cave passed `lw a0, 0xd8(s0)` directly into the same route
+callback; the unsafe row-context variant passed `s0` and rebooted during live
+testing. The next candidate instead passes `s2`, the original hub event/context
+pointer preserved by `vg_listview_main_book` select:
+
+```text
+work\audiobook-firmware-1.6.16.6-nativehub-s2-dev\r1-audiobooks-1.6.16.6-nativehub-s2-dev.upt
+
+hiby_player MD5    774ca68d3aa59b710adcf6394277a747
+hiby_player SHA256 46609913be8038566d3f317daaea5b0010cc796fa953c1781c1601f9a4c88aa9
+package MD5        3ad80f51167cc2655c59ccf6f18b3ffa
+package SHA256     c9d1afde3c2ef520a2bcb06e7341d43408d2f75845cd8ff7b0eb8b9689e2f73d
+```
+
+Offline verification passed and the package was staged to the SD card as
+`r1.upt` on 2026-06-18. Live validation showed this candidate is not safe
+enough to keep on the device:
+
+```text
+Main menu -> Audiobooks opens the native Audiobooks hub.
+Back from the hub returns to the main launcher in one tap.
+Titles initially returned to the launcher because the old back-stack guard
+  misidentified the native hub title path.
+With the resume daemon stopped, Titles rebooted/dropped ADB.
+Authors opened the stock explorer, but it restored the previous folder rather
+  than forcing /Audiobooks every time.
+```
+
+The follow-up `1.6.16.7-stable-route-dev` package returns to the known-good
+direct audiobook title route while native hub work continues offline:
+
+```text
+work\audiobook-firmware-1.6.16.7-stable-route-dev\r1-audiobooks-1.6.16.7-stable-route-dev.upt
+
+hiby_player MD5    09997a636c94112ff76c85a6d4a8d0ff
+hiby_player SHA256 f49ea55a48c1bdf1398a2a6672b1d596516650f7ebe77846ba7c33a5cfee329c
+package MD5        438aefc7252894030f9923bb62895128
+package SHA256     3db34eee7f9a96c19e76b1e29d18f8f79d5ca54e962f5848163a1886e31260e3
+```
+
+For native Title / Author / Series, the next implementation should wrap the
+stock Books list generator/select path at `0x005408a0` / `0x00540a80` and feed
+it the sidecar catalog files. More title-row calls into the media route helper
+are likely to repeat the current failure pattern: `lw a0,0xd8(s0)` is stable
+but lands on the wrong global music route, while row/list objects such as `$s0`
+and `$s2` can reboot the player.

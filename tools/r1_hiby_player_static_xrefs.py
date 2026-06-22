@@ -146,10 +146,23 @@ def code_addr(segments: list[Segment], sections: list[Section], vaddr: int) -> b
     return bool(section and section.executable)
 
 
+def parse_vaddr_range(value: str) -> tuple[int, int]:
+    if ":" not in value:
+        raise argparse.ArgumentTypeError("range must be START:STOP")
+    start_raw, stop_raw = value.split(":", 1)
+    start = int(start_raw, 0)
+    stop = int(stop_raw, 0)
+    if stop <= start:
+        raise argparse.ArgumentTypeError("range STOP must be greater than START")
+    return start, stop
+
+
 def executable_ranges(
     data: bytes,
     segments: list[Segment],
     sections: list[Section],
+    *,
+    extra_vaddr_ranges: list[tuple[int, int]] | None = None,
 ) -> list[tuple[int, int, int]]:
     ranges: list[tuple[int, int, int]] = []
     for section in sections:
@@ -162,6 +175,15 @@ def executable_ranges(
         end = min(len(data), section.end)
         if end > start:
             ranges.append((start, end, section.addr - section.offset))
+    for start_vaddr, stop_vaddr in extra_vaddr_ranges or []:
+        start_offset = offset_for_vaddr(segments, start_vaddr)
+        stop_offset = offset_for_vaddr(segments, stop_vaddr - 1)
+        if start_offset is None or stop_offset is None:
+            continue
+        start = max(0, start_offset)
+        end = min(len(data), stop_offset + 1)
+        if end > start:
+            ranges.append((start, end, start_vaddr - start_offset))
     if ranges:
         return ranges
 
@@ -175,11 +197,22 @@ def executable_ranges(
     return ranges
 
 
-def disassemble(data: bytes, segments: list[Segment], sections: list[Section]) -> list[Instruction]:
+def disassemble(
+    data: bytes,
+    segments: list[Segment],
+    sections: list[Section],
+    *,
+    extra_vaddr_ranges: list[tuple[int, int]] | None = None,
+) -> list[Instruction]:
     md = Cs(CS_ARCH_MIPS, CS_MODE_MIPS32_LITTLE())
     md.skipdata = True
     out: list[Instruction] = []
-    for start, end, delta in executable_ranges(data, segments, sections):
+    for start, end, delta in executable_ranges(
+        data,
+        segments,
+        sections,
+        extra_vaddr_ranges=extra_vaddr_ranges,
+    ):
         code = data[start:end]
         for insn in md.disasm(code, start + delta):
             if insn.size != 4:
@@ -456,7 +489,7 @@ def parse_target(value: str) -> tuple[str, int]:
 def build_report(args: argparse.Namespace) -> str:
     data = args.binary.read_bytes()
     segments, sections = parse_elf(data)
-    instructions = disassemble(data, segments, sections)
+    instructions = disassemble(data, segments, sections, extra_vaddr_ranges=args.extra_range)
     calls = collect_calls(instructions)
 
     targets = dict(DEFAULT_TARGETS)
@@ -482,6 +515,9 @@ def build_report(args: argparse.Namespace) -> str:
     lines.append(f"- Binary: `{args.binary}`")
     lines.append(f"- Size: `0x{len(data):x}` bytes")
     lines.append(f"- Instructions decoded: `{len(instructions)}`")
+    if args.extra_range:
+        rendered_ranges = ", ".join(f"0x{start:08x}:0x{stop:08x}" for start, stop in args.extra_range)
+        lines.append(f"- Extra disassembly ranges: `{rendered_ranges}`")
     lines.append("")
 
     lines.append("## Direct Calls")
@@ -554,6 +590,19 @@ def build_report(args: argparse.Namespace) -> str:
         )
     lines.append("")
 
+    if args.extra_range:
+        lines.append("## Extra Disassembly Ranges")
+        lines.append("")
+        for start, stop in args.extra_range:
+            lines.append(f"### `0x{start:08x}:0x{stop:08x}`")
+            lines.append("")
+            lines.append("```text")
+            for insn in instructions:
+                if start <= insn.address < stop:
+                    lines.append(format_instruction(insn, " "))
+            lines.append("```")
+            lines.append("")
+
     lines.append("## Notes")
     lines.append("")
     lines.append("- Direct `jal` calls are reliable static xrefs.")
@@ -579,6 +628,14 @@ def main() -> int:
     parser.add_argument("--max-listviews", type=int, default=80)
     parser.add_argument("--max-routes", type=int, default=80)
     parser.add_argument("--context", type=int, default=4)
+    parser.add_argument(
+        "--extra-range",
+        action="append",
+        type=parse_vaddr_range,
+        default=[],
+        metavar="START:STOP",
+        help="Also disassemble a virtual-address range, useful for patched code caves.",
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 

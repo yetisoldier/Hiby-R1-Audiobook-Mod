@@ -20,6 +20,7 @@
 #define DEFAULT_SD_ROOT "/usr/data/mnt/sd_0"
 #define DEFAULT_MUSIC_DIR "/usr/data/mnt/sd_0/Music"
 #define DEFAULT_AUDIOBOOKS_DIR "/usr/data/mnt/sd_0/Audiobooks"
+#define DEFAULT_VIEW_ROOT "/usr/data/mnt/sd_0/Audiobooks/_views"
 #define DEFAULT_BASE_DIR "/usr/data/audiobooks"
 #define DEFAULT_CATALOG "/usr/data/audiobooks/catalog.tsv"
 #define DEFAULT_ALBUM_PATTERNS "/usr/data/audiobooks/catalog-albums.txt"
@@ -103,6 +104,7 @@ typedef struct {
     const char *sd_root;
     const char *music_dir;
     const char *audiobooks_dir;
+    const char *view_root_path;
     const char *base_dir;
     const char *catalog_path;
     const char *album_patterns_path;
@@ -571,6 +573,34 @@ static void ensure_parent_dir(const char *file_path) {
         }
     }
     free(copy);
+}
+
+static int remove_tree(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        return errno == ENOENT ? 0 : -1;
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        return unlink(path);
+    }
+
+    DIR *dir = opendir(path);
+    if (!dir) return -1;
+    struct dirent *entry;
+    int rc = 0;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+        char child[PATH_MAX];
+        int n = snprintf(child, sizeof(child), "%s/%s", path, entry->d_name);
+        if (n < 0 || (size_t)n >= sizeof(child)) {
+            rc = -1;
+            break;
+        }
+        if (remove_tree(child) != 0) rc = -1;
+    }
+    closedir(dir);
+    if (rc != 0) return rc;
+    return rmdir(path);
 }
 
 static char *device_to_hiby_path(const char *device_path, const char *sd_root) {
@@ -1479,6 +1509,40 @@ static int scalar_count_misnormalized_audiobooks(sqlite3 *db, const char *table)
     return value;
 }
 
+static int audiobook_files_need_maintenance(sqlite3 *db, const Options *opts, int *fs_audiobooks, int *missing_db_paths) {
+    if (fs_audiobooks) *fs_audiobooks = 0;
+    if (missing_db_paths) *missing_db_paths = 0;
+
+    struct stat st;
+    if (stat(opts->audiobooks_dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        return 0;
+    }
+
+    RowVec existing = load_existing_audiobook_rows(db);
+    RowVec scanned = {0};
+    int next_id = 1;
+    scan_audiobook_dir(opts->audiobooks_dir, opts->sd_root, &existing, &scanned, &next_id);
+
+    int missing = 0;
+    for (size_t i = 0; i < scanned.len; i++) {
+        if (!find_existing(&existing, scanned.items[i].path)) {
+            missing++;
+        }
+    }
+
+    if (fs_audiobooks) *fs_audiobooks = (int)scanned.len;
+    if (missing_db_paths) *missing_db_paths = missing;
+
+    int needs = 0;
+    if (existing.len != scanned.len || missing > 0) {
+        needs = 1;
+    }
+
+    free_rowvec(&existing);
+    free_rowvec(&scanned);
+    return needs;
+}
+
 static int check_database_needs_maintenance(const Options *opts) {
     sqlite3 *db = NULL;
     if (sqlite3_open(opts->db_path, &db) != SQLITE_OK) die_sql(db, "open database");
@@ -1489,13 +1553,19 @@ static int check_database_needs_maintenance(const Options *opts) {
     int media_bad = scalar_count_misnormalized_audiobooks(db, "MEDIA_TABLE");
     int media2_bad = scalar_count_misnormalized_audiobooks(db, "MEDIA2_TABLE");
     int search_audiobooks = scalar_count_path_like(db, "SEARCH_TABLE");
+    int fs_audiobooks = 0;
+    int missing_db_paths = 0;
+    int filesystem_needs = audiobook_files_need_maintenance(db, opts, &fs_audiobooks, &missing_db_paths);
     int needs = 0;
     if (media_audiobooks != media2_audiobooks) needs = 1;
     if (media_bad > 0 || media2_bad > 0 || search_audiobooks > 0) needs = 1;
+    if (filesystem_needs) needs = 1;
 
     if (opts->verbose) {
         fprintf(stderr, "audiobook rows MEDIA_TABLE: %d\n", media_audiobooks);
         fprintf(stderr, "audiobook rows MEDIA2_TABLE: %d\n", media2_audiobooks);
+        fprintf(stderr, "audiobook files: %d\n", fs_audiobooks);
+        fprintf(stderr, "audiobook files missing from DB: %d\n", missing_db_paths);
         fprintf(stderr, "misnormalized MEDIA_TABLE: %d\n", media_bad);
         fprintf(stderr, "misnormalized MEDIA2_TABLE: %d\n", media2_bad);
         fprintf(stderr, "audiobook rows SEARCH_TABLE: %d\n", search_audiobooks);
@@ -1710,6 +1780,152 @@ static void write_series_view(FILE *fp, BookViewVec *rows) {
     }
 }
 
+static void sanitize_path_component(const char *text, const char *fallback, char *out, size_t out_size) {
+    const char *src = text && *text ? text : fallback;
+    size_t j = 0;
+    int previous_space = 1;
+    if (out_size == 0) return;
+    for (size_t i = 0; src && src[i] && j + 1 < out_size; i++) {
+        unsigned char ch = (unsigned char)src[i];
+        int invalid = ch < 32 || ch == '<' || ch == '>' || ch == ':' || ch == '"' ||
+                      ch == '/' || ch == '\\' || ch == '|' || ch == '?' || ch == '*';
+        char out_ch = invalid ? ' ' : (char)ch;
+        if (isspace((unsigned char)out_ch)) {
+            if (previous_space) continue;
+            out_ch = ' ';
+            previous_space = 1;
+        } else {
+            previous_space = 0;
+        }
+        out[j++] = out_ch;
+    }
+    while (j > 0 && (out[j - 1] == ' ' || out[j - 1] == '.')) j--;
+    out[j] = '\0';
+    if (j == 0 && fallback && *fallback) {
+        sanitize_path_component(fallback, "Audiobook", out, out_size);
+    } else if (j == 0) {
+        snprintf(out, out_size, "%s", "Audiobook");
+    }
+}
+
+static int join_path2(char *out, size_t out_size, const char *left, const char *right) {
+    int n = snprintf(out, out_size, "%s/%s", left, right);
+    return n >= 0 && (size_t)n < out_size ? 0 : -1;
+}
+
+static int unique_m3u_path(char *out, size_t out_size, const char *dir, const char *stem) {
+    char candidate[PATH_MAX];
+    int n = snprintf(candidate, sizeof(candidate), "%s/%s.m3u", dir, stem);
+    if (n < 0 || (size_t)n >= sizeof(candidate)) return -1;
+    if (access(candidate, F_OK) != 0) {
+        snprintf(out, out_size, "%s", candidate);
+        return 0;
+    }
+    for (int index = 2; index < 10000; index++) {
+        n = snprintf(candidate, sizeof(candidate), "%s/%s (%d).m3u", dir, stem, index);
+        if (n < 0 || (size_t)n >= sizeof(candidate)) return -1;
+        if (access(candidate, F_OK) != 0) {
+            snprintf(out, out_size, "%s", candidate);
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static void write_m3u_track_line(FILE *fp, const char *hiby_path, const char *relative_prefix) {
+    if (starts_ci(hiby_path, HIBY_PREFIX)) {
+        fprintf(fp, "%s\\%s\n", relative_prefix, hiby_path + strlen(HIBY_PREFIX));
+    } else {
+        write_field(fp, hiby_path);
+        fputc('\n', fp);
+    }
+}
+
+static int write_book_m3u_file(
+    const char *path,
+    const char *relative_prefix,
+    const MediaRow *items,
+    size_t group_start,
+    size_t group_end
+) {
+    ensure_parent_dir(path);
+    char tmp[PATH_MAX];
+    int n = snprintf(tmp, sizeof(tmp), "%s.tmp.%ld", path, (long)getpid());
+    if (n < 0 || (size_t)n >= sizeof(tmp)) return -1;
+    FILE *fp = fopen(tmp, "w");
+    if (!fp) return -1;
+    for (size_t i = group_start; i < group_end; i++) {
+        write_m3u_track_line(fp, items[i].path, relative_prefix);
+    }
+    if (fclose(fp) != 0) {
+        unlink(tmp);
+        return -1;
+    }
+    if (rename(tmp, path) != 0) {
+        unlink(tmp);
+        return -1;
+    }
+    return 0;
+}
+
+static int reset_view_subdir(const char *view_root, const char *name, char *out, size_t out_size) {
+    if (join_path2(out, out_size, view_root, name) != 0) return -1;
+    if (remove_tree(out) != 0) return -1;
+    return mkdir_p(out);
+}
+
+static int write_m3u_view_for_book(
+    const Options *opts,
+    const char *titles_dir,
+    const char *authors_dir,
+    const char *series_dir,
+    const MediaRow *items,
+    size_t group_start,
+    size_t group_end,
+    const char *series,
+    const char *series_part
+) {
+    const MediaRow *first = &items[group_start];
+    char safe_title[160];
+    char safe_author[120];
+    char safe_series[120];
+    char safe_series_part[40];
+    sanitize_path_component(first->album, "Untitled Book", safe_title, sizeof(safe_title));
+    sanitize_path_component(first->album_artist, "Unknown Author", safe_author, sizeof(safe_author));
+    sanitize_path_component(series, "Series", safe_series, sizeof(safe_series));
+    sanitize_path_component(series_part, "", safe_series_part, sizeof(safe_series_part));
+
+    char stem[320];
+    char path[PATH_MAX];
+    snprintf(stem, sizeof(stem), "%s - %s", safe_title, safe_author);
+    sanitize_path_component(stem, "Audiobook", stem, sizeof(stem));
+    if (unique_m3u_path(path, sizeof(path), titles_dir, stem) != 0) return -1;
+    if (write_book_m3u_file(path, "..\\..", items, group_start, group_end) != 0) return -1;
+
+    char author_dir[PATH_MAX];
+    if (join_path2(author_dir, sizeof(author_dir), authors_dir, safe_author) != 0) return -1;
+    if (mkdir_p(author_dir) != 0) return -1;
+    if (unique_m3u_path(path, sizeof(path), author_dir, safe_title) != 0) return -1;
+    if (write_book_m3u_file(path, "..\\..\\..", items, group_start, group_end) != 0) return -1;
+
+    if (series && *series) {
+        char one_book_series_dir[PATH_MAX];
+        if (join_path2(one_book_series_dir, sizeof(one_book_series_dir), series_dir, safe_series) != 0) return -1;
+        if (mkdir_p(one_book_series_dir) != 0) return -1;
+        if (*safe_series_part) {
+            snprintf(stem, sizeof(stem), "%s - %s", safe_series_part, safe_title);
+            sanitize_path_component(stem, safe_title, stem, sizeof(stem));
+        } else {
+            snprintf(stem, sizeof(stem), "%s", safe_title);
+        }
+        if (unique_m3u_path(path, sizeof(path), one_book_series_dir, stem) != 0) return -1;
+        if (write_book_m3u_file(path, "..\\..\\..", items, group_start, group_end) != 0) return -1;
+    }
+
+    (void)opts;
+    return 0;
+}
+
 static void write_catalog_files(const Options *opts, RowVec *rows) {
     ensure_parent_dir(opts->catalog_path);
     ensure_parent_dir(opts->album_patterns_path);
@@ -1766,6 +1982,21 @@ static void write_catalog_files(const Options *opts, RowVec *rows) {
     char *current_root = NULL;
     char *last_album = NULL;
     BookViewVec view_rows = {0};
+    int views_ok = 1;
+    char titles_view_dir[PATH_MAX];
+    char authors_view_dir[PATH_MAX];
+    char series_view_dir_path[PATH_MAX];
+    if (opts->view_root_path && *opts->view_root_path) {
+        if (mkdir_p(opts->view_root_path) != 0 ||
+            reset_view_subdir(opts->view_root_path, "Titles", titles_view_dir, sizeof(titles_view_dir)) != 0 ||
+            reset_view_subdir(opts->view_root_path, "Authors", authors_view_dir, sizeof(authors_view_dir)) != 0 ||
+            reset_view_subdir(opts->view_root_path, "Series", series_view_dir_path, sizeof(series_view_dir_path)) != 0) {
+            views_ok = 0;
+            fprintf(stderr, "warning: could not prepare audiobook view root %s: %s\n", opts->view_root_path, strerror(errno));
+        }
+    } else {
+        views_ok = 0;
+    }
     size_t group_start = 0;
     while (group_start < rows->len) {
         free(current_root);
@@ -1805,6 +2036,21 @@ static void write_catalog_files(const Options *opts, RowVec *rows) {
             track_count,
             rows->items[group_start].id
         );
+        if (views_ok &&
+            write_m3u_view_for_book(
+                opts,
+                titles_view_dir,
+                authors_view_dir,
+                series_view_dir_path,
+                rows->items,
+                group_start,
+                group_end,
+                series,
+                series_part
+            ) != 0) {
+            views_ok = 0;
+            fprintf(stderr, "warning: stopped audiobook M3U view generation at %s: %s\n", current_root, strerror(errno));
+        }
         for (size_t i = group_start; i < group_end; i++) {
             int index = (int)(i - group_start + 1);
             fprintf(catalog, "%s\t%d\t%d\t%d\t", current_root, index, track_count, rows->items[i].id);
@@ -1922,6 +2168,7 @@ static void usage(void) {
         "  --sd-root PATH            SD mount root (default " DEFAULT_SD_ROOT ")\n"
         "  --music-dir PATH          music folder (default " DEFAULT_MUSIC_DIR ")\n"
         "  --audiobooks-dir PATH     audiobook folder (default " DEFAULT_AUDIOBOOKS_DIR ")\n"
+        "  --view-root PATH          generated audiobook views folder (default " DEFAULT_VIEW_ROOT ")\n"
         "  --base-dir PATH           runtime state folder (default " DEFAULT_BASE_DIR ")\n"
         "  --catalog PATH            catalog output (default " DEFAULT_CATALOG ")\n"
         "  --album-patterns PATH     album pattern output (default " DEFAULT_ALBUM_PATTERNS ")\n"
@@ -1939,6 +2186,7 @@ static Options parse_args(int argc, char **argv) {
     opts.sd_root = DEFAULT_SD_ROOT;
     opts.music_dir = DEFAULT_MUSIC_DIR;
     opts.audiobooks_dir = DEFAULT_AUDIOBOOKS_DIR;
+    opts.view_root_path = DEFAULT_VIEW_ROOT;
     opts.base_dir = DEFAULT_BASE_DIR;
     opts.catalog_path = DEFAULT_CATALOG;
     opts.album_patterns_path = DEFAULT_ALBUM_PATTERNS;
@@ -1953,6 +2201,7 @@ static Options parse_args(int argc, char **argv) {
         else if (strcmp(argv[i], "--sd-root") == 0 && i + 1 < argc) opts.sd_root = argv[++i];
         else if (strcmp(argv[i], "--music-dir") == 0 && i + 1 < argc) opts.music_dir = argv[++i];
         else if (strcmp(argv[i], "--audiobooks-dir") == 0 && i + 1 < argc) opts.audiobooks_dir = argv[++i];
+        else if (strcmp(argv[i], "--view-root") == 0 && i + 1 < argc) opts.view_root_path = argv[++i];
         else if (strcmp(argv[i], "--base-dir") == 0 && i + 1 < argc) opts.base_dir = argv[++i];
         else if (strcmp(argv[i], "--catalog") == 0 && i + 1 < argc) opts.catalog_path = argv[++i];
         else if (strcmp(argv[i], "--album-patterns") == 0 && i + 1 < argc) opts.album_patterns_path = argv[++i];

@@ -9,7 +9,7 @@ param(
     [string]$OutDir = "work\installed-release-verification",
 
     [Parameter(Mandatory=$false)]
-    [string]$ExpectedVersion = "1.6.16.2-audiobook",
+    [string]$ExpectedVersion = "1.6.16.4-audiobook",
 
     [Parameter(Mandatory=$false)]
     [int]$MinUsrDataFreeKb = 4096,
@@ -27,6 +27,8 @@ param(
     [switch]$ExpectBluetoothSbcXq,
 
     [switch]$ExpectUsbDacMode,
+
+    [switch]$ExpectConservativeResumeRuntime,
 
     [switch]$AllowStagedFirmware,
 
@@ -90,6 +92,33 @@ function Assert-Contains([string]$Text, [string]$Needle, [string]$Label) {
     Write-Host "OK   $Label contains $Needle"
 }
 
+function Assert-SingleTopLevelScriptProcess([string]$Pattern, [string]$Label, [string]$ArtifactName, [string]$PidFile) {
+    $command = @'
+for p in $(ps | grep '__PATTERN__' | grep -v grep | awk '{print $1}'); do
+  ppid=$(awk '/^PPid:/ {print $2}' /proc/$p/status 2>/dev/null)
+  [ "$ppid" = 1 ] && echo "$p"
+done
+'@
+    $command = $command.Replace("__PATTERN__", $Pattern)
+    $rootText = Invoke-AdbText $command
+    Set-Content -LiteralPath (Join-Path $verifyDir $ArtifactName) -Value $rootText
+    $roots = @($rootText -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -match "^\d+$" })
+    if ($roots.Count -ne 1) {
+        throw "$Label top-level process count expected 1, found $($roots.Count): $($roots -join ', ')"
+    }
+
+    if ($PidFile) {
+        $pidText = Invoke-AdbText "cat $PidFile 2>/dev/null || true"
+        Set-Content -LiteralPath (Join-Path $verifyDir ($ArtifactName -replace "\.txt$", "_pidfile.txt")) -Value $pidText
+        $pidFromFile = (($pidText -split "`n" | Select-Object -First 1) -as [string]).Trim()
+        if ($pidFromFile -ne $roots[0]) {
+            throw "$Label pidfile mismatch: root pid $($roots[0]), pidfile $PidFile contains [$pidFromFile]"
+        }
+    }
+
+    Write-Host "OK   $Label has one top-level process: $($roots[0])"
+}
+
 $adbPath = Resolve-AdbPath $Adb
 $checkScriptPath = Resolve-PathStrict $CheckScript
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -113,6 +142,9 @@ if ($ExpectBluetoothSbcXq) {
 }
 if ($ExpectUsbDacMode) {
     Assert-Contains $versionText "usb_dac_mode=enabled" "/etc/r1_audiobook_version"
+}
+if ($ExpectConservativeResumeRuntime) {
+    Assert-Contains $versionText "resume_runtime_profile=conservative" "/etc/r1_audiobook_version"
 }
 
 $configText = Invoke-AdbText "cat /usr/resource/config.json 2>/dev/null"
@@ -155,6 +187,7 @@ if ([string]::IsNullOrWhiteSpace($daemonText)) {
     throw "resume daemon is not running"
 }
 Write-Host "OK   resume daemon is running"
+Assert-SingleTopLevelScriptProcess "[r]1_audiobook_resume_daemon" "resume daemon" "resume_daemon_root_pids.txt" "/usr/data/audiobooks/resume-daemon.pid"
 
 $runtimeDaemonScript = Invoke-AdbText "cat /usr/data/audiobooks/bin/r1_audiobook_resume_daemon.sh 2>/dev/null || cat /usr/bin/r1_audiobook_resume_daemon.sh 2>/dev/null"
 Set-Content -LiteralPath (Join-Path $verifyDir "runtime_resume_daemon.sh") -Value $runtimeDaemonScript
@@ -162,6 +195,25 @@ Assert-Contains $runtimeDaemonScript 'LOG_MAX_BYTES=${AUDIOBOOK_RESUME_LOG_MAX_B
 Assert-Contains $runtimeDaemonScript "rotate_log_if_needed" "runtime resume daemon"
 Assert-Contains $runtimeDaemonScript 'SAVE_BUCKET_MS=${AUDIOBOOK_SAVE_BUCKET_MS:-15000}' "runtime resume daemon"
 Assert-Contains $runtimeDaemonScript 'bucket=$((pos / SAVE_BUCKET_MS))' "runtime resume daemon"
+
+if ($ExpectConservativeResumeRuntime) {
+    $runtimeResumeInit = Invoke-AdbText "cat /etc/init.d/S91audiobook_resume.sh 2>/dev/null"
+    Set-Content -LiteralPath (Join-Path $verifyDir "runtime_resume_init.sh") -Value $runtimeResumeInit
+    foreach ($line in @(
+        "AUDIOBOOK_TRACK_RESTORE_ENABLED=0",
+        "AUDIOBOOK_BOOK_TITLE_AUTOSTART_ENABLED=0",
+        "AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED=0",
+        "AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED=0",
+        "AUDIOBOOK_BOOK_TITLE_MEMSCAN_ENABLED=0",
+        "AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_CALIBRATE_ENABLED=0",
+        "AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_RECOVERY_TRANSPORT_ENABLED=0",
+        "AUDIOBOOK_BOOK_TITLE_DIRECT_OPEN_ENABLED=0",
+        "AUDIOBOOK_UI_SEEK_FALLBACK_ENABLED=0",
+        "AUDIOBOOK_BACK_GUARD_ENABLED=0"
+    )) {
+        Assert-Contains $runtimeResumeInit $line "runtime resume init"
+    }
+}
 
 if ($RequirePlayModeGuard) {
     Assert-Contains $runtimeDaemonScript 'PLAY_MODE_TARGET=${AUDIOBOOK_PLAY_MODE_TARGET:-3}' "runtime resume daemon"
@@ -184,6 +236,7 @@ if ($RequireContextStartGuard) {
     Assert-Contains $runtimeDaemonScript "book_title_preplay_allow_memscan_root" "runtime resume daemon"
     Assert-Contains $runtimeDaemonScript 'launcher|context|path|relaxed) printf' "runtime resume daemon"
     Assert-Contains $runtimeDaemonScript "book-title touch-first skipped reason=launcher" "runtime resume daemon"
+    Assert-Contains $runtimeDaemonScript "book-title launcher-track-list back-to-title-list" "runtime resume daemon"
     Assert-Contains $runtimeDaemonScript 'restored_path:-' "runtime resume daemon"
     Assert-Contains $runtimeDaemonScript "autostart_restore_active" "runtime resume daemon"
     Assert-Contains $runtimeDaemonScript "book-title direct-start skipped reason=" "runtime resume daemon"
@@ -197,6 +250,7 @@ if ($RequireDbMaintenance) {
         throw "audiobook DB maintenance watcher is not running"
     }
     Write-Host "OK   audiobook DB maintenance watcher is running"
+    Assert-SingleTopLevelScriptProcess "[r]1_audiobook_db_watch" "audiobook DB maintenance watcher" "db_maint_root_pids.txt" "/usr/data/audiobooks/db-maint.ssd.pid"
 
     $dbMaintFiles = Invoke-AdbText "ls -l /usr/data/audiobooks/bin/r1_audiobook_db_maint /usr/data/audiobooks/bin/r1_audiobook_db_watch.sh /usr/bin/r1_audiobook_db_maint /usr/bin/r1_audiobook_db_watch.sh 2>/dev/null"
     Set-Content -LiteralPath (Join-Path $verifyDir "db_maint_files.txt") -Value $dbMaintFiles
@@ -231,16 +285,25 @@ if ($RequireDbMaintenance) {
         Assert-Contains $dbWatchScript "content-repair-mtime" "runtime DB watcher"
         Assert-Contains $dbWatchScript "boot_stable_timeout=" "runtime DB watcher"
         Assert-Contains $dbWatchScript "zero_audio_retry=" "runtime DB watcher"
-        Assert-Contains $dbWatchScript "retry_zero_audiobooks_if_needed boot" "runtime DB watcher"
+        Assert-Contains $dbWatchScript "locked_db_retry=" "runtime DB watcher"
+        Assert-Contains $dbWatchScript "run_maint_with_retries boot" "runtime DB watcher"
+        Assert-Contains $dbWatchScript "retry_zero_audiobooks_if_needed" "runtime DB watcher"
         Assert-Contains $dbWatchScript "zero-audiobook-retry-ready" "runtime DB watcher"
+        Assert-Contains $dbWatchScript "defer-zero-audiobooks" "runtime DB watcher"
+        Assert-Contains $dbWatchScript 'mirror-skip reason=$reason db=$mirror_db primary-transient' "runtime DB watcher"
+        Assert-Contains $dbWatchScript 'LOCKED_DB_RETRY_TIMEOUT_SECONDS=${AUDIOBOOK_DB_LOCKED_DB_RETRY_TIMEOUT_SECONDS:-600}' "runtime DB watcher"
+        Assert-Contains $dbWatchScript "failed-locked reason=" "runtime DB watcher"
+        Assert-Contains $dbWatchScript "locked-db-retry-start" "runtime DB watcher"
         Assert-Contains $dbWatchScript 'audiobook_tracks=${LAST_AUDIOBOOK_TRACKS:-unknown}' "runtime DB watcher"
 
         $dbInitScript = Invoke-AdbText "cat /etc/init.d/S92audiobook_db_maint.sh 2>/dev/null"
         Set-Content -LiteralPath (Join-Path $verifyDir "runtime_db_init.sh") -Value $dbInitScript
         Assert-Contains $dbInitScript "AUDIOBOOK_DB_BOOT_STABLE_TIMEOUT_SECONDS=180" "runtime DB init"
         Assert-Contains $dbInitScript "AUDIOBOOK_DB_STABLE_POLL_SECONDS=3" "runtime DB init"
-        Assert-Contains $dbInitScript "AUDIOBOOK_DB_ZERO_AUDIO_RETRY_TIMEOUT_SECONDS=180" "runtime DB init"
+        Assert-Contains $dbInitScript "AUDIOBOOK_DB_ZERO_AUDIO_RETRY_TIMEOUT_SECONDS=600" "runtime DB init"
         Assert-Contains $dbInitScript "AUDIOBOOK_DB_ZERO_AUDIO_RETRY_POLL_SECONDS=5" "runtime DB init"
+        Assert-Contains $dbInitScript "AUDIOBOOK_DB_LOCKED_DB_RETRY_TIMEOUT_SECONDS=600" "runtime DB init"
+        Assert-Contains $dbInitScript "AUDIOBOOK_DB_LOCKED_DB_RETRY_POLL_SECONDS=5" "runtime DB init"
         Assert-Contains $dbInitScript "db_watch_pid_is_live()" "runtime DB init"
         Assert-Contains $dbInitScript "stop_db_watch()" "runtime DB init"
         Assert-Contains $dbInitScript 'kill -9 "$old_pid"' "runtime DB init"

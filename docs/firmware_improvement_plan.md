@@ -57,6 +57,34 @@ review and collaboration recommendation.
 
 ## Implemented On `codex/r1-hiby-modding-integration`
 
+- 2026-06-18 installed-device validation: the flashed
+  `1.6.16.3-single-daemon-dev` build passed the stricter installed verifier
+  with native DSD, SBC XQ, USB DAC mode, DB maintenance, play-mode guard,
+  context-start guard, and a 600-second zero-audiobook retry window enabled.
+  The verifier now checks that the resume daemon and DB watcher each have
+  exactly one top-level process and that their pidfiles match those roots,
+  avoiding false positives from short-lived child shells.
+- Live ADB smoke testing opened Audiobooks from the main launcher, selected
+  `The Road`, auto-started playback, restored to the saved position, crossed
+  the 15-second resume-save threshold, and paused playback afterward. Artifacts
+  from the successful installed verification are under
+  `work\installed-release-verification\20260618-092713`, and the successful
+  full live smoke run is under
+  `work\live-audiobook-smoke\20260618-093726`.
+- `tools\adb_live_audiobook_smoke.ps1` now captures an end-to-end live-device
+  smoke trail: screen before/after, optional back-reset gestures, Audiobooks
+  open, title-row start, playback wait, daemon log tail, process-root checks,
+  and optional pause. Use it after future flashes when the R1 is on the main
+  menu, or pass `-ResetBacks` to back out of Now Playing/list screens first.
+  On the current UI stack, four reset-backs returns from Now Playing to the
+  launcher, while three reset-backs returns from an audiobook track list to the
+  launcher. The smoke runner now refuses to tap the Audiobooks launcher unless
+  the screen classifier sees the launcher first, so it will not accidentally
+  drive the same coordinates on a stock Music list.
+- `tools\r1_adb_control.py` now has a coarse `classify` command and
+  `screenshot --classify` option. The classifier distinguishes launcher, list,
+  and Now Playing screens from framebuffer pixels without OCR, which lets
+  unattended smoke tests catch missed taps and wrong-route screens.
 - The native DB helper now strips the same leading punctuation and articles used
   by the hiby-modding database tooling before filling `character`,
   `pinyin_charater`, and before sorting generated title/album rows.
@@ -83,6 +111,32 @@ review and collaboration recommendation.
   that replaces the old Books launcher icon with same-size audiobook icons for
   the stock themes. The verifier can require this with
   `--expect-audiobook-launcher-icon`.
+- The firmware builder now also has opt-in native Audiobooks hub switches:
+  `-IncludeAudiobookNativeHubTitleRow` restores the stock Books hub and routes
+  its `Titles` row to the current audiobook title/resume path, while
+  `-IncludeAudiobookNativeHubLauncher` makes the Audiobooks launcher open the
+  native hub root instead of restoring a previous Files subpage. The
+  `-IncludeAudiobookNativeHubFolderRows` routes the old `Authors`/`Folders`
+  rows to the native explorer rooted at `/Audiobooks`. This is a development
+  path toward deeper UI integration; it is not yet a release replacement for
+  the current direct title launcher.
+- The verifier can require the native hub patches with
+  `--expect-native-hub-title-row`, `--expect-native-hub-launcher`, and
+  `--expect-native-hub-folder-rows`, and the RAM-only
+  `tools\adb_probe_native_audiobook_hub.py` helper can test the same
+  hub/title/folder row patches without flashing when ADB shell is healthy.
+- Live testing of the first native hub launcher builds showed the private
+  `titles` resource key fixes the hub row list, but the original `Titles` row
+  cave opened the global Music `Genres` root. A `rowctx` candidate changed the
+  row cave to pass the higher-level hub/list object (`move a0, s0`) into the
+  existing audiobook route helper instead of the stock child-parent pointer
+  (`lw a0, 0xd8(s0)`), but tapping `Titles` rebooted the R1. Treat that
+  candidate as unsafe; the native hub still needs a better title-route or
+  custom-list implementation.
+- The DB watcher zero-audiobook retry window is now 600 seconds instead of 180
+  seconds. This is intended to self-recover slower SD-card/mount/database
+  startup cases where the first boot pass temporarily sees zero audiobook rows
+  even though `/Audiobooks` appears later.
 - The firmware builder has an opt-in `-DisableBatdLogger` switch. When enabled,
   it removes the guarded stock `/usr/bin/batd -v -s -t5 -o
   /mnt/sd_0/batlog.txt` launch block from `usr/bin/hiby_player.sh` and writes
@@ -815,6 +869,123 @@ python tools\verify_r1_audiobook_build.py `
   --expect-batd-disabled `
   --expect-audiobook-launcher-icon
 ```
+
+## 1.6.16.7 Stable Route Recovery Candidate
+
+`1.6.16.7-stable-route-dev` returns to the known-good direct Audiobooks title
+route after the native-hub `$s2` title-row test proved unsafe. It keeps the
+resume runtime, DB watcher/catalog repair, audiobook launcher icon, USB DAC
+mode, native DSD toggle, and Bluetooth SBC-XQ unlocks.
+
+Validation on 2026-06-18:
+
+- Package build passed.
+- Offline verification passed with DB maintenance, audiobook icon, native DSD,
+  SBC-XQ, and USB DAC checks enabled.
+- The package was staged to `/usr/data/mnt/sd_0/r1.upt` for flashing.
+- Hashes:
+  - Package MD5 `438aefc7252894030f9923bb62895128`
+  - Package SHA256
+    `3db34eee7f9a96c19e76b1e29d18f8f79d5ca54e962f5848163a1886e31260e3`
+  - `hiby_player` MD5 `09997a636c94112ff76c85a6d4a8d0ff`
+  - `hiby_player` SHA256
+    `f49ea55a48c1bdf1398a2a6672b1d596516650f7ebe77846ba7c33a5cfee329c`
+
+Post-flash focus:
+
+- Confirm the launcher Audiobooks tile returns to the stable title list.
+- Confirm title-tap playback reaches Now Playing and resume still works.
+- Confirm normal music remains responsive.
+
+## 1.6.16.6 Native Hub S2 Test Candidate
+
+`1.6.16.6-nativehub-s2-dev` is a deeper UI test build, not a release
+candidate. It keeps the stable resume/DB/audio feature set, restores the native
+Books hub as an Audiobooks hub, and changes the experimental native-hub title
+row cave to pass `$s2` into the existing audiobook title-route opener. This is
+intended to test whether the hub can provide a cleaner path toward Title /
+Author / Series views and the single-Back behavior.
+
+Live result: unsafe. The native hub opened and Back from the hub returned to the
+launcher in one tap, but `Titles` was not usable. With the resume daemon
+running, the old back-stack guard misidentified the path and returned to the
+launcher; with the daemon stopped, tapping `Titles` rebooted/dropped ADB.
+Future native hub work should target the Books list generator/select wrapper
+rather than more register guesses into the media route helper.
+
+Validation before flashing:
+
+- Package build and offline verification passed with native hub title,
+  launcher, and folder-row checks enabled.
+- Hashes:
+  - Package MD5 `3ad80f51167cc2655c59ccf6f18b3ffa`
+  - Package SHA256
+    `c9d1afde3c2ef520a2bcb06e7341d43408d2f75845cd8ff7b0eb8b9689e2f73d`
+  - `hiby_player` MD5 `774ca68d3aa59b710adcf6394277a747`
+  - `hiby_player` SHA256
+    `46609913be8038566d3f317daaea5b0010cc796fa953c1781c1601f9a4c88aa9`
+- Staged to the SD card as `/usr/data/mnt/sd_0/r1.upt` for device flashing.
+
+Expected test focus after flashing:
+
+- Audiobooks tile should open the native Audiobooks hub.
+- `Titles` should open the audiobook title list rather than global Genres.
+- `Authors` and `Folders` currently open the native explorer rooted at
+  `/Audiobooks`; this is a stepping stone, not true metadata Authors/Series
+  yet.
+- Back from the hub should be checked for one-tap return to the main launcher.
+- Title playback/resume should still pass the normal live smoke test.
+
+## 1.6.16.5 Track-List Return Candidate
+
+`1.6.16.5-tracklist-return-dev` keeps the 1.6.16.4 launcher-only guard and
+adds one more launcher-entry cleanup: if the stock Audiobooks launcher restores
+a remembered audiobook track list, the resume daemon backs out to the book title
+list instead of leaving the user inside the previous book. This keeps launcher
+entry passive while still preserving normal title-tap resume behavior.
+
+Validation on 2026-06-18:
+
+- Local daemon logic tests passed, including the launcher-visible track-list
+  return case and the delayed/invisible no-return guard.
+- Full local sanity passed, including Windows and QEMU DB-maintenance fixtures.
+- Hot-patched installed-runtime verification passed under
+  `work\installed-release-verification\20260618-150325`.
+- A live title-list playback smoke test passed under
+  `work\live-audiobook-smoke\20260618-150221`.
+- The flashable package
+  `work\audiobook-firmware-1.6.16.5-tracklist-return-dev\r1-audiobooks-1.6.16.5-tracklist-return-dev.upt`
+  passed offline verification and was staged to the SD card as `r1.upt`.
+
+## 1.6.16.4 Launcher-Only Guard Candidate
+
+`1.6.16.4-launcher-guard-dev` keeps the current 1.6.16 feature set and
+tightens the title-start daemon around main-launcher entry. A launcher-origin
+Audiobooks marker now establishes recent Audiobooks context but never taps the
+first visible track by itself, even if the stock UI restores a remembered track
+list instead of the top title list. Real title selections still use the
+`context`, `path`, or `catalog` paths and keep the resume behavior.
+
+Validation on 2026-06-18:
+
+- Local daemon logic tests passed with launcher-visible and launcher-delayed
+  track-list regression cases.
+- Full local sanity passed, including Windows and QEMU DB-maintenance fixtures.
+- A hot-patched runtime on the device opened Audiobooks from the launcher to the
+  title list without starting playback.
+- A title-row tap still started playback through `reason=context` and restored
+  `The Road` to its saved position.
+- Installed-runtime verification passed under
+  `work\installed-release-verification\20260618-144302`.
+- A live title-row smoke test passed under
+  `work\live-audiobook-smoke\20260618-144314`.
+- The flashable package
+  `work\audiobook-firmware-1.6.16.4-launcher-guard-dev\r1-audiobooks-1.6.16.4-launcher-guard-dev.upt`
+  passed offline verification and was staged to the SD card as `r1.upt`.
+
+The ADB control preset for the main Audiobooks tile was also moved to the icon
+center (`360,390`) after the old label coordinate proved ambiguous when the UI
+was sitting inside Music.
 
 ## 1.6.28 SD-Ready Candidate
 

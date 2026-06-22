@@ -3,7 +3,7 @@ param(
     [string]$Adb = "",
 
     [Parameter(Mandatory=$false)]
-    [string]$Package = "work\audiobook-firmware-1.6.16.2-audiobook\r1-audiobooks-1.6.16.2-audiobook.upt",
+    [string]$Package = "work\audiobook-firmware-1.6.16.4-audiobook\r1-audiobooks-1.6.16.4-audiobook.upt",
 
     [Parameter(Mandatory=$false)]
     [string]$BuildOutDir = "",
@@ -15,10 +15,10 @@ param(
     [string]$StockRootfs = "work\original\rootfs.squashfs",
 
     [Parameter(Mandatory=$false)]
-    [string]$ExpectedVersion = "1.6.16.2-audiobook",
+    [string]$ExpectedVersion = "1.6.16.4-audiobook",
 
     [Parameter(Mandatory=$false)]
-    [string]$ExpectedLabel = "HiBy R1 Audiobook FW 1.6.16.2",
+    [string]$ExpectedLabel = "HiBy R1 Audiobook FW 1.6.16.4",
 
     [Parameter(Mandatory=$false)]
     [string]$RemoteFinal = "/usr/data/mnt/sd_0/r1.upt",
@@ -30,6 +30,16 @@ param(
     [switch]$ExpectBluetoothSbcXq,
 
     [switch]$ExpectUsbDacMode,
+
+    [switch]$ExpectNativeHubTitleRow,
+
+    [switch]$ExpectNativeHubLauncher,
+
+    [switch]$ExpectNativeHubFolderRows,
+
+    [switch]$ExpectNativeHubViewRows,
+
+    [switch]$ExpectPrivateDirectRoute,
 
     [switch]$RequireDbMaintenance = $true,
 
@@ -208,6 +218,21 @@ if (!$SkipLocalVerification) {
     }
     if ($ExpectUsbDacMode) {
         $verifyArgs += "--expect-usb-dac-mode"
+    }
+    if ($ExpectNativeHubTitleRow) {
+        $verifyArgs += "--expect-native-hub-title-row"
+    }
+    if ($ExpectNativeHubLauncher) {
+        $verifyArgs += "--expect-native-hub-launcher"
+    }
+    if ($ExpectNativeHubFolderRows) {
+        $verifyArgs += "--expect-native-hub-folder-rows"
+    }
+    if ($ExpectNativeHubViewRows) {
+        $verifyArgs += "--expect-native-hub-view-rows"
+    }
+    if ($ExpectPrivateDirectRoute) {
+        $verifyArgs += "--expect-private-direct-route"
     }
     python @verifyArgs
     if ($LASTEXITCODE -ne 0) {

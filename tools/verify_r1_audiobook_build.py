@@ -60,6 +60,10 @@ EXPECTED_CURRENT_HASHES = {
         "md5": "80c0d7295c2d55575870c4d226e83be9",
         "sha256": "3109fea179b816dcdd4c1536b8973f527ef8f8b2d628942317f6b4ded62ca4c6",
     },
+    "r1-audiobooks-1.6.16.4-audiobook.upt": {
+        "md5": "d6ebce37c653f3756b54a7b5c3725788",
+        "sha256": "eefd1f060babf5930d7bae4be481d7f580edf225a128d17ab6130beced4dd404",
+    },
     "r1-audiobooks-1.6.9-audiobook.upt": {
         "md5": "3c3b3f05724acc474fb349e6378fc351",
         "sha256": "f78e67089ff84021b18d69a4af2cb01be6f872bc59d187bf9cba256f8cd792aa",
@@ -69,8 +73,8 @@ EXPECTED_CURRENT_HASHES = {
         "sha256": "02b286676d93ec683307820e1ef40288f34ef21a42a24f5cbda361f2d3733b7b",
     },
     "rootfs.squashfs": {
-        "md5": "35ffdbb9b401c03f1742782da0104b55",
-        "sha256": "127b90ddfc92ecf2e668368e31422b5eb090c47e86011c391c30dd4b4ec4c475",
+        "md5": "8728cd7ad4734f3f36efdfe6d0c1093a",
+        "sha256": "394db7b39571f3cc95f04ceec1195f1fedb0abe3ac2a3dec3dbf5f7c3461c152",
     },
     "r1-audiobooks-1.6.3-audiobook.upt": {
         "md5": "1954b92ae7a394a0dc450c2d5f70f3d2",
@@ -93,16 +97,11 @@ KNOWN_BAD_MD5 = {
     "3bed523d5843522186164029139db7b1",
 }
 
-PLAYER_BYTE_CHECKS = {
-    "audiobook launcher source marker @0x35DAEC": (
-        0x35DAEC,
-        bytes.fromhex(
-            "a0fbbd275c04bfaf5804b1af5404b0af5000b08c18000012"
-            "000000002800048ee0381c0c000000001300401000000000"
-            "252000027600113ca8db31267800053ca070a5247600063c"
-            "80dbc6248e00083c00400835b0a0093c15052935200009ad"
-        ),
-    ),
+PLAYER_COMMON_BYTE_CHECKS = {
+    "old title wrapper remains stock @0x0A1780": (0x0A1780, bytes.fromhex("5000a58c7800063c")),
+}
+
+PLAYER_TITLE_START_BYTE_CHECKS = {
     "audiobook launcher root source marker @0x35DBC0": (
         0x35DBC0,
         bytes.fromhex(
@@ -113,7 +112,6 @@ PLAYER_BYTE_CHECKS = {
         ),
     ),
     "audiobook title marker hook @0x09FE40": (0x09FE40, bytes.fromhex("80771d0800000000")),
-    "old title wrapper remains stock @0x0A1780": (0x0A1780, bytes.fromhex("5000a58c7800063c")),
     "marker cave prefix @0x35DE00": (
         0x35DE00,
         bytes.fromhex(
@@ -122,8 +120,164 @@ PLAYER_BYTE_CHECKS = {
             "01004a2528000aadc8fdbd272c02b2af927f120800000000"
         ),
     ),
+}
+
+PLAYER_DIRECT_ENTRY_BYTE_CHECKS = {
+    "audiobook launcher source marker @0x35DAEC": (
+        0x35DAEC,
+        bytes.fromhex(
+            "a0fbbd275c04bfaf5804b1af5404b0af5000b08c18000012"
+            "000000002800048ee0381c0c000000001300401000000000"
+            "252000027600113ca8db31267800053ca070a5247600063c"
+            "80dbc6248e00083c00400835b0a0093c15052935200009ad"
+        ),
+    ),
     "audiobook launcher callback @0x482030": (0x482030, bytes.fromhex("ecda7500")),
     "book launcher root hook @0x140F20": (0x140F20, bytes.fromhex("f0761d0800000000")),
+}
+
+PLAYER_DIRECT_PRIVATE_ROUTE_BYTE_CHECKS = {
+    "audiobook launcher source marker @0x35DAEC": (
+        0x35DAEC,
+        bytes.fromhex(
+            "a0fbbd275c04bfaf5804b1af5404b0af5000b08c18000012"
+            "000000002800048ee0381c0c000000001300401000000000"
+            "252000027600113ca8db31267600053c40dfa5247600063c"
+            "80dbc6248e00083c00400835b0a0093c15052935200009ad"
+        ),
+    ),
+    "audiobook private direct route record @0x35DF40": (
+        0x35DF40,
+        bytes.fromhex("c8ca7500986e780084f27700a4f2770000000000c0014f00"),
+    ),
+}
+
+PLAYER_NATIVE_HUB_BYTE_CHECKS = {
+    "native hub leaves Books hub opener stock @0x140F20": (
+        0x140F20,
+        bytes.fromhex("7800063c7800053c"),
+    ),
+    "native hub title row cave @0x35DE60": (
+        0x35DE60,
+        bytes.fromhex("25204002f0761d0c000000004b03150800000000"),
+    ),
+    "native hub title route string @0x35DB80": (
+        0x35DB80,
+        (
+            "genre\\Audiobook".encode("utf-16le") + b"\x00\x00"
+        ).ljust(
+            len("Audiobook\\Audiobook".encode("utf-16le") + b"\x00\x00"),
+            b"\x00",
+        ),
+    ),
+    "native hub selected genre string @0x35DBA8": (
+        0x35DBA8,
+        ("Audiobook".encode("utf-16le") + b"\x00\x00").ljust(24, b"\x00"),
+    ),
+    "native hub title row jump-table entry @0x38D27C": (
+        0x38D27C,
+        bytes.fromhex("60de7500"),
+    ),
+}
+
+PLAYER_NATIVE_HUB_STOCK_LAUNCHER_BYTE_CHECKS = {
+    "native hub leaves launcher callback stock @0x482030": (0x482030, bytes.fromhex("20bb5300")),
+}
+
+PLAYER_NATIVE_HUB_LAUNCHER_BYTE_CHECKS = {
+    "native hub launcher callback cave @0x35DAEC": (
+        0x35DAEC,
+        bytes.fromhex(
+            "d8ffbd272400bfaf2000b1af1c00b0af5000b08ce0381c0c"
+            "2800048e07004014010003242400bf8f2000b18f1c00b08f"
+            "251060000800e0032800bd277800113c2cc12526d0c9100c"
+            "25200002030040102cc1252678cf100c25200002c803150c"
+            "252000022400bf8f010003242000b18f1c00b08f25106000"
+            "0800e0032800bd27"
+        ),
+    ),
+    "native hub launcher callback @0x482030": (0x482030, bytes.fromhex("ecda7500")),
+    "native hub title private resource key @0x35DF40": (0x35DF40, b"titles\x00"),
+    "native hub title private label lui @0x1407A0": (
+        0x1407A0,
+        bytes.fromhex("7600023c"),
+    ),
+    "native hub title private label addiu @0x1407A8": (
+        0x1407A8,
+        bytes.fromhex("40df4224"),
+    ),
+}
+
+PLAYER_NATIVE_HUB_FOLDER_ROW_BYTE_CHECKS = {
+    "native hub folder rows cave @0x35DEA0": (
+        0x35DEA0,
+        bytes.fromhex("d800048e7600053c34c1a5247600063c00dfc6247858120c000000004b03150800000000"),
+    ),
+    "native hub folder rows path @0x35DF00": (
+        0x35DF00,
+        (
+            "a:\\Audiobooks\\*".encode("utf-16le") + b"\x00\x00"
+        ).ljust(0x40, b"\x00"),
+    ),
+    "native hub Authors row jump-table entry @0x38D280": (
+        0x38D280,
+        bytes.fromhex("a0de7500"),
+    ),
+    "native hub Folders row jump-table entry @0x38D284": (
+        0x38D284,
+        bytes.fromhex("a0de7500"),
+    ),
+}
+
+PLAYER_NATIVE_HUB_VIEW_ROW_BYTE_CHECKS = {
+    "native hub view Titles cave @0x360708": (
+        0x360708,
+        bytes.fromhex("d800048e7600053c34c1a5247600063c0808c6247858120c000000004b03150800000000"),
+    ),
+    "native hub view Authors cave @0x360738": (
+        0x360738,
+        bytes.fromhex("d800048e7600053c34c1a5247600063c8808c6247858120c000000004b03150800000000"),
+    ),
+    "native hub view Series cave @0x360768": (
+        0x360768,
+        bytes.fromhex("d800048e7600053c34c1a5247600063c0809c6247858120c000000004b03150800000000"),
+    ),
+    "native hub view Folders cave @0x360798": (
+        0x360798,
+        bytes.fromhex("d800048e7600053c34c1a5247600063c8809c6247858120c000000004b03150800000000"),
+    ),
+    "native hub view Titles path @0x360808": (
+        0x360808,
+        ("a:\\Audiobooks\\_views\\Titles\\*".encode("utf-16le") + b"\x00\x00").ljust(0x80, b"\x00"),
+    ),
+    "native hub view Authors path @0x360888": (
+        0x360888,
+        ("a:\\Audiobooks\\_views\\Authors\\*".encode("utf-16le") + b"\x00\x00").ljust(0x80, b"\x00"),
+    ),
+    "native hub view Series path @0x360908": (
+        0x360908,
+        ("a:\\Audiobooks\\_views\\Series\\*".encode("utf-16le") + b"\x00\x00").ljust(0x80, b"\x00"),
+    ),
+    "native hub view Folders path @0x360988": (
+        0x360988,
+        ("a:\\Audiobooks\\*".encode("utf-16le") + b"\x00\x00").ljust(0x80, b"\x00"),
+    ),
+    "native hub Titles row jump-table entry @0x38D27C": (
+        0x38D27C,
+        bytes.fromhex("08077600"),
+    ),
+    "native hub Authors row jump-table entry @0x38D280": (
+        0x38D280,
+        bytes.fromhex("38077600"),
+    ),
+    "native hub Series row jump-table entry @0x38D284": (
+        0x38D284,
+        bytes.fromhex("68077600"),
+    ),
+    "native hub Folders row jump-table entry @0x38D288": (
+        0x38D288,
+        bytes.fromhex("98077600"),
+    ),
 }
 
 PACKET_SIZES = {
@@ -420,6 +574,12 @@ def verify(
     expect_sbc_xq: bool,
     expect_usb_dac_mode: bool,
     expect_seed_catalog: bool,
+    expect_native_hub_title_row: bool,
+    expect_native_hub_launcher: bool,
+    expect_native_hub_folder_rows: bool,
+    expect_native_hub_view_rows: bool,
+    expect_private_direct_route: bool,
+    expect_conservative_resume_runtime: bool,
     expected_ota_version: int,
     expected_ota_site: str | None,
     stock_rootfs: Path,
@@ -448,7 +608,33 @@ def verify(
 
     if player.exists():
         player_bytes = player.read_bytes()
-        for label, (offset, expected) in PLAYER_BYTE_CHECKS.items():
+        byte_checks = dict(PLAYER_COMMON_BYTE_CHECKS)
+        if expect_native_hub_title_row:
+            byte_checks.update(PLAYER_TITLE_START_BYTE_CHECKS)
+            byte_checks.update(PLAYER_NATIVE_HUB_BYTE_CHECKS)
+            if expect_native_hub_launcher:
+                byte_checks.update(PLAYER_NATIVE_HUB_LAUNCHER_BYTE_CHECKS)
+            else:
+                byte_checks.update(PLAYER_NATIVE_HUB_STOCK_LAUNCHER_BYTE_CHECKS)
+            if expect_native_hub_folder_rows:
+                byte_checks.update(PLAYER_NATIVE_HUB_FOLDER_ROW_BYTE_CHECKS)
+        elif expect_native_hub_view_rows:
+            byte_checks.update(PLAYER_NATIVE_HUB_LAUNCHER_BYTE_CHECKS)
+            byte_checks.update(PLAYER_NATIVE_HUB_VIEW_ROW_BYTE_CHECKS)
+            if not expect_native_hub_launcher:
+                failures.append("--expect-native-hub-view-rows requires --expect-native-hub-launcher")
+        else:
+            byte_checks.update(PLAYER_TITLE_START_BYTE_CHECKS)
+            byte_checks.update(PLAYER_DIRECT_ENTRY_BYTE_CHECKS)
+            if expect_private_direct_route:
+                byte_checks.update(PLAYER_DIRECT_PRIVATE_ROUTE_BYTE_CHECKS)
+            if expect_native_hub_launcher:
+                failures.append("--expect-native-hub-launcher requires --expect-native-hub-title-row or --expect-native-hub-view-rows")
+            if expect_native_hub_folder_rows:
+                failures.append("--expect-native-hub-folder-rows requires --expect-native-hub-title-row")
+            if expect_native_hub_view_rows:
+                failures.append("--expect-native-hub-view-rows requires --expect-native-hub-launcher")
+        for label, (offset, expected) in byte_checks.items():
             found = player_bytes[offset : offset + len(expected)]
             require(found == expected, f"{label}: {found.hex()}", failures)
 
@@ -514,6 +700,10 @@ def verify(
                 f"custom version marker records ota_site={expected_ota_site}",
                 failures,
             )
+        if read_ini_value(version_marker, "audiobook_entry") is not None:
+            print("OK   custom version marker records audiobook entry mode")
+        if expect_private_direct_route:
+            require("audiobook_entry=direct-private-route" in version_text, "custom version marker records private direct route mode", failures)
         if require_boot_adb:
             require("boot_adb=enabled" in version_text, "custom version marker records boot ADB enabled", failures)
         elif "boot_adb=" in version_text:
@@ -538,6 +728,25 @@ def verify(
             require("usb_dac_mode=enabled" in version_text, "custom version marker records USB DAC mode enabled", failures)
         elif "usb_dac_mode=" in version_text:
             print("OK   custom version marker records USB DAC mode state")
+        if expect_native_hub_launcher:
+            require("native_hub_launcher=enabled" in version_text, "custom version marker records native hub launcher enabled", failures)
+        elif "native_hub_launcher=" in version_text:
+            print("OK   custom version marker records native hub launcher state")
+        if expect_native_hub_folder_rows:
+            require("native_hub_folder_rows=enabled" in version_text, "custom version marker records native hub folder rows enabled", failures)
+        elif "native_hub_folder_rows=" in version_text:
+            print("OK   custom version marker records native hub folder rows state")
+        if expect_native_hub_view_rows:
+            require("native_hub_view_rows=enabled" in version_text, "custom version marker records native hub view rows enabled", failures)
+            require("audiobook_entry=native-hub-view-rows" in version_text, "custom version marker records native hub view-row entry", failures)
+        elif "native_hub_view_rows=" in version_text:
+            print("OK   custom version marker records native hub view rows state")
+        expected_resume_profile = "conservative" if expect_conservative_resume_runtime else "direct"
+        require(
+            read_ini_value(version_marker, "resume_runtime_profile") == expected_resume_profile,
+            f"custom version marker records {expected_resume_profile} resume runtime profile",
+            failures,
+        )
     else:
         require(False, "custom version marker exists", failures)
 
@@ -559,6 +768,21 @@ def verify(
         require(f"<model>{expected_label}</model>" in about_text, "About screen model shows custom firmware label", failures)
     else:
         require(False, "English About resource exists", failures)
+
+    book_ini = root / "usr/resource/str/english/book.ini"
+    if book_ini.exists():
+        book_text = book_ini.read_text(encoding="utf-16", errors="replace")
+        if expect_native_hub_title_row or expect_native_hub_view_rows:
+            require("<titles>Titles</titles>" in book_text, "Book resource includes native hub Titles row key", failures)
+            require("<ebook>Audiobooks</ebook>" in book_text, "Book resource keeps Audiobooks page title", failures)
+            require("<collect>Authors</collect>" in book_text, "Book resource includes native hub Authors row label", failures)
+            if expect_native_hub_view_rows:
+                require("<explorer>Series</explorer>" in book_text, "Book resource includes native hub Series row label", failures)
+                require("<recent>Folders</recent>" in book_text, "Book resource includes native hub Folders row label", failures)
+            else:
+                require("<explorer>Folders</explorer>" in book_text, "Book resource includes native hub Folders row label", failures)
+    else:
+        require(False, "English Book resource exists", failures)
 
     config_json = root / "usr/resource/config.json"
     if config_json.exists():
@@ -659,17 +883,74 @@ def verify(
             failures,
         )
         require("AUDIOBOOK_BOOK_TITLE_AUTOSTART_DELAY_SECONDS=1" in resume_init_text, "resume init script uses tuned title autostart delay", failures)
-        require("AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED=1" in resume_init_text, "resume init enables pre-play direct track selection", failures)
+        require("AUDIOBOOK_BOOK_TITLE_LAUNCHER_TRACKLIST_WAIT_SECONDS=4" in resume_init_text, "resume init waits briefly for launcher track lists", failures)
+        require('old_pid=$(cat "$BASE/resume-daemon.pid"' in resume_init_text, "resume init stops stale resume daemon pid before restart", failures)
+        require('kill -9 "$old_pid"' in resume_init_text, "resume init force-cleans stale resume daemon pid", failures)
+        expected_track_restore = "0" if expect_conservative_resume_runtime else "1"
+        expected_autostart = "0" if expect_conservative_resume_runtime else "1"
+        expected_direct_features = "0" if expect_conservative_resume_runtime else "1"
+        expected_ui_seek = "0" if expect_conservative_resume_runtime else "1"
+        require(
+            f"AUDIOBOOK_TRACK_RESTORE_ENABLED={expected_track_restore}" in resume_init_text,
+            f"resume init sets track restore to {expected_track_restore}",
+            failures,
+        )
+        require(
+            f"AUDIOBOOK_BOOK_TITLE_AUTOSTART_ENABLED={expected_autostart}" in resume_init_text,
+            f"resume init sets book title autostart to {expected_autostart}",
+            failures,
+        )
+        require(
+            f"AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED={expected_direct_features}" in resume_init_text,
+            f"resume init sets pre-play direct track selection to {expected_direct_features}",
+            failures,
+        )
+        require(
+            f"AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED={expected_direct_features}" in resume_init_text,
+            f"resume init sets direct track selection to {expected_direct_features}",
+            failures,
+        )
+        require(
+            f"AUDIOBOOK_BOOK_TITLE_MEMSCAN_ENABLED={expected_direct_features}" in resume_init_text,
+            f"resume init sets title memscan to {expected_direct_features}",
+            failures,
+        )
+        require(
+            f"AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_CALIBRATE_ENABLED={expected_direct_features}" in resume_init_text,
+            f"resume init sets direct track calibration to {expected_direct_features}",
+            failures,
+        )
+        expected_first_track_entry = "0" if expect_conservative_resume_runtime else ("1" if expect_native_hub_view_rows else "0")
+        require(
+            f"AUDIOBOOK_TRACK_RESTORE_FIRST_TRACK_ENTRY_ENABLED={expected_first_track_entry}" in resume_init_text,
+            "resume init sets expected first-track entry restore mode",
+            failures,
+        )
+        require("AUDIOBOOK_TRACK_RESTORE_FIRST_TRACK_ENTRY_MAX_MS=15000" in resume_init_text, "resume init bounds first-track entry restore window", failures)
         require('cp -f /usr/bin/r1_audiobook_direct_open "$BASE/bin/r1_audiobook_direct_open"' in resume_init_text, "resume init installs direct-open helper", failures)
-        require("AUDIOBOOK_BOOK_TITLE_DIRECT_OPEN_ENABLED=1" in resume_init_text, "resume init enables one-shot direct-open helper", failures)
+        require(
+            f"AUDIOBOOK_BOOK_TITLE_DIRECT_OPEN_ENABLED={expected_direct_features}" in resume_init_text,
+            f"resume init sets one-shot direct-open helper to {expected_direct_features}",
+            failures,
+        )
         require("AUDIOBOOK_DIRECT_OPEN_PROBE_ADDR=0x760708" in resume_init_text, "resume init uses audited direct-open probe cave", failures)
         require("AUDIOBOOK_DIRECT_OPEN_ARM_DELAY_US=200000" in resume_init_text, "resume init uses short direct-open arm delay", failures)
         require("AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_ROWS_PER_SWIPE=4" in resume_init_text, "resume init sets direct track list geometry", failures)
         require("AUDIOBOOK_NEW_TRACK_COMMIT_MS=15000" in resume_init_text, "resume init script uses 15s new-track commit guard", failures)
         require("AUDIOBOOK_SAVE_BUCKET_MS=15000" in resume_init_text, "resume init script uses 15s steady-state save cadence", failures)
         require("AUDIOBOOK_RESUME_LOG_MAX_BYTES=524288" in resume_init_text, "resume init caps resume daemon log growth", failures)
+        require(
+            f"AUDIOBOOK_UI_SEEK_FALLBACK_ENABLED={expected_ui_seek}" in resume_init_text,
+            f"resume init sets UI seek fallback to {expected_ui_seek}",
+            failures,
+        )
         require("AUDIOBOOK_UI_SEEK_SCREEN_GUARD_ENABLED=1" in resume_init_text, "resume init script enables UI seek screen guard", failures)
-        require("AUDIOBOOK_BACK_GUARD_ENABLED=1" in resume_init_text, "resume init enables Audiobooks back-stack guard", failures)
+        expected_back_guard = "0" if (expect_conservative_resume_runtime or expect_native_hub_launcher) else "1"
+        require(
+            f"AUDIOBOOK_BACK_GUARD_ENABLED={expected_back_guard}" in resume_init_text,
+            "resume init sets the expected Audiobooks back-stack guard mode",
+            failures,
+        )
         require("AUDIOBOOK_BACK_GUARD_WINDOW_SECONDS=60" in resume_init_text, "resume init bounds Audiobooks back-stack guard polling", failures)
         require("AUDIOBOOK_BACK_GUARD_IDLE_INTERVAL_SECONDS=1" in resume_init_text, "resume init samples idle Audiobooks screen quickly", failures)
         require("AUDIOBOOK_BACK_GUARD_EXTRA_BACKS=2" in resume_init_text, "resume init sends two guarded backs to return to launcher", failures)
@@ -678,6 +959,7 @@ def verify(
 
     if require_db_maintenance:
         db_init = root / "etc/init.d/S92audiobook_db_maint.sh"
+        db_init_text = ""
         if db_init.exists():
             db_init_text = db_init.read_text(encoding="ascii", errors="replace")
             require("\r" not in db_init_text, "db maint init script uses LF line endings", failures)
@@ -711,13 +993,23 @@ def verify(
                 failures,
             )
             require(
-                "AUDIOBOOK_DB_ZERO_AUDIO_RETRY_TIMEOUT_SECONDS=180" in db_init_text,
+                "AUDIOBOOK_DB_ZERO_AUDIO_RETRY_TIMEOUT_SECONDS=600" in db_init_text,
                 "db maint init waits for late Audiobooks mount after empty boot pass",
                 failures,
             )
             require(
                 "AUDIOBOOK_DB_ZERO_AUDIO_RETRY_POLL_SECONDS=5" in db_init_text,
                 "db maint init polls late Audiobooks mount at low rate",
+                failures,
+            )
+            require(
+                "AUDIOBOOK_DB_LOCKED_DB_RETRY_TIMEOUT_SECONDS=600" in db_init_text,
+                "db maint init retries while stock media DB scan holds SQLite locks",
+                failures,
+            )
+            require(
+                "AUDIOBOOK_DB_LOCKED_DB_RETRY_POLL_SECONDS=5" in db_init_text,
+                "db maint init polls locked DB retries at low rate",
                 failures,
             )
             require("r1_usrlocal_media_seed.db" in db_init_text, "db maint init installs media DB seed", failures)
@@ -731,7 +1023,13 @@ def verify(
             require(b"--titles-catalog" in db_helper_bytes, "db maint helper supports title-view catalog flag", failures)
             require(b"--authors-catalog" in db_helper_bytes, "db maint helper supports author-view catalog flag", failures)
             require(b"--series-catalog" in db_helper_bytes, "db maint helper supports series-view catalog flag", failures)
+            require(b"--view-root" in db_helper_bytes, "db maint helper supports generated view-root flag", failures)
             require(b"--needs-maintenance" in db_helper_bytes, "db maint helper supports cheap repair-needed check", failures)
+            require(
+                b"audiobook files missing from DB" in db_helper_bytes,
+                "db maint helper checks filesystem audiobook paths during repair-needed checks",
+                failures,
+            )
 
         db_seed = root / "usr/bin/r1_usrlocal_media_seed.db"
         require(db_seed.exists() and db_seed.stat().st_size > 100000, f"media DB seed present: {db_seed}", failures)
@@ -741,7 +1039,11 @@ def verify(
             db_watch_text = db_watch.read_text(encoding="ascii", errors="replace")
             require("\r" not in db_watch_text, "db watch script uses LF line endings", failures)
             require("date -r \"$DB\" '+%s'" in db_watch_text, "db watch uses R1-supported date -r signature", failures)
-            require('run_maint "$run_reason"' in db_watch_text, "db watch runs maintainer after stable size-changing scan", failures)
+            require(
+                'run_maint_with_retries "$run_reason"' in db_watch_text,
+                "db watch runs maintainer with transient retry handling after stable size-changing scan",
+                failures,
+            )
             require("skip reason=mtime-only" in db_watch_text, "db watch skips mtime-only playback churn", failures)
             require("wait_for_stable_db boot" in db_watch_text, "db watch waits for boot DB stability before first maint run", failures)
             require("wait-stable-timeout reason=" in db_watch_text, "db watch logs boot DB stability timeout", failures)
@@ -758,15 +1060,32 @@ def verify(
             require("content-repair-mtime" in db_watch_text, "db watch repairs same-size content rewrites", failures)
             require("boot_stable_timeout=" in db_watch_text, "db watch start log includes boot stability timeout", failures)
             require("zero_audio_retry=" in db_watch_text, "db watch start log includes zero-audiobook retry timeout", failures)
-            require("run_maint boot" in db_watch_text, "db watch runs maintainer once after boot", failures)
-            require("retry_zero_audiobooks_if_needed boot" in db_watch_text, "db watch retries empty boot catalogs after late Audiobooks mount", failures)
+            require("locked_db_retry=" in db_watch_text, "db watch start log includes locked-DB retry timeout", failures)
+            require("run_maint_with_retries boot" in db_watch_text, "db watch runs maintainer once after boot with retry handling", failures)
+            require("retry_zero_audiobooks_if_needed" in db_watch_text, "db watch retries empty catalogs after late Audiobooks mount", failures)
             require("zero-audiobook-retry-ready" in db_watch_text, "db watch logs late Audiobooks readiness", failures)
+            require("defer-zero-audiobooks" in db_watch_text, "db watch defers zero-row audiobook repairs while audio files are present", failures)
+            require("mirror-skip reason=$reason db=$mirror_db primary-transient" in db_watch_text, "db watch avoids mirroring transient empty/locked primary DB results", failures)
+            require("LOCKED_DB_RETRY_TIMEOUT_SECONDS=${AUDIOBOOK_DB_LOCKED_DB_RETRY_TIMEOUT_SECONDS:-600}" in db_watch_text, "db watch defaults locked-DB retry timeout", failures)
+            require("failed-locked reason=" in db_watch_text, "db watch detects locked SQLite helper failures", failures)
+            require("locked-db-retry-start" in db_watch_text, "db watch retries after locked SQLite helper failures", failures)
             require("audiobook_tracks=${LAST_AUDIOBOOK_TRACKS:-unknown}" in db_watch_text, "db watch logs helper audiobook row counts", failures)
             require("--music-dir \"$MUSIC_DIR\"" in db_watch_text, "db watch passes Music folder to helper", failures)
             require("--books-catalog \"$CATALOG_BOOKS\"" in db_watch_text, "db watch writes book-level catalog", failures)
             require("--titles-catalog \"$CATALOG_TITLES\"" in db_watch_text, "db watch writes title-view catalog", failures)
             require("--authors-catalog \"$CATALOG_AUTHORS\"" in db_watch_text, "db watch writes author-view catalog", failures)
             require("--series-catalog \"$CATALOG_SERIES\"" in db_watch_text, "db watch writes series-view catalog", failures)
+            expected_view_generation = "1" if expect_native_hub_view_rows else "0"
+            require(
+                f"AUDIOBOOK_VIEW_GENERATION_ENABLED={expected_view_generation}" in db_init_text,
+                f"db maint init sets view generation to {expected_view_generation}",
+                failures,
+            )
+            require("VIEW_GENERATION_ENABLED=${AUDIOBOOK_VIEW_GENERATION_ENABLED:-0}" in db_watch_text, "db watch defaults generated view folders off", failures)
+            if expect_native_hub_view_rows:
+                require("--view-root $VIEW_ROOT" in db_watch_text, "db watch can write generated audiobook view folders", failures)
+            else:
+                require("--view-root \"$VIEW_ROOT\"" not in db_watch_text, "db watch does not force generated view folders in stable builds", failures)
             require("seeded-db reason=" in db_watch_text, "db watch seeds missing media DB", failures)
             require("LOG_MAX_BYTES=${AUDIOBOOK_DB_MAINT_LOG_MAX_BYTES:-524288}" in db_watch_text, "db watch defaults to capped log growth", failures)
             require("rotate_log_if_needed" in db_watch_text, "db watch rotates logs when capped", failures)
@@ -817,9 +1136,11 @@ def verify(
         require("AUDIOBOOK_DIRECT_OPEN_PROBE_ADDR" in daemon_text, "daemon exposes direct-open probe address", failures)
         require("allow_memscan_root" in daemon_text, "daemon can disable stale memscan root for context-only title starts", failures)
         require("book_title_should_preplay_direct_start" in daemon_text, "daemon has pre-play direct-start match guard", failures)
+        require("book_title_wait_for_launcher_track_list" in daemon_text, "daemon retains launcher track-list detector for guarded title-start handling", failures)
         require("book_title_preplay_allow_memscan_root" in daemon_text, "daemon can direct-start context title switches without stale memscan roots", failures)
         require("launcher|context|path|relaxed) printf" in daemon_text, "daemon disables stale memscan roots for launcher/context/path title starts", failures)
         require("book-title touch-first skipped reason=launcher" in daemon_text, "daemon skips launcher-only first-row autostart", failures)
+        require("book-title launcher-track-list back-to-title-list" in daemon_text, "daemon backs launcher-restored track lists to the title list", failures)
         require("restored_path:-" in daemon_text and "autostart_restore_active" in daemon_text, "daemon defers unresolved title-start bookmark overwrites", failures)
         require("book-title direct-start skipped reason=" in daemon_text, "daemon logs skipped context direct-starts", failures)
         require("restore settle after track restore path=" in daemon_text, "daemon settles before position restore after track jump", failures)
@@ -920,10 +1241,10 @@ def verify(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--out-dir", type=Path, default=Path("work/audiobook-firmware-1.6.16.2-audiobook"))
-    parser.add_argument("--upt-name", default="r1-audiobooks-1.6.16.2-audiobook.upt")
-    parser.add_argument("--expected-version", default="1.6.16.2-audiobook")
-    parser.add_argument("--expected-label", default="HiBy R1 Audiobook FW 1.6.16.2")
+    parser.add_argument("--out-dir", type=Path, default=Path("work/audiobook-firmware-1.6.16.4-audiobook"))
+    parser.add_argument("--upt-name", default="r1-audiobooks-1.6.16.4-audiobook.upt")
+    parser.add_argument("--expected-version", default="1.6.16.4-audiobook")
+    parser.add_argument("--expected-label", default="HiBy R1 Audiobook FW 1.6.16.4")
     parser.add_argument(
         "--stock-rootfs",
         type=Path,
@@ -981,6 +1302,36 @@ def main() -> int:
         help="Require an embedded /usr/bin/r1_audiobook_catalog.tsv seed catalog. Public builds normally omit this.",
     )
     parser.add_argument(
+        "--expect-native-hub-title-row",
+        action="store_true",
+        help="Verify the experimental native Audiobooks hub title-row entry path instead of the production direct launcher.",
+    )
+    parser.add_argument(
+        "--expect-native-hub-launcher",
+        action="store_true",
+        help="Require the experimental launcher callback that always opens the native Audiobooks hub root.",
+    )
+    parser.add_argument(
+        "--expect-native-hub-folder-rows",
+        action="store_true",
+        help="Require experimental native hub Authors/Folders rows to open the /Audiobooks explorer.",
+    )
+    parser.add_argument(
+        "--expect-native-hub-view-rows",
+        action="store_true",
+        help="Require native hub Titles/Authors/Series/Folders rows to open generated audiobook view folders.",
+    )
+    parser.add_argument(
+        "--expect-private-direct-route",
+        action="store_true",
+        help="Require the Audiobooks launcher to use a private direct route record.",
+    )
+    parser.add_argument(
+        "--expect-conservative-resume-runtime",
+        action="store_true",
+        help="Require the safer resume runtime profile with direct-start, UI touch fallback, memscan, and back guard disabled.",
+    )
+    parser.add_argument(
         "--expected-ota-version",
         type=int,
         default=0,
@@ -1007,6 +1358,12 @@ def main() -> int:
         expect_sbc_xq=args.expect_sbc_xq,
         expect_usb_dac_mode=args.expect_usb_dac_mode,
         expect_seed_catalog=args.expect_seed_catalog,
+        expect_native_hub_title_row=args.expect_native_hub_title_row,
+        expect_native_hub_launcher=args.expect_native_hub_launcher,
+        expect_native_hub_folder_rows=args.expect_native_hub_folder_rows,
+        expect_native_hub_view_rows=args.expect_native_hub_view_rows,
+        expect_private_direct_route=args.expect_private_direct_route,
+        expect_conservative_resume_runtime=args.expect_conservative_resume_runtime,
         expected_ota_version=args.expected_ota_version,
         expected_ota_site=args.expected_ota_site,
         stock_rootfs=args.stock_rootfs,

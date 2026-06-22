@@ -47,6 +47,8 @@ TRACK_RESTORE_MAX_STEPS=${AUDIOBOOK_TRACK_RESTORE_MAX_STEPS:-50}
 TRACK_RESTORE_KEY_FALLBACK_ENABLED=${AUDIOBOOK_TRACK_RESTORE_KEY_FALLBACK_ENABLED:-0}
 TRACK_RESTORE_NEAR_MISS_TRANSPORT_ENABLED=${AUDIOBOOK_TRACK_RESTORE_NEAR_MISS_TRANSPORT_ENABLED:-1}
 TRACK_RESTORE_NEAR_MISS_MAX_STEPS=${AUDIOBOOK_TRACK_RESTORE_NEAR_MISS_MAX_STEPS:-4}
+TRACK_RESTORE_FIRST_TRACK_ENTRY_ENABLED=${AUDIOBOOK_TRACK_RESTORE_FIRST_TRACK_ENTRY_ENABLED:-0}
+TRACK_RESTORE_FIRST_TRACK_ENTRY_MAX_MS=${AUDIOBOOK_TRACK_RESTORE_FIRST_TRACK_ENTRY_MAX_MS:-15000}
 TRACK_SWITCH_SETTLE_SECONDS=${AUDIOBOOK_TRACK_SWITCH_SETTLE_SECONDS:-3}
 TRACK_SWITCH_POLL_US=${AUDIOBOOK_TRACK_SWITCH_POLL_US:-200000}
 TOUCH_NEXT_EVENT_FILE=${AUDIOBOOK_TOUCH_NEXT_EVENT_FILE:-$BASE_DIR/input/touch_next_event1.bin}
@@ -78,6 +80,7 @@ KEY_PREV_EVENT_NODE=${AUDIOBOOK_KEY_PREV_EVENT_NODE:-/dev/input/event2}
 BOOK_TITLE_AUTOSTART_ENABLED=${AUDIOBOOK_BOOK_TITLE_AUTOSTART_ENABLED:-1}
 BOOK_TITLE_MARKER_ADDR=${AUDIOBOOK_BOOK_TITLE_MARKER_ADDR:-9322496}
 BOOK_TITLE_AUTOSTART_DELAY_SECONDS=${AUDIOBOOK_BOOK_TITLE_AUTOSTART_DELAY_SECONDS:-2}
+BOOK_TITLE_LAUNCHER_TRACKLIST_WAIT_SECONDS=${AUDIOBOOK_BOOK_TITLE_LAUNCHER_TRACKLIST_WAIT_SECONDS:-4}
 BOOK_TITLE_TRACK_LIST_OFFSET=${AUDIOBOOK_BOOK_TITLE_TRACK_LIST_OFFSET:-52}
 BOOK_TITLE_TRACK_LIST_SCAN_BYTES=${AUDIOBOOK_BOOK_TITLE_TRACK_LIST_SCAN_BYTES:-4096}
 BOOK_TITLE_CATALOG_SCAN_PTR_OFFSET=${AUDIOBOOK_BOOK_TITLE_CATALOG_SCAN_PTR_OFFSET:-44}
@@ -974,6 +977,29 @@ audiobook_title_list_visible() {
   return 0
 }
 
+audiobook_track_list_visible() {
+  subheader_pixels=$(fb_white_pixels_region 60 118 220 155 2>/dev/null || echo 0)
+  header_pixels=$(fb_white_pixels_region 60 70 380 110 2>/dev/null || echo 0)
+  case "$subheader_pixels" in ''|*[!0-9]*) subheader_pixels=0 ;; esac
+  case "$header_pixels" in ''|*[!0-9]*) header_pixels=0 ;; esac
+  [ "$subheader_pixels" -ge "$BACK_GUARD_SUBHEADER_MIN_WHITE" ] || return 1
+  audiobook_title_list_visible && return 1
+  [ "$header_pixels" -ge 150 ] || return 1
+  return 0
+}
+
+book_title_wait_for_launcher_track_list() {
+  case "$BOOK_TITLE_LAUNCHER_TRACKLIST_WAIT_SECONDS" in
+    ''|*[!0-9]*|0) return 1 ;;
+  esac
+  sleep "$BOOK_TITLE_LAUNCHER_TRACKLIST_WAIT_SECONDS"
+  audiobook_track_list_visible && {
+    log "book-title launcher track-list visible"
+    return 0
+  }
+  return 1
+}
+
 audiobook_global_back_target_visible() {
   subheader_pixels=$(fb_white_pixels_region 60 118 220 155 2>/dev/null || echo 0)
   header_pixels=$(fb_white_pixels_region 20 70 230 110 2>/dev/null || echo 0)
@@ -1686,11 +1712,6 @@ maybe_restore_track() {
   case "$saved_pos" in ''|*[!0-9]*) return 0 ;; esac
   [ "$saved_pos" -ge "$RESTORE_MIN_MS" ] || return 0
   [ "$pos" -le "$RESTORE_ONLY_BEFORE_MS" ] || return 0
-  if [ "${autostart_restore_active:-0}" != 1 ]; then
-    log "skip track-restore for manual track selection path=$path saved_path=$saved_path pos_ms=$pos"
-    return 0
-  fi
-
   current_index=$(catalog_field_for_path 2 "$path" || true)
   saved_index=$(catalog_field_for_path 2 "$saved_path" || true)
   case "$current_index:$saved_index" in
@@ -1699,6 +1720,27 @@ maybe_restore_track() {
       return 1
       ;;
   esac
+  if [ "${autostart_restore_active:-0}" != 1 ]; then
+    first_entry_ok=0
+    case "$TRACK_RESTORE_FIRST_TRACK_ENTRY_ENABLED" in
+      1)
+        case "$TRACK_RESTORE_FIRST_TRACK_ENTRY_MAX_MS:$pos" in
+          ''|*[!0-9:]*|0:*) first_entry_ok=0 ;;
+          *)
+            if [ "$current_index" -eq 1 ] && [ "$saved_index" -gt 1 ] && [ "$pos" -le "$TRACK_RESTORE_FIRST_TRACK_ENTRY_MAX_MS" ]; then
+              first_entry_ok=1
+            fi
+            ;;
+        esac
+        ;;
+    esac
+    if [ "$first_entry_ok" != 1 ]; then
+      log "skip track-restore for manual track selection path=$path saved_path=$saved_path pos_ms=$pos"
+      return 0
+    fi
+    log "track-restore first-track entry current=$current_index saved=$saved_index pos_ms=$pos saved_path=$saved_path"
+  fi
+
   if [ "$saved_index" -gt "$current_index" ]; then
     direction=next
     steps=$((saved_index - current_index))
@@ -2154,8 +2196,18 @@ maybe_autostart_book_title() {
   else
     log "book-title direct-start skipped reason=$match_reason track_list_ptr=$track_list_ptr catalog_scan_ptr=$catalog_scan_ptr"
   fi
-  if [ "$match_reason" = launcher ] && audiobook_title_list_visible; then
-    log "book-title touch-first skipped reason=launcher-title-list track_list_ptr=$track_list_ptr catalog_scan_ptr=$catalog_scan_ptr"
+  if [ "$match_reason" = launcher ]; then
+    launcher_screen=unknown
+    if audiobook_title_list_visible; then
+      launcher_screen=title-list
+    elif audiobook_track_list_visible; then
+      launcher_screen=track-list
+    fi
+    log "book-title touch-first skipped reason=launcher screen=$launcher_screen track_list_ptr=$track_list_ptr catalog_scan_ptr=$catalog_scan_ptr"
+    if [ "$launcher_screen" = track-list ]; then
+      log "book-title launcher-track-list back-to-title-list track_list_ptr=$track_list_ptr catalog_scan_ptr=$catalog_scan_ptr"
+      touch_back_to_track_list || return 1
+    fi
     return 0
   fi
   touch_first_track || return 1
