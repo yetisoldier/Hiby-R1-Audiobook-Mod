@@ -2,6 +2,24 @@
 
 All public releases are for the normal HiBy R1 on stock firmware 1.6. Do not install these packages on the R1 MIDI.
 
+## v1.6.1 - 2026-06-22
+
+Firmware marker: `1.6.18-audiobook`
+
+Hotfix for `v1.6.0`.
+
+- Renamed the Audiobooks hub's misleading `Scan` row to `Refresh Library`.
+- Replaced the stock text-book scan action behind that row with an audiobook-aware refresh action.
+- Tapping `Refresh Library` now opens `Titles` as visible feedback, instead of appearing to do nothing.
+- The refresh action writes a request marker and starts an immediate background audiobook catalog/view rebuild.
+- Refresh logs are written to `/usr/data/audiobooks/refresh.log` with start, row-count, mirror-copy, and completion lines.
+- Fixed a boot-timing edge case where a manual refresh request could be swallowed if tapped during the post-boot watcher window.
+- Local verification passed for `r1-audiobooks-1.6.18-audiobook.upt`.
+- Live installed-device verification passed on the test R1 with the matching `1.6.17.2-refresh-dev` build: `Refresh Library` rebuilt 135 audiobook tracks, opened the title list, DB integrity was `ok`, Music album/search leakage remained zero, and resume/DB watcher processes were running.
+- Built package `r1-audiobooks-1.6.18-audiobook.upt`. MD5: `e3dba87c24ef84196ec1c91fe3c3e26a`; SHA256: `e42d70d84bf3353391c16fa60f83f399d2624226d2792f3c7882d9a1bbe45253`.
+- Rootfs MD5: `dd47cf5f338d70ecab1f8be108529505`; Rootfs SHA256: `bfac581b61ff87c133bb5eb085a5ce5bb56db10678bae84697fae04d8697f8e6`.
+- All `v1.6.0` native Audiobooks hub, generated title/author/series views, folder-based audiobook detection, resume behavior, Native DSD, Bluetooth SBC XQ, and USB DAC-related behavior is otherwise retained.
+
 ## v1.6.0 - 2026-06-22
 
 Firmware marker: `1.6.17-audiobook`

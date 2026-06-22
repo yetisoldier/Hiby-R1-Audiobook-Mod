@@ -5,31 +5,32 @@ the verification evidence that should be checked before publishing.
 
 ## Current Release Candidate
 
-- GitHub release: `v1.6.0`
-- Firmware marker: `1.6.17-audiobook`
+- GitHub release: `v1.6.1`
+- Firmware marker: `1.6.18-audiobook`
 - Base firmware: stock HiBy R1 1.6 for the normal R1, not R1 MIDI.
-- Package: `work\audiobook-firmware-1.6.17-audiobook\r1-audiobooks-1.6.17-audiobook.upt`
-- Package MD5: `e8491f65ead4ef7a34163a67c7ee7007`
-- Package SHA256: `47b6b2aa85f0f14d13d659f0f3f987808f7d389a7a32bf7e54676388e6f82523`
-- Rootfs MD5: `d8c6a46cb4dc90624042f89224f611e6`
-- Rootfs SHA256: `687b83dff23319af917e19af9bb1bc1c95a7f6c915e852d175385b1c4e9d6b5f`
+- Package: `work\audiobook-firmware-1.6.18-audiobook\r1-audiobooks-1.6.18-audiobook.upt`
+- Package MD5: `e3dba87c24ef84196ec1c91fe3c3e26a`
+- Package SHA256: `e42d70d84bf3353391c16fa60f83f399d2624226d2792f3c7882d9a1bbe45253`
+- Rootfs MD5: `dd47cf5f338d70ecab1f8be108529505`
+- Rootfs SHA256: `bfac581b61ff87c133bb5eb085a5ce5bb56db10678bae84697fae04d8697f8e6`
 - Visible About version is expected to truncate because the stock UI does not
   show the full suffix.
 
-## Verified Changes Since 1.6.16.5
+## Verified Changes Since v1.6.0
 
-- Native Audiobooks hub with `Scan`, `Titles`, `Authors`, `Series`, and
+- Renamed the Audiobooks hub `Scan` row to `Refresh Library`.
+- Replaced the old stock text-book scan action with an audiobook library refresh.
+- `Refresh Library` opens the generated `Titles` view as visible feedback while
+  the refresh runs in the background.
+- Added `/usr/bin/r1_audiobook_refresh.sh` for a manual refresh request path,
+  stale-safe locking, refresh logging, and immediate DB/catalog maintenance.
+- Updated the DB watcher so manual refresh requests made during the boot/post-
+  flash watcher window are still processed.
+- Kept native Audiobooks hub rows for `Titles`, `Authors`, `Series`, and
   `Folders`.
-- Generated title, author, and series playlist views under `/Audiobooks/_views`.
-- `Folders` opens `/Audiobooks` with the friendly `Folders` header when entered
-  from the Audiobooks hub.
-- DB helper repairs the internal `Audiobook` route row/count required by the
-  native hub after scans and SD swaps.
-- DB helper avoids embedded-NUL text fields for audiobook media rows.
-- Release verification checks generated view catalogs, route-row repair state,
-  and embedded-NUL audiobook fields.
-- All `v1.5.4` SD-swap, folder-based audiobook detection, resume, Native DSD,
-  Bluetooth SBC XQ, and USB DAC behavior is retained.
+- All `v1.6.0` generated title/author/series views, folder-based audiobook
+  detection, resume behavior, Native DSD, Bluetooth SBC XQ, and USB DAC-related
+  behavior is otherwise retained.
 
 ## Local Verification
 
@@ -37,20 +38,22 @@ Local package verification passed on 2026-06-22:
 
 ```powershell
 python tools\verify_r1_audiobook_build.py `
-  --out-dir work\audiobook-firmware-1.6.17-audiobook `
-  --upt-name r1-audiobooks-1.6.17-audiobook.upt `
-  --expected-version 1.6.17-audiobook `
-  --expected-label "HiBy R1 Audiobook FW 1.6.17" `
+  --out-dir work\audiobook-firmware-1.6.18-audiobook `
+  --upt-name r1-audiobooks-1.6.18-audiobook.upt `
+  --expected-version 1.6.18-audiobook `
+  --expected-label "HiBy R1 Audiobook FW 1.6.18" `
   --require-db-maintenance `
   --expect-audiobook-launcher-icon `
   --expect-native-dsd `
   --expect-sbc-xq `
   --expect-usb-dac-mode `
   --expect-native-hub-launcher `
-  --expect-native-hub-view-rows
+  --expect-native-hub-view-rows `
+  --expect-current-hashes
 ```
 
-The default verifier also supports:
+The default verifier now points at this release package, so the shorter command
+is also valid:
 
 ```powershell
 python tools\verify_r1_audiobook_build.py `
@@ -59,20 +62,23 @@ python tools\verify_r1_audiobook_build.py `
   --expect-native-dsd `
   --expect-sbc-xq `
   --expect-usb-dac-mode `
+  --expect-native-hub-launcher `
+  --expect-native-hub-view-rows `
   --expect-current-hashes
 ```
 
 ## Device Verification
 
-The public `1.6.17` package passed installed verification on the test R1 on
-2026-06-22. The latest verification artifacts are under
-`work\installed-release-verification\20260622-141615`.
+The public-labeled `1.6.18-audiobook` package passed local package verification.
+The matching `1.6.17.2-refresh-dev` build was installed and live-tested on the
+test R1 before public relabeling. The latest installed-device artifacts are
+under `work\installed-release-verification\20260622-144832`.
 
 Command used:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\adb_verify_installed_audiobook_release.ps1 `
-  -ExpectedVersion 1.6.17-audiobook `
+  -ExpectedVersion 1.6.17.2-refresh-dev `
   -ExpectNativeDsd `
   -ExpectBluetoothSbcXq `
   -ExpectUsbDacMode `
@@ -82,43 +88,38 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\adb_verify_installed_a
 
 Verified installed state:
 
-- `/etc/r1_audiobook_version` and `/usr/resource/config.json` report
-  `1.6.17-audiobook`.
-- Native DSD, Bluetooth SBC XQ, and USB DAC markers are present.
+- `/etc/r1_audiobook_version` and `/usr/resource/config.json` reported the
+  matching refresh-dev marker.
+- Native DSD, Bluetooth SBC XQ, and USB DAC markers were present.
 - Resume daemon and DB watcher were running.
-- SD-root `r1.upt` was allowed during staged verification; remove or rename it
-  after manual install.
 - DB integrity was `ok`.
 - Audiobooks contained 135 media rows across six books on the test SD card.
-- Title, author, and series sidecar catalogs were present and pulled.
-- One internal `Audiobook` route row exists with the correct audiobook count.
 - Music search and album tables had no audiobook leakage.
-- No known active development artifacts remained under `/usr/data/audiobooks`.
+- The `Refresh Library` row opened the generated title list as feedback.
+- Refresh logging showed a completed manual refresh, 135 audiobook tracks, and a
+  successful mirror copy to the SD-root database.
 - Audiobook detection is based on `/Audiobooks` folder location, not an exact
   genre tag.
-- UI smoke after flashing opened the launcher Audiobooks hub, showed `Scan`,
-  `Titles`, `Authors`, `Series`, and `Folders`, and launched a generated title
-  row into Now Playing with resume around the saved position.
 
 ## Publish Commands
 
-After release assets are staged under `firmware\releases\v1.6.0`:
+After release assets are staged under `firmware\releases\v1.6.1`:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\publish_github_release.ps1 `
-  -Tag v1.6.0 `
-  -Name "HiBy R1 Audiobook Mod v1.6.0" `
-  -BodyFile firmware\releases\v1.6.0\README.md `
-  -Assets "firmware\releases\v1.6.0\r1-audiobooks-1.6.17-audiobook.upt,firmware\releases\v1.6.0\MD5SUMS.txt,firmware\releases\v1.6.0\SHA256SUMS.txt"
+  -Tag v1.6.1 `
+  -Name "HiBy R1 Audiobook Mod v1.6.1" `
+  -BodyFile firmware\releases\v1.6.1\README.md `
+  -Assets "firmware\releases\v1.6.1\r1-audiobooks-1.6.18-audiobook.upt,firmware\releases\v1.6.1\MD5SUMS.txt,firmware\releases\v1.6.1\SHA256SUMS.txt"
 ```
 
 Then verify:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\publish_github_release.ps1 `
-  -Tag v1.6.0 `
+  -Tag v1.6.1 `
   -VerifyOnly `
-  -Assets "firmware\releases\v1.6.0\r1-audiobooks-1.6.17-audiobook.upt,firmware\releases\v1.6.0\MD5SUMS.txt,firmware\releases\v1.6.0\SHA256SUMS.txt"
+  -Assets "firmware\releases\v1.6.1\r1-audiobooks-1.6.18-audiobook.upt,firmware\releases\v1.6.1\MD5SUMS.txt,firmware\releases\v1.6.1\SHA256SUMS.txt"
 ```
 
 ## Known Limitations

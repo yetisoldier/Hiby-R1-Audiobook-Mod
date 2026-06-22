@@ -45,7 +45,7 @@ NATIVE_HUB_BOOK_INSERTIONS = {
 }
 
 NATIVE_HUB_VIEW_BOOK_REPLACEMENTS = {
-    "search": "Scan",
+    "search": "Refresh Library",
     "ebook": "Audiobooks",
     "collect": "Authors",
     "explorer": "Series",

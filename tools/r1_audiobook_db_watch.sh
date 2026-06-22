@@ -16,6 +16,7 @@ CATALOG_BOOKS=${AUDIOBOOK_CATALOG_BOOKS:-$BASE/catalog-books.tsv}
 CATALOG_TITLES=${AUDIOBOOK_CATALOG_TITLES:-$BASE/catalog-view-title.tsv}
 CATALOG_AUTHORS=${AUDIOBOOK_CATALOG_AUTHORS:-$BASE/catalog-view-author.tsv}
 CATALOG_SERIES=${AUDIOBOOK_CATALOG_SERIES:-$BASE/catalog-view-series.tsv}
+REFRESH_REQUEST=${AUDIOBOOK_REFRESH_REQUEST:-$BASE/refresh.request}
 SEED_DB=${AUDIOBOOK_DB_SEED:-$BASE/bin/r1_usrlocal_media_seed.db}
 LOG=${AUDIOBOOK_DB_MAINT_LOG:-$BASE/db-maint.log}
 PID_FILE=${AUDIOBOOK_DB_MAINT_PID:-$BASE/db-maint.pid}
@@ -96,6 +97,10 @@ mirror_db_signature() {
     [ -n "$mirror_sig" ] || continue
     printf '%s=%s;' "$mirror_db" "$mirror_sig"
   done
+}
+
+refresh_request_signature() {
+  path_signature "$REFRESH_REQUEST" 2>/dev/null || true
 }
 
 has_audiobook_audio_files() {
@@ -606,6 +611,7 @@ last_mirror_sig=
 last_seen_mirror_sig=
 last_seen_mirror_at=0
 last_run_at=0
+last_refresh_sig=$(refresh_request_signature 2>/dev/null || true)
 
 ensure_db_seeded boot || true
 wait_for_stable_db boot "$BOOT_STABLE_TIMEOUT_SECONDS" || true
@@ -628,6 +634,23 @@ while :; do
   sig_size=$(signature_size "$sig")
   [ -n "$size" ] || size=$sig_size
   now=$(now_seconds)
+  refresh_sig=$(refresh_request_signature 2>/dev/null || true)
+  if [ -n "$refresh_sig" ] && [ "$refresh_sig" != "$last_refresh_sig" ]; then
+    last_refresh_sig=$refresh_sig
+    log "manual-refresh-request sig=$refresh_sig"
+    run_maint_with_retries manual-refresh || true
+    last_sig=$(db_signature 2>/dev/null || echo "$sig")
+    last_size=$(db_size_signature 2>/dev/null || echo "$size")
+    [ -n "$last_size" ] || last_size=$(signature_size "$last_sig")
+    last_mirror_sig=$(mirror_db_signature 2>/dev/null || true)
+    last_seen_mirror_sig=$last_mirror_sig
+    last_seen_mirror_at=$now
+    last_seen_sig=$last_sig
+    last_seen_size=$last_size
+    last_seen_at=$now
+    last_run_at=$now
+    continue
+  fi
   if [ -z "$sig" ]; then
     continue
   fi

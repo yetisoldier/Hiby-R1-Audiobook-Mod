@@ -9,7 +9,7 @@ param(
     [string]$WindowsHelper = "work\native-db-maint\r1_audiobook_db_maint_win_test.exe",
 
     [Parameter(Mandatory=$false)]
-    [string]$MipsHelper = "work\native-db-maint\r1_audiobook_db_maint_enhanced"
+    [string]$MipsHelper = "work\native-db-maint\r1_audiobook_db_maint"
 )
 
 $ErrorActionPreference = "Stop"
@@ -72,7 +72,7 @@ foreach ($file in $psFiles) {
 }
 
 Invoke-Checked {
-    wsl -d $Distro --cd $repoRoot --exec sh -lc 'sh -n tools/r1_audiobook_resume_daemon.sh && sh -n tools/r1_audiobook_db_watch.sh && sh -n tools/test_r1_resume_daemon_logic.sh && sh -n tools/test_r1_db_watch_logic.sh'
+    wsl -d $Distro --cd $repoRoot --exec sh -lc 'sh -n tools/r1_audiobook_resume_daemon.sh && sh -n tools/r1_audiobook_db_watch.sh && sh -n tools/r1_audiobook_refresh.sh && sh -n tools/test_r1_resume_daemon_logic.sh && sh -n tools/test_r1_db_watch_logic.sh'
 } "Shell syntax"
 
 Invoke-Checked {

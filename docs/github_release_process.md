@@ -12,19 +12,19 @@ Use the checked-in publisher instead of retyping REST calls by hand:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\publish_github_release.ps1 `
-  -Tag v1.5.2 `
-  -Name "HiBy R1 Audiobook Mod v1.5.2" `
-  -BodyFile firmware\releases\v1.5.2\README.md `
-  -Assets "firmware\releases\v1.5.2\r1-audiobooks-1.6.16.2-audiobook.upt,firmware\releases\v1.5.2\MD5SUMS.txt,firmware\releases\v1.5.2\SHA256SUMS.txt"
+  -Tag v1.6.1 `
+  -Name "HiBy R1 Audiobook Mod v1.6.1" `
+  -BodyFile firmware\releases\v1.6.1\README.md `
+  -Assets "firmware\releases\v1.6.1\r1-audiobooks-1.6.18-audiobook.upt,firmware\releases\v1.6.1\MD5SUMS.txt,firmware\releases\v1.6.1\SHA256SUMS.txt"
 ```
 
 Then verify the public release object and assets:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\publish_github_release.ps1 `
-  -Tag v1.5.2 `
+  -Tag v1.6.1 `
   -VerifyOnly `
-  -Assets "firmware\releases\v1.5.2\r1-audiobooks-1.6.16.2-audiobook.upt,firmware\releases\v1.5.2\MD5SUMS.txt,firmware\releases\v1.5.2\SHA256SUMS.txt"
+  -Assets "firmware\releases\v1.6.1\r1-audiobooks-1.6.18-audiobook.upt,firmware\releases\v1.6.1\MD5SUMS.txt,firmware\releases\v1.6.1\SHA256SUMS.txt"
 ```
 
 If an asset was uploaded incorrectly, re-run with `-ReplaceAssets` after
@@ -74,6 +74,6 @@ page:
 ```powershell
 Invoke-RestMethod `
   -Method Get `
-  -Uri "https://api.github.com/repos/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tags/v1.5.2" `
+  -Uri "https://api.github.com/repos/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tags/v1.6.1" `
   -Headers @{ "User-Agent" = "hiby-r1-audiobook-release-check"; Accept = "application/vnd.github+json" }
 ```

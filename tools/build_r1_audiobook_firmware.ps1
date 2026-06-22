@@ -77,6 +77,9 @@ param(
     [string]$AudiobookDbWatch = "tools\r1_audiobook_db_watch.sh",
 
     [Parameter(Mandatory=$false)]
+    [string]$AudiobookRefreshRequest = "tools\r1_audiobook_refresh.sh",
+
+    [Parameter(Mandatory=$false)]
     [string]$MediaDbSeed = "firmware\seed\usrlocal_media.seed.db",
 
     [Parameter(Mandatory=$false)]
@@ -684,9 +687,11 @@ start-stop-daemon -S -b -m -p "$BASE/resume-daemon.ssd.pid" -x /bin/sh -- "$BASE
 if ($IncludeAudiobookDbMaintenance) {
     $dbMaintHelperPath = Resolve-PathStrict $AudiobookDbMaintHelper
     $dbWatchPath = Resolve-PathStrict $AudiobookDbWatch
+    $dbRefreshPath = Resolve-PathStrict $AudiobookRefreshRequest
     $mediaDbSeedPath = Resolve-PathStrict $MediaDbSeed
     Copy-Item -Force -LiteralPath $dbMaintHelperPath -Destination (Join-Path $rootTree "usr\bin\r1_audiobook_db_maint")
     Copy-Item -Force -LiteralPath $dbWatchPath -Destination (Join-Path $rootTree "usr\bin\r1_audiobook_db_watch.sh")
+    Copy-Item -Force -LiteralPath $dbRefreshPath -Destination (Join-Path $rootTree "usr\bin\r1_audiobook_refresh.sh")
     Copy-Item -Force -LiteralPath $mediaDbSeedPath -Destination (Join-Path $rootTree "usr\bin\r1_usrlocal_media_seed.db")
 
     $dbMaintBootScript = Join-Path $rootTree "etc\init.d\S92audiobook_db_maint.sh"
@@ -807,6 +812,7 @@ $newFileModeOverrides += @(
     @{ Path = "usr\bin\r1_audiobook_resume_daemon.sh"; Mode = "0755" },
     @{ Path = "usr\bin\r1_audiobook_db_maint"; Mode = "0755" },
     @{ Path = "usr\bin\r1_audiobook_db_watch.sh"; Mode = "0755" },
+    @{ Path = "usr\bin\r1_audiobook_refresh.sh"; Mode = "0755" },
     @{ Path = "usr\bin\r1_usrlocal_media_seed.db"; Mode = "0644" },
     @{ Path = "usr\bin\r1_touch_next_event1.bin"; Mode = "0644" },
     @{ Path = "usr\bin\r1_touch_first_track_event1.bin"; Mode = "0644" },

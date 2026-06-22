@@ -26,6 +26,8 @@ from patch_hiby_player import (
     AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_LABEL,
     AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_PATH,
     AUDIOBOOK_NATIVE_HUB_VIEW_OPEN_HELPER_CODE,
+    AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CMD,
+    AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CODE,
     AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_CODE,
     AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_LABEL,
     AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_PATH,
@@ -36,6 +38,10 @@ from patch_hiby_player import (
 
 
 EXPECTED_CURRENT_HASHES = {
+    "r1-audiobooks-1.6.18-audiobook.upt": {
+        "md5": "e3dba87c24ef84196ec1c91fe3c3e26a",
+        "sha256": "e42d70d84bf3353391c16fa60f83f399d2624226d2792f3c7882d9a1bbe45253",
+    },
     "r1-audiobooks-1.6.28-sd-ready-dev.upt": {
         "md5": "121e86097b433526e24d0f602d4310aa",
         "sha256": "f90e1fc62934ec1fe69b3c06169aa72881cc8f27ca8d9f6db6049a5c3ff34d06",
@@ -93,8 +99,8 @@ EXPECTED_CURRENT_HASHES = {
         "sha256": "02b286676d93ec683307820e1ef40288f34ef21a42a24f5cbda361f2d3733b7b",
     },
     "rootfs.squashfs": {
-        "md5": "1797f124a92177605e776615144f323a",
-        "sha256": "cf2076de6c700abd24d66dc587ac3109786829e5f589f4068e61988b0a481325",
+        "md5": "dd47cf5f338d70ecab1f8be108529505",
+        "sha256": "bfac581b61ff87c133bb5eb085a5ce5bb56db10678bae84697fae04d8697f8e6",
     },
     "r1-audiobooks-1.6.3-audiobook.upt": {
         "md5": "1954b92ae7a394a0dc450c2d5f70f3d2",
@@ -105,8 +111,8 @@ EXPECTED_CURRENT_HASHES = {
         "sha256": "9138fd1e91c008205f81857095c50341898d535fae11cc42edec6ed12556e519",
     },
     "squashfs-root/usr/bin/hiby_player": {
-        "md5": "09997a636c94112ff76c85a6d4a8d0ff",
-        "sha256": "f49ea55a48c1bdf1398a2a6672b1d596516650f7ebe77846ba7c33a5cfee329c",
+        "md5": "cd4d2812ab3425174b52925766424d2b",
+        "sha256": "a977d74043d997c6eb34720bd3e0e8c17f88caee6e0ec520cb05807b7a987bd4",
     },
 }
 
@@ -250,6 +256,10 @@ PLAYER_NATIVE_HUB_FOLDER_ROW_BYTE_CHECKS = {
 }
 
 PLAYER_NATIVE_HUB_VIEW_ROW_BYTE_CHECKS = {
+    "native hub view Refresh cave @0x360A08": (
+        0x360A08,
+        AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CODE,
+    ),
     "native hub view Titles cave @0x360708": (
         0x360708,
         AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_CODE,
@@ -301,6 +311,14 @@ PLAYER_NATIVE_HUB_VIEW_ROW_BYTE_CHECKS = {
     "native hub view Folders path @0x360988": (
         0x360988,
         AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_PATH,
+    ),
+    "native hub view Refresh command @0x360A80": (
+        0x360A80,
+        AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CMD,
+    ),
+    "native hub Refresh row jump-table entry @0x38D278": (
+        0x38D278,
+        bytes.fromhex("080a7600"),
     ),
     "native hub Titles row jump-table entry @0x38D27C": (
         0x38D27C,
@@ -385,6 +403,7 @@ DB_MAINT_FILE_MODE_CHECKS = {
     "squashfs-root/etc/init.d/S92audiobook_db_maint.sh": "-rwxr-xr-x",
     "squashfs-root/usr/bin/r1_audiobook_db_maint": "-rwxr-xr-x",
     "squashfs-root/usr/bin/r1_audiobook_db_watch.sh": "-rwxr-xr-x",
+    "squashfs-root/usr/bin/r1_audiobook_refresh.sh": "-rwxr-xr-x",
     "squashfs-root/usr/bin/r1_usrlocal_media_seed.db": "-rw-r--r--",
 }
 
@@ -641,6 +660,7 @@ def verify(
                 root / "etc/init.d/S92audiobook_db_maint.sh",
                 root / "usr/bin/r1_audiobook_db_maint",
                 root / "usr/bin/r1_audiobook_db_watch.sh",
+                root / "usr/bin/r1_audiobook_refresh.sh",
             ]
         )
     for path in required_paths:
@@ -817,6 +837,7 @@ def verify(
             require("<ebook>Audiobooks</ebook>" in book_text, "Book resource keeps Audiobooks page title", failures)
             require("<collect>Authors</collect>" in book_text, "Book resource includes native hub Authors row label", failures)
             if expect_native_hub_view_rows:
+                require("<search>Refresh Library</search>" in book_text, "Book resource repurposes stock Scan row as Refresh Library", failures)
                 require("<explorer>Series</explorer>" in book_text, "Book resource includes native hub Series row label", failures)
                 require("<recent>Folders</recent>" in book_text, "Book resource includes native hub Folders row label", failures)
             else:
@@ -1152,8 +1173,23 @@ def verify(
             require("trap 'cleanup; exit 0' HUP INT TERM" in db_watch_text, "db watch exits cleanly on service stop", failures)
             require("exit reason=already-running" in db_watch_text, "db watch exits when another watcher is active", failures)
             require('compare_last_size=$(signature_size "$last_sig")' in db_watch_text, "db watch compares signature sizes for mtime-only churn", failures)
+            require("REFRESH_REQUEST=${AUDIOBOOK_REFRESH_REQUEST:-$BASE/refresh.request}" in db_watch_text, "db watch tracks manual refresh request file", failures)
+            require("refresh_request_signature()" in db_watch_text, "db watch has manual refresh request signature helper", failures)
+            require("manual-refresh-request" in db_watch_text, "db watch logs manual refresh requests", failures)
+            require("run_maint_with_retries manual-refresh" in db_watch_text, "db watch forces maintenance on manual refresh requests", failures)
         else:
             require(False, "db watch script exists", failures)
+
+        db_refresh = root / "usr/bin/r1_audiobook_refresh.sh"
+        if db_refresh.exists():
+            db_refresh_text = db_refresh.read_text(encoding="ascii", errors="replace")
+            require("\r" not in db_refresh_text, "db refresh script uses LF line endings", failures)
+            require("refresh.request" in db_refresh_text, "db refresh script writes refresh request file", failures)
+            require("/usr/data/audiobooks" in db_refresh_text, "db refresh script defaults to audiobook data directory", failures)
+            require("--view-root \"$VIEW_ROOT\"" in db_refresh_text, "db refresh script rebuilds generated audiobook views", failures)
+            require("refresh done rc=$rc" in db_refresh_text, "db refresh script logs completion", failures)
+        else:
+            require(False, "db refresh script exists", failures)
 
     daemon = root / "usr/bin/r1_audiobook_resume_daemon.sh"
     if daemon.exists():
@@ -1298,10 +1334,10 @@ def verify(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--out-dir", type=Path, default=Path("work/audiobook-firmware-1.6.16.5-audiobook"))
-    parser.add_argument("--upt-name", default="r1-audiobooks-1.6.16.5-audiobook.upt")
-    parser.add_argument("--expected-version", default="1.6.16.5-audiobook")
-    parser.add_argument("--expected-label", default="HiBy R1 Audiobook FW 1.6.16.5")
+    parser.add_argument("--out-dir", type=Path, default=Path("work/audiobook-firmware-1.6.18-audiobook"))
+    parser.add_argument("--upt-name", default="r1-audiobooks-1.6.18-audiobook.upt")
+    parser.add_argument("--expected-version", default="1.6.18-audiobook")
+    parser.add_argument("--expected-label", default="HiBy R1 Audiobook FW 1.6.18")
     parser.add_argument(
         "--stock-rootfs",
         type=Path,

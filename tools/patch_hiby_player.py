@@ -314,8 +314,13 @@ AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_PATH_OFFSET = AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BAS
 AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_PATH_OFFSET = AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_OFFSET + 0x180
 AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_PATH_OFFSET = AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_OFFSET + 0x200
 AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_PATH_OFFSET = AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_OFFSET + 0x280
+AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CODE_OFFSET = 0x360A08
+AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CMD_OFFSET = 0x360A80
 AUDIOBOOK_NATIVE_HUB_VIEW_OPEN_HELPER_OFFSET = 0x360D50
 AUDIOBOOK_NATIVE_HUB_VIEW_OPEN_HELPER_ADDR = text_addr(AUDIOBOOK_NATIVE_HUB_VIEW_OPEN_HELPER_OFFSET)
+AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CODE_ADDR = text_addr(AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CODE_OFFSET)
+AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CMD_ADDR = text_addr(AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CMD_OFFSET)
+AUDIOBOOK_NATIVE_HUB_VIEW_SYSTEM_PLT_ADDR = 0x0083AD80
 
 AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_LABEL_ADDR = text_addr(AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_LABEL_OFFSET)
 AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_LABEL_ADDR = text_addr(AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_LABEL_OFFSET)
@@ -411,6 +416,31 @@ def explorer_row_cave(path_addr: int, label_addr: int) -> bytes:
     ).ljust(0x30, b"\x00")
 
 
+def refresh_row_cave() -> bytes:
+    a0_hi, a0_lo = load_addr_words(4, AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CMD_ADDR)
+    title_a1_hi, title_a1_lo = load_addr_words(5, AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_PATH_ADDR)
+    title_a2_hi, title_a2_lo = load_addr_words(6, AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_LABEL_ADDR)
+    return pack_words(
+        ins_addiu(29, 29, -0x18),
+        ins_sw(31, 29, 0x14),
+        a0_hi,
+        a0_lo,
+        ins_jal(AUDIOBOOK_NATIVE_HUB_VIEW_SYSTEM_PLT_ADDR),
+        0,
+        ins_lw(4, 16, 0x00D8),
+        title_a1_hi,
+        title_a1_lo,
+        title_a2_hi,
+        title_a2_lo,
+        ins_jal(AUDIOBOOK_NATIVE_HUB_VIEW_OPEN_HELPER_ADDR),
+        0,
+        ins_lw(31, 29, 0x14),
+        ins_addiu(29, 29, 0x18),
+        ins_j(0x00540D2C),
+        0,
+    ).ljust(0x70, b"\x00")
+
+
 def wide_path(path: str, size: int = 0x80) -> bytes:
     encoded = path.encode("utf-16le") + b"\x00\x00"
     if len(encoded) > size:
@@ -438,6 +468,7 @@ AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_CODE = explorer_row_cave(
     AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_PATH_ADDR,
     AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_LABEL_ADDR,
 )
+AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CODE = refresh_row_cave()
 AUDIOBOOK_NATIVE_HUB_VIEW_OPEN_HELPER_CODE = explorer_open_helper()
 AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_LABEL = wide_label("Titles")
 AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_LABEL = wide_label("Authors")
@@ -447,8 +478,10 @@ AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_PATH = wide_path("a:\\Audiobooks\\_views\\Titles
 AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_PATH = wide_path("a:\\Audiobooks\\_views\\Authors\\*")
 AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_PATH = wide_path("a:\\Audiobooks\\_views\\Series\\*")
 AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_PATH = wide_path("a:\\Audiobooks\\.\\*")
+AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CMD = b"/usr/bin/r1_audiobook_refresh.sh &\x00"
 
 for name, blob, limit in (
+    ("native hub Refresh row cave", AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CODE, 0x70),
     ("native hub Titles row cave", AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_CODE, 0x30),
     ("native hub Authors row cave", AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_CODE, 0x30),
     ("native hub Series row cave", AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_CODE, 0x30),
@@ -457,12 +490,18 @@ for name, blob, limit in (
     ("native hub Authors label", AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_LABEL, 0x10),
     ("native hub Series label", AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_LABEL, 0x10),
     ("native hub Folders label", AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_LABEL, 0x10),
+    ("native hub Refresh command", AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CMD, 0x40),
     ("native hub explorer helper", AUDIOBOOK_NATIVE_HUB_VIEW_OPEN_HELPER_CODE, 0x180),
 ):
     if len(blob) > limit:
         raise ValueError(f"{name} is too large for its reserved patch cave: {len(blob)} > {limit}")
 
 AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_PATCHES = (
+    (
+        AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CODE_OFFSET,
+        b"\x00" * len(AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CODE),
+        AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CODE,
+    ),
     (
         AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_CODE_OFFSET,
         b"\x00" * len(AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_CODE),
@@ -527,6 +566,17 @@ AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_PATCHES = (
         AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_PATH_OFFSET,
         b"\x00" * len(AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_PATH),
         AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_PATH,
+    ),
+    (
+        AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CMD_OFFSET,
+        b"\x00" * len(AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CMD),
+        AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CMD,
+    ),
+    (
+        # Row 0: Refresh audiobook catalog.
+        0x38D278,
+        bytes.fromhex("000e5400"),
+        pack_u32(AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CODE_ADDR),
     ),
     (
         # Row 1: Titles.
