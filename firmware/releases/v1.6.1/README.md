@@ -9,7 +9,7 @@ Hotfix release for the normal HiBy R1 only. This is based on stock HiBy R1 firmw
 - MD5: `e3dba87c24ef84196ec1c91fe3c3e26a`
 - SHA256: `e42d70d84bf3353391c16fa60f83f399d2624226d2792f3c7882d9a1bbe45253`
 - Local package verification: passed.
-- Live behavior verification: passed on the test R1 with the matching `1.6.17.2-refresh-dev` build before public labeling.
+- Installed-device verification: passed on the test R1 after flashing the public `1.6.18-audiobook` package.
 
 ## What Changed Since v1.6.0
 
@@ -49,3 +49,12 @@ The genre tag does not need to be exactly `Audiobook`. Files under `/Audiobooks`
 - From the Folders root, edge-back is more reliable than the left arrow.
 - This replaces the old text Books launcher flow.
 - Keep a stock HiBy R1 1.6 firmware file handy in case you want to revert.
+
+## Developer Documentation
+
+The repository includes separate developer docs for people who want to build,
+modify, or audit the firmware:
+
+- `docs/modder_start_here.md`
+- `docs/audiobook_firmware_architecture.md`
+- `docs/build_flash_verify_runbook.md`

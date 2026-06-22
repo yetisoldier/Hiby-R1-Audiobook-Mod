@@ -69,16 +69,15 @@ python tools\verify_r1_audiobook_build.py `
 
 ## Device Verification
 
-The public-labeled `1.6.18-audiobook` package passed local package verification.
-The matching `1.6.17.2-refresh-dev` build was installed and live-tested on the
-test R1 before public relabeling. The latest installed-device artifacts are
-under `work\installed-release-verification\20260622-144832`.
+The public `1.6.18-audiobook` package was flashed and installed-device
+verification passed on the test R1 on 2026-06-22. The latest installed-device
+artifacts are under `work\installed-release-verification\20260622-150507`.
 
 Command used:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\adb_verify_installed_audiobook_release.ps1 `
-  -ExpectedVersion 1.6.17.2-refresh-dev `
+  -ExpectedVersion 1.6.18-audiobook `
   -ExpectNativeDsd `
   -ExpectBluetoothSbcXq `
   -ExpectUsbDacMode `
@@ -88,16 +87,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\adb_verify_installed_a
 
 Verified installed state:
 
-- `/etc/r1_audiobook_version` and `/usr/resource/config.json` reported the
-  matching refresh-dev marker.
+- `/etc/r1_audiobook_version` and `/usr/resource/config.json` reported
+  `1.6.18-audiobook`.
 - Native DSD, Bluetooth SBC XQ, and USB DAC markers were present.
 - Resume daemon and DB watcher were running.
+- DB helper `--needs-maintenance` reported no required maintenance.
 - DB integrity was `ok`.
 - Audiobooks contained 135 media rows across six books on the test SD card.
+- Title, author, and series catalogs were present and pulled.
 - Music search and album tables had no audiobook leakage.
-- The `Refresh Library` row opened the generated title list as feedback.
-- Refresh logging showed a completed manual refresh, 135 audiobook tracks, and a
-  successful mirror copy to the SD-root database.
+- No known development artifacts remained under `/usr/data/audiobooks`.
+- A framebuffer capture was saved with the verification artifacts.
 - Audiobook detection is based on `/Audiobooks` folder location, not an exact
   genre tag.
 

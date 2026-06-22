@@ -13,15 +13,16 @@ These notes are for the normal HiBy R1 on stock firmware 1.6, not the R1 MIDI.
 - Rootfs SHA256: `bfac581b61ff87c133bb5eb085a5ce5bb56db10678bae84697fae04d8697f8e6`
 - `hiby_player` MD5: `cd4d2812ab3425174b52925766424d2b`
 
-Local package verification passed on 2026-06-22. The matching
-`1.6.17.2-refresh-dev` build was installed and live-tested on the test R1 before
-public relabeling. Installed artifacts are under
-`work\installed-release-verification\20260622-144832`.
+Local package verification passed on 2026-06-22. The public
+`1.6.18-audiobook` package was then flashed and installed-device verification
+passed on the test R1. Installed artifacts are under
+`work\installed-release-verification\20260622-150507`.
 
 Installed verification confirmed:
 
 - Native DSD, Bluetooth SBC XQ, and USB DAC markers are present.
 - Resume daemon and DB watcher are running.
+- DB helper `--needs-maintenance` reports no required maintenance.
 - DB integrity is `ok`.
 - Audiobooks contains 135 media rows across 6 books on the test SD card.
 - Title, author, and series sidecar catalogs are present.
@@ -30,6 +31,7 @@ Installed verification confirmed:
   and `Folders`.
 - `Refresh Library` opens the Titles view as feedback, writes a manual refresh
   request, and logs refresh completion under `/usr/data/audiobooks/refresh.log`.
+- No known development artifacts remain under `/usr/data/audiobooks`.
 - Audiobooks rows are rebuilt from files under `/Audiobooks`, so genre tags do
   not need to be exactly `Audiobook`.
 
