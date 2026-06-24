@@ -48,7 +48,7 @@ NATIVE_HUB_VIEW_BOOK_REPLACEMENTS = {
     "search": "Refresh Library",
     "ebook": "Audiobooks",
     "collect": "Authors",
-    "explorer": "Series",
+    "explorer": "Bkmarks",
     "recent": "Folders",
     "no_file": "No audiobooks found",
 }
@@ -154,7 +154,7 @@ def main() -> None:
     parser.add_argument(
         "--audiobook-native-hub-view-labels",
         action="store_true",
-        help="Use native Audiobooks hub labels for generated Titles, Authors, Series, and Folders views.",
+        help="Use native Audiobooks hub labels for generated Titles, Authors, Bkmarks, and Folders views.",
     )
     args = parser.parse_args()
 

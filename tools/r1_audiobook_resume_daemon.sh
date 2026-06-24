@@ -6,6 +6,10 @@ HELPER=${AUDIOBOOK_HELPER:-$BASE_DIR/bin/r1_audiobook_resume_helper}
 MEMSCAN_HELPER=${AUDIOBOOK_MEMSCAN_HELPER:-$BASE_DIR/bin/r1_audiobook_memscan}
 DIRECT_OPEN_HELPER=${AUDIOBOOK_DIRECT_OPEN_HELPER:-$BASE_DIR/bin/r1_audiobook_direct_open}
 STORE_DIR=${AUDIOBOOK_STORE_DIR:-$BASE_DIR/resume.d}
+BOOKMARK_DIR=${AUDIOBOOK_BOOKMARK_DIR:-$BASE_DIR/bookmarks.d}
+BOOKMARK_REQUEST=${AUDIOBOOK_BOOKMARK_REQUEST:-$BASE_DIR/bookmark.request}
+BOOKMARK_OPEN_MARKER=${AUDIOBOOK_BOOKMARK_OPEN_MARKER:-$BASE_DIR/bookmark-open.request}
+BOOKMARK_VIEW_ROOT=${AUDIOBOOK_BOOKMARK_VIEW_ROOT:-/usr/data/mnt/sd_0/Audiobooks/_views/Bookmarks}
 CATALOG=${AUDIOBOOK_CATALOG:-$BASE_DIR/catalog.tsv}
 CATALOG_ALBUM_PATTERNS=${AUDIOBOOK_CATALOG_ALBUM_PATTERNS:-$BASE_DIR/catalog-albums.txt}
 CATALOG_BOOKS=${AUDIOBOOK_CATALOG_BOOKS:-$BASE_DIR/catalog-books.tsv}
@@ -298,6 +302,28 @@ clear_book_title_autostart() {
 
 safe_id() {
   printf '%s' "$1" | sed 's#^[Aa]:\\Audiobooks\\##; s#[^A-Za-z0-9._-]#_#g'
+}
+
+hiby_file_stem() {
+  hiby_name=${1##*\\}
+  case "$hiby_name" in
+    *.*) printf '%s\n' "${hiby_name%.*}" ;;
+    *) printf '%s\n' "$hiby_name" ;;
+  esac
+}
+
+last_component() {
+  last_name=${1##*\\}
+  printf '%s\n' "$last_name"
+}
+
+parent_component() {
+  parent_path=${1%\\*}
+  [ "$parent_path" != "$1" ] || {
+    printf '\n'
+    return
+  }
+  last_component "$parent_path"
 }
 
 json_escape() {
@@ -640,6 +666,19 @@ record_for_book_key() {
   printf '%s/bookkey_%s.json' "$STORE_DIR" "$(safe_id "$1")"
 }
 
+bookmark_record_for_book_key() {
+  printf '%s/bookkey_%s.json' "$BOOKMARK_DIR" "$(safe_id "$1")"
+}
+
+bookmark_record_for_path() {
+  bookmark_key=$(book_key_for_path "$1")
+  if [ -n "$bookmark_key" ]; then
+    bookmark_record_for_book_key "$bookmark_key"
+    return
+  fi
+  printf '%s/root_%s.json' "$BOOKMARK_DIR" "$(safe_id "$(book_root_for_path "$1")")"
+}
+
 record_for_path() {
   record_path=$1
   record_key=$(book_key_for_path "$record_path")
@@ -663,6 +702,65 @@ existing_record_for_path() {
     return
   fi
   printf '%s\n' "$primary"
+}
+
+existing_bookmark_for_path() {
+  bookmark_path=$1
+  primary=$(bookmark_record_for_path "$bookmark_path")
+  [ -f "$primary" ] && {
+    printf '%s\n' "$primary"
+    return
+  }
+  printf '%s\n' "$primary"
+}
+
+bookmark_open_context_active() {
+  [ -f "$BOOKMARK_OPEN_MARKER" ] || return 1
+  return 0
+}
+
+path_is_bookmark_view() {
+  case "$1" in
+    [aA]:\\Audiobooks\\_views\\Bookmarks\\*|:\\Audiobooks\\_views\\Bookmarks\\*|\\Audiobooks\\_views\\Bookmarks\\*)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+arm_bookmark_open_context() {
+  if ! bookmark_open_context_active; then
+    : >"$BOOKMARK_OPEN_MARKER" 2>/dev/null || return 1
+    log "bookmark open armed marker=$BOOKMARK_OPEN_MARKER"
+  fi
+  return 0
+}
+
+clear_bookmark_open_context() {
+  rm -f "$BOOKMARK_OPEN_MARKER" 2>/dev/null || true
+}
+
+active_restore_record_for_path() {
+  active_path=$1
+  if bookmark_open_context_active; then
+    bookmark_record=$(existing_bookmark_for_path "$active_path")
+    if [ -f "$bookmark_record" ]; then
+      printf '%s\n' "$bookmark_record"
+      return
+    fi
+  fi
+  bookmark_record=$(existing_bookmark_for_path "$active_path")
+  if [ -f "$bookmark_record" ]; then
+    bookmark_saved_path=$(json_value current_path "$bookmark_record")
+    bookmark_saved_pos=$(json_number position_ms "$bookmark_record")
+    case "$bookmark_saved_pos" in ''|*[!0-9]*) bookmark_saved_pos=0 ;; esac
+    if [ "$bookmark_saved_path" = "$active_path" ] && [ "$bookmark_saved_pos" -ge "$RESTORE_MIN_MS" ]; then
+      log "bookmark heuristic active path=$active_path saved_ms=$bookmark_saved_pos"
+      printf '%s\n' "$bookmark_record"
+      return
+    fi
+  fi
+  existing_record_for_path "$active_path"
 }
 
 same_book_root() {
@@ -1522,6 +1620,110 @@ save_position() {
   mv "$tmp" "$record"
 }
 
+write_bookmark_view() {
+  bookmark_record=$1
+  [ -f "$bookmark_record" ] || return 1
+  mkdir -p "$BOOKMARK_VIEW_ROOT" 2>/dev/null || return 1
+
+  bookmark_root=$(json_value root_hiby_path "$bookmark_record")
+  bookmark_path=$(json_value current_path "$bookmark_record")
+  bookmark_title=$(json_value chapter_title "$bookmark_record")
+  bookmark_pos=$(json_number position_ms "$bookmark_record")
+  bookmark_track_index=$(json_number track_index "$bookmark_record")
+  bookmark_track_count=$(json_number track_count "$bookmark_record")
+  bookmark_book_key=$(json_value book_key "$bookmark_record")
+  bookmark_album=$(catalog_field_for_path 7 "$bookmark_path" || true)
+  bookmark_author=$(catalog_field_for_path 8 "$bookmark_path" || true)
+  [ -n "$bookmark_album" ] || bookmark_album=$(last_component "$bookmark_root")
+  [ -n "$bookmark_author" ] || bookmark_author=$(parent_component "$bookmark_root")
+  [ -n "$bookmark_title" ] || bookmark_title=$(hiby_file_stem "$bookmark_path")
+  case "$bookmark_pos" in ''|*[!0-9]*) bookmark_pos=0 ;; esac
+  minutes=$((bookmark_pos / 60000))
+  seconds=$(((bookmark_pos / 1000) % 60))
+  label=$(printf '%s - %s - %s (%02d-%02d)' "$bookmark_album" "$bookmark_author" "$bookmark_title" "$minutes" "$seconds")
+  safe_label=$(safe_id "$label")
+  view_path="$BOOKMARK_VIEW_ROOT/$safe_label.m3u"
+  tmp="$view_path.tmp.$$"
+
+  rm -f "$BOOKMARK_VIEW_ROOT"/bookkey_"$(safe_id "$bookmark_book_key")"_*.m3u 2>/dev/null || true
+
+  {
+    index=$bookmark_track_index
+    while :; do
+      case "$index:$bookmark_track_count" in
+        *[!0-9:]*|:*|*:|0:*) break ;;
+      esac
+      [ "$index" -le "$bookmark_track_count" ] || break
+      track_path=$(catalog_field_for_root_index 5 "$bookmark_root" "$index" || true)
+      [ -n "$track_path" ] || break
+      case "$track_path" in
+        [aA]:\\Audiobooks\\*)
+          track_rel=$(printf '%s' "$track_path" | sed 's#^[Aa]:\\Audiobooks\\##')
+          track_rel=${track_rel#\\}
+          printf '..\\..\\%s\n' "$track_rel"
+          ;;
+        *)
+          printf '%s\n' "$track_path"
+          ;;
+      esac
+      index=$((index + 1))
+    done
+  } >"$tmp" || {
+    rm -f "$tmp"
+    return 1
+  }
+  mv "$tmp" "$BOOKMARK_VIEW_ROOT/bookkey_$(safe_id "$bookmark_book_key")_$safe_label.m3u"
+}
+
+save_manual_bookmark() {
+  path=$1
+  pos=$2
+  reason=${3:-manual}
+  root=$(book_root_for_path "$path")
+  record=$(bookmark_record_for_path "$path")
+  tmp="$record.tmp.$$"
+  book_key=$(book_key_for_path "$path")
+  track_index=$(catalog_field_for_path 2 "$path" || true)
+  track_count=$(catalog_field_for_path 3 "$path" || true)
+  media_id=$(catalog_field_for_path 4 "$path" || true)
+  chapter_title=$(catalog_field_for_path 6 "$path" || true)
+  mkdir -p "$BOOKMARK_DIR" "$BOOKMARK_VIEW_ROOT" 2>/dev/null || true
+  {
+    echo "{"
+    echo '  "schema_version": 1,'
+    printf '  "book_id": "%s",\n' "$(json_escape "$(safe_id "$root")")"
+    printf '  "book_key": "%s",\n' "$(json_escape "$book_key")"
+    printf '  "root_hiby_path": "%s",\n' "$(json_escape "$root")"
+    printf '  "current_path": "%s",\n' "$(json_escape "$path")"
+    printf '  "media_id": %s,\n' "$(json_number_or_null "$media_id")"
+    printf '  "track_index": %s,\n' "$(json_number_or_null "$track_index")"
+    printf '  "track_count": %s,\n' "$(json_number_or_null "$track_count")"
+    printf '  "chapter_title": "%s",\n' "$(json_escape "$chapter_title")"
+    printf '  "position_ms": %s,\n' "$pos"
+    printf '  "created_by": "%s",\n' "$(json_escape "$reason")"
+    printf '  "updated_at": "%s"\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    echo "}"
+  } >"$tmp"
+  mv "$tmp" "$record"
+  write_bookmark_view "$record" || log "bookmark view write failed path=$path"
+  log "bookmark saved reason=$reason root=$root path=$path pos_ms=$pos"
+}
+
+maybe_consume_bookmark_request() {
+  request_path=$1
+  request_pos=$2
+  [ -f "$BOOKMARK_REQUEST" ] || return 1
+  case "$request_pos" in ''|*[!0-9]*) request_pos=0 ;; esac
+  if [ "$request_pos" -lt "$MIN_SAVE_MS" ]; then
+    log "bookmark ignored path=$request_path pos_ms=$request_pos min_ms=$MIN_SAVE_MS"
+    rm -f "$BOOKMARK_REQUEST" 2>/dev/null || true
+    return 1
+  fi
+  save_manual_bookmark "$request_path" "$request_pos" request-file
+  rm -f "$BOOKMARK_REQUEST" 2>/dev/null || true
+  return 0
+}
+
 ui_seek_restore() {
   path=$1
   saved_pos=$2
@@ -1587,8 +1789,12 @@ maybe_restore() {
   path=$1
   pos=$2
   root=$(book_root_for_path "$path")
-  record=$(existing_record_for_path "$path")
+  record=$(active_restore_record_for_path "$path")
   [ -f "$record" ] || return 0
+  record_is_bookmark=0
+  case "$record" in
+    "$BOOKMARK_DIR"/*) record_is_bookmark=1 ;;
+  esac
   [ "$(json_bool completed "$record")" = true ] && return 0
   saved_path=$(record_saved_path_for_current "$record" "$path" "$root" || true)
   saved_pos=$(json_number position_ms "$record")
@@ -1598,12 +1804,16 @@ maybe_restore() {
   [ "$saved_pos" -ge "$RESTORE_MIN_MS" ] || return 0
   if [ "$pos" -gt "$RESTORE_ONLY_BEFORE_MS" ]; then
     guard_pos=$((pos + BACKWARD_SAVE_GUARD_MS))
-    if [ "${autostart_restore_active:-0}" != 1 ] && [ "$saved_pos" -gt "$guard_pos" ]; then
+    if [ "$record_is_bookmark" -ne 1 ] && [ "${autostart_restore_active:-0}" != 1 ] && [ "$saved_pos" -gt "$guard_pos" ]; then
       log "skip late backward restore for manual position path=$path pos_ms=$pos saved_ms=$saved_pos"
       return 0
     fi
     [ "$saved_pos" -gt "$guard_pos" ] || return 0
-    log "late restore path=$path pos_ms=$pos saved_ms=$saved_pos"
+    if [ "$record_is_bookmark" -eq 1 ]; then
+      log "late bookmark restore path=$path pos_ms=$pos saved_ms=$saved_pos"
+    else
+      log "late restore path=$path pos_ms=$pos saved_ms=$saved_pos"
+    fi
   fi
   target_pos=$(restore_target_ms "$saved_pos")
   seconds=$((target_pos / 1000))
@@ -1613,9 +1823,11 @@ maybe_restore() {
     log "restore path=$path saved_ms=$saved_pos target_ms=$target_pos rewind_ms=$RESTORE_REWIND_MS"
   fi
   if run_helper seek --seconds "$seconds" --verify-delay-ms 1500 --verify-tolerance 8 >>"$LOG" 2>&1; then
+    bookmark_open_context_active && clear_bookmark_open_context
     return 0
   fi
   if ui_seek_restore "$path" "$target_pos"; then
+    bookmark_open_context_active && clear_bookmark_open_context
     return 0
   fi
   note_seek_restore_failure "$path" "$target_pos"
@@ -1701,7 +1913,7 @@ maybe_restore_track() {
   path=$1
   pos=$2
   root=$(book_root_for_path "$path")
-  record=$(existing_record_for_path "$path")
+  record=$(active_restore_record_for_path "$path")
   [ -f "$record" ] || return 0
   [ "$(json_bool completed "$record")" = true ] && return 0
   saved_path=$(record_saved_path_for_current "$record" "$path" "$root" || true)
@@ -1748,6 +1960,7 @@ maybe_restore_track() {
     direction=prev
     steps=$((current_index - saved_index))
   else
+    bookmark_open_context_active && clear_bookmark_open_context
     return 0
   fi
   [ "$steps" -le "$TRACK_RESTORE_MAX_STEPS" ] || {
@@ -1774,10 +1987,12 @@ maybe_restore_track() {
           book_title_visible_track_select "$current_index_after_direct" "$saved_index" "$saved_path"
           visible_after_direct_status=$?
           if [ "$visible_after_direct_status" -eq 0 ]; then
+            bookmark_open_context_active && clear_bookmark_open_context
             return 0
           fi
           if [ "$visible_after_direct_status" -eq 2 ]; then
             if track_restore_near_miss_transport "$saved_path" "$saved_index" "direct-near-miss"; then
+              bookmark_open_context_active && clear_bookmark_open_context
               return 0
             fi
             log "visible-track-select stopped key fallback after direct near miss saved=$saved_index saved_path=$saved_path"
@@ -1796,6 +2011,7 @@ maybe_restore_track() {
   fi
   if [ "$visible_status" -eq 2 ]; then
     if track_restore_near_miss_transport "$saved_path" "$saved_index" "visible-near-miss"; then
+      bookmark_open_context_active && clear_bookmark_open_context
       return 0
     fi
     log "visible-track-select stopped key fallback after near miss saved=$saved_index saved_path=$saved_path"
@@ -2304,6 +2520,12 @@ main() {
       [aA]:\\Audiobooks\\*)
         diag_inc diag_audiobook_loops
         loop_sleep=$INTERVAL_SECONDS
+        if path_is_bookmark_view "$path"; then
+          arm_bookmark_open_context || true
+          last_path=$path
+          sleep "$loop_sleep"
+          continue
+        fi
         now=$(date +%s 2>/dev/null || echo 0)
         if [ "$BOOK_TITLE_CONTEXT_SECONDS" -gt 0 ] 2>/dev/null; then
           book_title_context_until=$((now + BOOK_TITLE_CONTEXT_SECONDS))
@@ -2331,6 +2553,7 @@ main() {
         fi
         helper_failures=0
         case "$pos" in ''|*[!0-9]*) pos=0 ;; esac
+        maybe_consume_bookmark_request "$path" "$pos" || true
         autostart_restore_active=0
         now_s=$(date '+%s')
         case "$book_title_autostart_until:$now_s" in

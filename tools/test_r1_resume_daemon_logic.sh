@@ -115,6 +115,9 @@ CURRENT_PATH_HEX_CACHE=
 CURRENT_PATH_VALUE_CACHE=
 assert_eq "path slot decodes audiobook path" 'a:\Audiobooks\Book\01.mp3' "$(current_path_from_hex "$audio_hex")"
 assert_eq "path slot normalizes rootless audiobook path" 'a:\Audiobooks\Book\01.mp3' "$(current_path_from_hex "$audio_rootless_hex")"
+assert_eq "hiby file stem strips extension" "01 - Chapter" "$(hiby_file_stem 'a:\Audiobooks\Author\Book\01 - Chapter.mp3')"
+assert_eq "last component returns final path segment" "Book" "$(last_component 'a:\Audiobooks\Author\Book')"
+assert_eq "parent component returns enclosing folder" "Author" "$(parent_component 'a:\Audiobooks\Author\Book')"
 
 old_catalog=$CATALOG
 catalog_exact_test=$(mktemp)
@@ -548,6 +551,50 @@ assert_false "context direct-start skips stale memscan root" book_title_direct_s
 assert_eq "context direct-start avoids stale root lookup" "0" "$stale_memscan_calls"
 assert_eq "context direct-start still tries fresh list scans" "2" "$(wc -l <"$pid_scan_file" | awk '{ print $1 }')"
 rm -f "$pid_scan_file"
+
+bookmark_tmp=$(mktemp -d)
+BOOKMARK_DIR="$bookmark_tmp/bookmarks"
+BOOKMARK_VIEW_ROOT="$bookmark_tmp/views"
+mkdir -p "$BOOKMARK_DIR" "$BOOKMARK_VIEW_ROOT"
+bookmark_path='a:\Audiobooks\Author\Book\02 - Chapter.mp3'
+bookmark_root='a:\Audiobooks\Author\Book'
+
+book_key_for_path() {
+  printf '%s\n' 'book_key_test'
+}
+
+catalog_field_for_path() {
+  case "$1:$2" in
+    2:"$bookmark_path") printf '%s\n' 2 ;;
+    3:"$bookmark_path") printf '%s\n' 4 ;;
+    4:"$bookmark_path") printf '%s\n' 42 ;;
+    6:"$bookmark_path") printf '%s\n' 'Chapter Two' ;;
+    7:"$bookmark_path") printf '%s\n' 'The Book' ;;
+    8:"$bookmark_path") printf '%s\n' 'The Author' ;;
+    *) printf '\n' ;;
+  esac
+}
+
+catalog_field_for_root_index() {
+  case "$2:$3" in
+    "$bookmark_root:2") printf '%s\n' 'a:\Audiobooks\Author\Book\02 - Chapter.mp3' ;;
+    "$bookmark_root:3") printf '%s\n' 'a:\Audiobooks\Author\Book\03 - Chapter.mp3' ;;
+    "$bookmark_root:4") printf '%s\n' 'a:\Audiobooks\Author\Book\04 - Chapter.mp3' ;;
+    *) printf '\n' ;;
+  esac
+}
+
+save_manual_bookmark "$bookmark_path" 125000 unit-test
+bookmark_record=$(existing_bookmark_for_path "$bookmark_path")
+assert_file_contains "manual bookmark stores chapter title" "$bookmark_record" '"chapter_title": "Chapter Two"'
+assert_file_contains "manual bookmark stores position" "$bookmark_record" '"position_ms": 125000'
+bookmark_view_count=$(find "$BOOKMARK_VIEW_ROOT" -name '*.m3u' | wc -l | awk '{ print $1 }')
+assert_eq "manual bookmark writes one bookmark view" "1" "$bookmark_view_count"
+BOOKMARK_OPEN_MARKER="$bookmark_tmp/bookmark-open.request"
+: >"$BOOKMARK_OPEN_MARKER"
+assert_eq "active restore prefers bookmark record while context is armed" "$bookmark_record" "$(active_restore_record_for_path "$bookmark_path")"
+clear_bookmark_open_context
+rm -rf "$bookmark_tmp"
 
 autostart_restore_active=1
 restored_path=

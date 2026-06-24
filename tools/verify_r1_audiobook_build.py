@@ -268,7 +268,7 @@ PLAYER_NATIVE_HUB_VIEW_ROW_BYTE_CHECKS = {
         0x360738,
         AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_CODE,
     ),
-    "native hub view Series cave @0x360768": (
+    "native hub view Bkmarks cave @0x360768": (
         0x360768,
         AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_CODE,
     ),
@@ -288,7 +288,7 @@ PLAYER_NATIVE_HUB_VIEW_ROW_BYTE_CHECKS = {
         0x3607D8,
         AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_LABEL,
     ),
-    "native hub view Series label @0x3607E8": (
+    "native hub view Bkmarks label @0x3607E8": (
         0x3607E8,
         AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_LABEL,
     ),
@@ -304,7 +304,7 @@ PLAYER_NATIVE_HUB_VIEW_ROW_BYTE_CHECKS = {
         0x360888,
         AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_PATH,
     ),
-    "native hub view Series path @0x360908": (
+    "native hub view Bkmarks path @0x360908": (
         0x360908,
         AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_PATH,
     ),
@@ -328,7 +328,7 @@ PLAYER_NATIVE_HUB_VIEW_ROW_BYTE_CHECKS = {
         0x38D280,
         bytes.fromhex("38077600"),
     ),
-    "native hub Series row jump-table entry @0x38D284": (
+    "native hub Bkmarks row jump-table entry @0x38D284": (
         0x38D284,
         bytes.fromhex("68077600"),
     ),
@@ -697,6 +697,12 @@ def verify(
         for label, (offset, expected) in byte_checks.items():
             found = player_bytes[offset : offset + len(expected)]
             require(found == expected, f"{label}: {found.hex()}", failures)
+        if expect_native_hub_view_rows:
+            require(
+                b": >/usr/data/audiobooks/bookmark-open.request\x00" in player_bytes,
+                "native hub view helper embeds bookmark-open command",
+                failures,
+            )
 
     for relative, expected_size in PACKET_SIZES.items():
         path = out_dir / relative
@@ -838,7 +844,7 @@ def verify(
             require("<collect>Authors</collect>" in book_text, "Book resource includes native hub Authors row label", failures)
             if expect_native_hub_view_rows:
                 require("<search>Refresh Library</search>" in book_text, "Book resource repurposes stock Scan row as Refresh Library", failures)
-                require("<explorer>Series</explorer>" in book_text, "Book resource includes native hub Series row label", failures)
+                require("<explorer>Bkmarks</explorer>" in book_text, "Book resource includes native hub Bkmarks row label", failures)
                 require("<recent>Folders</recent>" in book_text, "Book resource includes native hub Folders row label", failures)
             else:
                 require("<explorer>Folders</explorer>" in book_text, "Book resource includes native hub Folders row label", failures)
@@ -946,6 +952,7 @@ def verify(
         require("AUDIOBOOK_BOOK_TITLE_AUTOSTART_DELAY_SECONDS=1" in resume_init_text, "resume init script uses tuned title autostart delay", failures)
         require("AUDIOBOOK_BOOK_TITLE_LAUNCHER_TRACKLIST_WAIT_SECONDS=4" in resume_init_text, "resume init waits briefly for launcher track lists", failures)
         require('old_pid=$(cat "$BASE/resume-daemon.pid"' in resume_init_text, "resume init stops stale resume daemon pid before restart", failures)
+        require('start-stop-daemon -K -p "$BASE/bookmark-monitor.pid"' in resume_init_text, "resume init stops stale bookmark monitor pid before restart", failures)
         require('kill -9 "$old_pid"' in resume_init_text, "resume init force-cleans stale resume daemon pid", failures)
         expected_track_restore = "0" if expect_conservative_resume_runtime else "1"
         expected_autostart = "0" if expect_conservative_resume_runtime else "1"
@@ -989,6 +996,7 @@ def verify(
         )
         require("AUDIOBOOK_TRACK_RESTORE_FIRST_TRACK_ENTRY_MAX_MS=15000" in resume_init_text, "resume init bounds first-track entry restore window", failures)
         require('cp -f /usr/bin/r1_audiobook_direct_open "$BASE/bin/r1_audiobook_direct_open"' in resume_init_text, "resume init installs direct-open helper", failures)
+        require('cp -f /usr/bin/r1_audiobook_bookmark_monitor "$BASE/bin/r1_audiobook_bookmark_monitor"' in resume_init_text, "resume init installs bookmark monitor helper", failures)
         require(
             f"AUDIOBOOK_BOOK_TITLE_DIRECT_OPEN_ENABLED={expected_direct_features}" in resume_init_text,
             f"resume init sets one-shot direct-open helper to {expected_direct_features}",
@@ -1015,6 +1023,12 @@ def verify(
         require("AUDIOBOOK_BACK_GUARD_WINDOW_SECONDS=60" in resume_init_text, "resume init bounds Audiobooks back-stack guard polling", failures)
         require("AUDIOBOOK_BACK_GUARD_IDLE_INTERVAL_SECONDS=1" in resume_init_text, "resume init samples idle Audiobooks screen quickly", failures)
         require("AUDIOBOOK_BACK_GUARD_EXTRA_BACKS=2" in resume_init_text, "resume init sends two guarded backs to return to launcher", failures)
+        require(
+            'start-stop-daemon -S -b -m -p "$BASE/bookmark-monitor.pid" -x "$BASE/bin/r1_audiobook_bookmark_monitor" -- --event /dev/input/event1 --request "$BASE/bookmark.request" --user-ini /usr/data/user.ini'
+            in resume_init_text,
+            "resume init starts bookmark monitor with request-file output",
+            failures,
+        )
     else:
         require(False, "resume init script exists", failures)
 
@@ -1262,6 +1276,11 @@ def verify(
         require("track_restore_near_miss_transport" in daemon_text, "daemon includes near-miss transport fallback", failures)
         require("track-restore near-miss transport skipped mode=" in daemon_text, "daemon gates near-miss transport by play mode", failures)
         require("should_attempt_restore_for_position" in daemon_text, "daemon can restore title-start bookmarks while position is zero", failures)
+        require("BOOKMARK_OPEN_MARKER=${AUDIOBOOK_BOOKMARK_OPEN_MARKER:-$BASE_DIR/bookmark-open.request}" in daemon_text, "daemon defines bookmark-open marker path", failures)
+        require("save_manual_bookmark" in daemon_text, "daemon can persist manual bookmarks", failures)
+        require("write_bookmark_view" in daemon_text, "daemon can build bookmark playlist views", failures)
+        require("maybe_consume_bookmark_request" in daemon_text, "daemon consumes bookmark request files", failures)
+        require("bookmark_open_context_active" in daemon_text, "daemon can detect bookmark-open context", failures)
 
     catalog = root / "usr/bin/r1_audiobook_catalog.tsv"
     if expect_seed_catalog:
@@ -1280,6 +1299,12 @@ def verify(
     require(direct_open.exists(), "direct-open helper present", failures)
     if direct_open.exists():
         require(os.access(direct_open, os.X_OK), "direct-open helper is executable", failures)
+
+    bookmark_monitor = root / "usr/bin/r1_audiobook_bookmark_monitor"
+    require(bookmark_monitor.exists(), "bookmark monitor helper present", failures)
+    if bookmark_monitor.exists():
+        require(os.access(bookmark_monitor, os.X_OK), "bookmark monitor helper is executable", failures)
+        require(bookmark_monitor.stat().st_size > 10000, "bookmark monitor helper has nontrivial payload", failures)
 
     ota_dir_name = f"ota_v{expected_ota_version}"
     ota_dir = out_dir / "ota-tree" / ota_dir_name
@@ -1412,7 +1437,7 @@ def main() -> int:
     parser.add_argument(
         "--expect-native-hub-view-rows",
         action="store_true",
-        help="Require native hub Titles/Authors/Series/Folders rows to open generated audiobook view folders.",
+        help="Require native hub Titles/Authors/Bkmarks/Folders rows to open generated audiobook view folders.",
     )
     parser.add_argument(
         "--expect-private-direct-route",

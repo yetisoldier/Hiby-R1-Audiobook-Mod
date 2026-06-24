@@ -63,6 +63,9 @@ param(
     [string]$AudiobookDirectOpenHelper = "work\native-direct-open\r1_audiobook_direct_open",
 
     [Parameter(Mandatory=$false)]
+    [string]$AudiobookBookmarkMonitorHelper = "work\native-bookmark-monitor\r1_audiobook_bookmark_monitor",
+
+    [Parameter(Mandatory=$false)]
     [string]$AudiobookResumeDaemon = "tools\r1_audiobook_resume_daemon.sh",
 
     [Parameter(Mandatory=$false)]
@@ -380,6 +383,7 @@ if ($IncludeAudiobookResumeRuntime) {
     $resumeHelperPath = Resolve-PathStrict $AudiobookResumeHelper
     $memscanHelperPath = Resolve-PathStrict $AudiobookMemscanHelper
     $directOpenHelperPath = Resolve-PathStrict $AudiobookDirectOpenHelper
+    $bookmarkMonitorHelperPath = Resolve-PathStrict $AudiobookBookmarkMonitorHelper
     $resumeDaemonPath = Resolve-PathStrict $AudiobookResumeDaemon
     if ($TouchNextEventSource) {
         $touchNextEventPath = Resolve-PathStrict $TouchNextEventSource
@@ -486,6 +490,7 @@ if ($IncludeAudiobookResumeRuntime) {
     Copy-Item -Force -LiteralPath $resumeHelperPath -Destination (Join-Path $rootTree "usr\bin\r1_audiobook_resume_helper")
     Copy-Item -Force -LiteralPath $memscanHelperPath -Destination (Join-Path $rootTree "usr\bin\r1_audiobook_memscan")
     Copy-Item -Force -LiteralPath $directOpenHelperPath -Destination (Join-Path $rootTree "usr\bin\r1_audiobook_direct_open")
+    Copy-Item -Force -LiteralPath $bookmarkMonitorHelperPath -Destination (Join-Path $rootTree "usr\bin\r1_audiobook_bookmark_monitor")
     Copy-Item -Force -LiteralPath $resumeDaemonPath -Destination (Join-Path $rootTree "usr\bin\r1_audiobook_resume_daemon.sh")
     Copy-Item -Force -LiteralPath $touchNextEventPath -Destination (Join-Path $rootTree "usr\bin\r1_touch_next_event1.bin")
     Copy-Item -Force -LiteralPath $touchFirstTrackEventPath -Destination (Join-Path $rootTree "usr\bin\r1_touch_first_track_event1.bin")
@@ -546,6 +551,7 @@ clear_stock_audiobook_last_file() {
 
 if [ "$1" = stop ]; then
   start-stop-daemon -K -p "$BASE/resume-daemon.ssd.pid" 2>/dev/null || true
+  start-stop-daemon -K -p "$BASE/bookmark-monitor.pid" 2>/dev/null || true
   exit 0
 fi
 
@@ -560,6 +566,7 @@ clear_stock_audiobook_last_file
 cp -f /usr/bin/r1_audiobook_resume_helper "$BASE/bin/r1_audiobook_resume_helper"
 cp -f /usr/bin/r1_audiobook_memscan "$BASE/bin/r1_audiobook_memscan"
 cp -f /usr/bin/r1_audiobook_direct_open "$BASE/bin/r1_audiobook_direct_open"
+cp -f /usr/bin/r1_audiobook_bookmark_monitor "$BASE/bin/r1_audiobook_bookmark_monitor"
 cp -f /usr/bin/r1_audiobook_resume_daemon.sh "$BASE/bin/r1_audiobook_resume_daemon.sh"
 cp -f /usr/bin/r1_touch_next_event1.bin "$BASE/input/touch_next_event1.bin"
 cp -f /usr/bin/r1_touch_first_track_event1.bin "$BASE/input/touch_first_track_event1.bin"
@@ -589,7 +596,7 @@ if [ ! -s "$BASE/catalog.tsv" ]; then
   fi
 fi
 
-chmod 755 "$BASE/bin/r1_audiobook_resume_helper" "$BASE/bin/r1_audiobook_memscan" "$BASE/bin/r1_audiobook_direct_open" "$BASE/bin/r1_audiobook_resume_daemon.sh"
+chmod 755 "$BASE/bin/r1_audiobook_resume_helper" "$BASE/bin/r1_audiobook_memscan" "$BASE/bin/r1_audiobook_direct_open" "$BASE/bin/r1_audiobook_bookmark_monitor" "$BASE/bin/r1_audiobook_resume_daemon.sh"
 for file in "$BASE/input/"*.bin; do
   if [ -e "$file" ]; then
     chmod 644 "$file"
@@ -599,9 +606,10 @@ done
 old_pid=$(cat "$BASE/resume-daemon.pid" 2>/dev/null || true)
 [ -n "$old_pid" ] && kill "$old_pid" 2>/dev/null || true
 start-stop-daemon -K -p "$BASE/resume-daemon.ssd.pid" 2>/dev/null || true
+start-stop-daemon -K -p "$BASE/bookmark-monitor.pid" 2>/dev/null || true
 sleep 1
 [ -n "$old_pid" ] && kill -9 "$old_pid" 2>/dev/null || true
-rm -f "$BASE/resume-daemon.pid" "$BASE/resume-daemon.ssd.pid"
+rm -f "$BASE/resume-daemon.pid" "$BASE/resume-daemon.ssd.pid" "$BASE/bookmark-monitor.pid"
 
 AUDIOBOOK_POSITION_SOURCE=memory
 AUDIOBOOK_RESTORE_ENABLED=1
@@ -668,6 +676,7 @@ export AUDIOBOOK_BACK_GUARD_ENABLED AUDIOBOOK_BACK_GUARD_WINDOW_SECONDS AUDIOBOO
 export AUDIOBOOK_BACK_GUARD_IDLE_INTERVAL_SECONDS
 export AUDIOBOOK_BACK_GUARD_EXTRA_BACKS
 start-stop-daemon -S -b -m -p "$BASE/resume-daemon.ssd.pid" -x /bin/sh -- "$BASE/bin/r1_audiobook_resume_daemon.sh" >>"$BASE/resume-daemon.stdout.log" 2>&1
+start-stop-daemon -S -b -m -p "$BASE/bookmark-monitor.pid" -x "$BASE/bin/r1_audiobook_bookmark_monitor" -- --event /dev/input/event1 --request "$BASE/bookmark.request" --user-ini /usr/data/user.ini >>"$BASE/bookmark-monitor.stdout.log" 2>&1
 '@
     $resumeBootScriptText = $resumeBootScriptText -replace "__AUDIOBOOK_BACK_GUARD_ENABLED__", $audiobookBackGuardEnabled
     $resumeBootScriptText = $resumeBootScriptText -replace "__AUDIOBOOK_TRACK_RESTORE_FIRST_TRACK_ENTRY_ENABLED__", $audiobookFirstTrackEntryRestoreEnabled
@@ -809,6 +818,7 @@ $newFileModeOverrides += @(
     @{ Path = "etc\r1_audiobook_version"; Mode = "0644" },
     @{ Path = "usr\bin\r1_audiobook_resume_helper"; Mode = "0755" },
     @{ Path = "usr\bin\r1_audiobook_direct_open"; Mode = "0755" },
+    @{ Path = "usr\bin\r1_audiobook_bookmark_monitor"; Mode = "0755" },
     @{ Path = "usr\bin\r1_audiobook_resume_daemon.sh"; Mode = "0755" },
     @{ Path = "usr\bin\r1_audiobook_db_maint"; Mode = "0755" },
     @{ Path = "usr\bin\r1_audiobook_db_watch.sh"; Mode = "0755" },

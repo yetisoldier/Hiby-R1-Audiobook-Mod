@@ -2,6 +2,25 @@
 
 All public releases are for the normal HiBy R1 on stock firmware 1.6. Do not install these packages on the R1 MIDI.
 
+## v1.6.2 - 2026-06-24
+
+Firmware marker: `1.6.16.5-audiobook`
+
+Bookmark feature release after `v1.6.1`.
+
+- Replaced the old `Series` hub row with `Bkmarks`.
+- Added on-device manual bookmarking from the Now Playing screen via long-press Back.
+- Added a native bookmark monitor helper that writes bookmark requests without changing stock playback controls.
+- Added generated bookmark playlist views under `/Audiobooks/_views/Bookmarks` so saved bookmarks can be reopened from the Audiobooks hub.
+- Added bookmark-aware restore selection so opening a bookmark can prefer the saved bookmark position even when the same book also has a newer ordinary resume record.
+- Relaxed the late backward-restore guard for bookmark-backed restores only, which lets bookmark launches seek forward to the saved bookmark instead of being treated like a manual rewind attempt.
+- Kept `Refresh Library`, `Titles`, `Authors`, and `Folders` in the native Audiobooks hub.
+- Live installed-device validation on the test R1 confirmed the bookmark playlist opened `All the Pretty Horses` and restored near the saved `214649 ms` position at about `03:44`.
+- Built package `r1-audiobooks-1.6.16.5-audiobook.upt`. MD5: `64fd718252935d0ebf220b43e1f86a0e`; SHA256: `1410a718778b269a49165ef6fd6f0a8c67466ae600333332c3e989ff66952def`.
+- Rootfs MD5: `17622256b464b81026463c278dc93e5f`; Rootfs SHA256: `6784c7341b54ea8877520154dcda21d6e497e3d571903e95eef96810915d6b32`.
+- Player MD5 inside rootfs remains `9ccf6668a82dab0f7f3535615e5108e1`.
+- All `v1.6.1` refresh-library behavior, folder-based audiobook detection, multipart resume, Native DSD, Bluetooth SBC XQ, and USB DAC-related behavior is otherwise retained.
+
 ## v1.6.1 - 2026-06-22
 
 Firmware marker: `1.6.18-audiobook`

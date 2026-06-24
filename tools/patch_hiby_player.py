@@ -51,6 +51,10 @@ def ins_beq(rs: int, rt: int, imm: int) -> int:
     return (4 << 26) | ((rs & 0x1F) << 21) | ((rt & 0x1F) << 16) | (imm & 0xFFFF)
 
 
+def ins_bne(rs: int, rt: int, imm: int) -> int:
+    return (5 << 26) | ((rs & 0x1F) << 21) | ((rt & 0x1F) << 16) | (imm & 0xFFFF)
+
+
 def ins_jr(rs: int) -> int:
     return (rs & 0x1F) << 21 | 8
 
@@ -316,10 +320,18 @@ AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_PATH_OFFSET = AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BA
 AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_PATH_OFFSET = AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_OFFSET + 0x280
 AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CODE_OFFSET = 0x360A08
 AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CMD_OFFSET = 0x360A80
+AUDIOBOOK_NATIVE_HUB_VIEW_BOOKMARK_ROW_HELPER_OFFSET = 0x35E000
 AUDIOBOOK_NATIVE_HUB_VIEW_OPEN_HELPER_OFFSET = 0x360D50
+AUDIOBOOK_NATIVE_HUB_VIEW_BOOKMARK_MARKER_CMD_OFFSET = 0x360E50
+AUDIOBOOK_NATIVE_HUB_VIEW_BOOKMARK_ROW_HELPER_ADDR = text_addr(
+    AUDIOBOOK_NATIVE_HUB_VIEW_BOOKMARK_ROW_HELPER_OFFSET
+)
 AUDIOBOOK_NATIVE_HUB_VIEW_OPEN_HELPER_ADDR = text_addr(AUDIOBOOK_NATIVE_HUB_VIEW_OPEN_HELPER_OFFSET)
 AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CODE_ADDR = text_addr(AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CODE_OFFSET)
 AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CMD_ADDR = text_addr(AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CMD_OFFSET)
+AUDIOBOOK_NATIVE_HUB_VIEW_BOOKMARK_MARKER_CMD_ADDR = text_addr(
+    AUDIOBOOK_NATIVE_HUB_VIEW_BOOKMARK_MARKER_CMD_OFFSET
+)
 AUDIOBOOK_NATIVE_HUB_VIEW_SYSTEM_PLT_ADDR = 0x0083AD80
 
 AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_LABEL_ADDR = text_addr(AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_LABEL_OFFSET)
@@ -330,6 +342,7 @@ AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_PATH_ADDR = text_addr(AUDIOBOOK_NATIVE_HUB_VIEW_
 AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_PATH_ADDR = text_addr(AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_PATH_OFFSET)
 AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_PATH_ADDR = text_addr(AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_PATH_OFFSET)
 AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_PATH_ADDR = text_addr(AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_PATH_OFFSET)
+AUDIOBOOK_NATIVE_HUB_VIEW_BOOKMARK_MARKER_CMD = b": >/usr/data/audiobooks/bookmark-open.request\x00"
 
 
 def explorer_open_helper() -> bytes:
@@ -338,7 +351,9 @@ def explorer_open_helper() -> bytes:
     sub_back_a1_hi, sub_back_a1_lo = load_addr_words(5, 0x007605C0)  # "hiby_set_sub_back"
     explorer_v0_hi, explorer_v0_lo = load_addr_words(2, 0x0075C134)
     back_cb_a1_hi, back_cb_a1_lo = load_addr_words(5, 0x0053F360)
-    return pack_words(
+    bookmark_path_t0_hi, bookmark_path_t0_lo = load_addr_words(8, AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_PATH_ADDR)
+    bookmark_cmd_a0_hi, bookmark_cmd_a0_lo = load_addr_words(4, AUDIOBOOK_NATIVE_HUB_VIEW_BOOKMARK_MARKER_CMD_ADDR)
+    code = pack_words(
         ins_addiu(29, 29, -0x40),
         ins_sw(31, 29, 0x3C),
         ins_sw(16, 29, 0x38),
@@ -349,6 +364,14 @@ def explorer_open_helper() -> bytes:
         ins_addiu(17, 5, 0),
         ins_addiu(18, 6, 0),
         ins_sw(0, 29, 0x10),
+        bookmark_path_t0_hi,
+        bookmark_path_t0_lo,
+        ins_bne(17, 8, 5),
+        0,
+        bookmark_cmd_a0_hi,
+        bookmark_cmd_a0_lo,
+        ins_jal(AUDIOBOOK_NATIVE_HUB_VIEW_SYSTEM_PLT_ADDR),
+        0,
         ins_addiu(4, 16, 0),
         view_a1_hi,
         view_a1_lo,
@@ -398,6 +421,10 @@ def explorer_open_helper() -> bytes:
         ins_jr(31),
         ins_addiu(29, 29, 0x40),
     )
+    return code.ljust(
+        AUDIOBOOK_NATIVE_HUB_VIEW_BOOKMARK_MARKER_CMD_OFFSET - AUDIOBOOK_NATIVE_HUB_VIEW_OPEN_HELPER_OFFSET,
+        b"\x00",
+    ) + AUDIOBOOK_NATIVE_HUB_VIEW_BOOKMARK_MARKER_CMD
 
 
 def explorer_row_cave(path_addr: int, label_addr: int) -> bytes:
@@ -410,6 +437,45 @@ def explorer_row_cave(path_addr: int, label_addr: int) -> bytes:
         a2_hi,
         a2_lo,
         ins_jal(AUDIOBOOK_NATIVE_HUB_VIEW_OPEN_HELPER_ADDR),
+        0,
+        ins_j(0x00540D2C),
+        0,
+    ).ljust(0x30, b"\x00")
+
+
+def bookmark_row_helper() -> bytes:
+    bookmark_cmd_a0_hi, bookmark_cmd_a0_lo = load_addr_words(4, AUDIOBOOK_NATIVE_HUB_VIEW_BOOKMARK_MARKER_CMD_ADDR)
+    return pack_words(
+        ins_addiu(29, 29, -0x20),
+        ins_sw(31, 29, 0x1C),
+        ins_sw(4, 29, 0x10),
+        ins_sw(5, 29, 0x14),
+        ins_sw(6, 29, 0x18),
+        bookmark_cmd_a0_hi,
+        bookmark_cmd_a0_lo,
+        ins_jal(AUDIOBOOK_NATIVE_HUB_VIEW_SYSTEM_PLT_ADDR),
+        0,
+        ins_lw(4, 29, 0x10),
+        ins_lw(5, 29, 0x14),
+        ins_lw(6, 29, 0x18),
+        ins_jal(AUDIOBOOK_NATIVE_HUB_VIEW_OPEN_HELPER_ADDR),
+        0,
+        ins_lw(31, 29, 0x1C),
+        ins_jr(31),
+        ins_addiu(29, 29, 0x20),
+    )
+
+
+def bookmark_row_cave(path_addr: int, label_addr: int) -> bytes:
+    a1_hi, a1_lo = load_addr_words(5, path_addr)
+    a2_hi, a2_lo = load_addr_words(6, label_addr)
+    return pack_words(
+        ins_lw(4, 16, 0x00D8),
+        a1_hi,
+        a1_lo,
+        a2_hi,
+        a2_lo,
+        ins_jal(AUDIOBOOK_NATIVE_HUB_VIEW_BOOKMARK_ROW_HELPER_ADDR),
         0,
         ins_j(0x00540D2C),
         0,
@@ -460,7 +526,7 @@ AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_CODE = explorer_row_cave(
     AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_PATH_ADDR,
     AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_LABEL_ADDR,
 )
-AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_CODE = explorer_row_cave(
+AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_CODE = bookmark_row_cave(
     AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_PATH_ADDR,
     AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_LABEL_ADDR,
 )
@@ -469,14 +535,15 @@ AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_CODE = explorer_row_cave(
     AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_LABEL_ADDR,
 )
 AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CODE = refresh_row_cave()
+AUDIOBOOK_NATIVE_HUB_VIEW_BOOKMARK_ROW_HELPER_CODE = bookmark_row_helper()
 AUDIOBOOK_NATIVE_HUB_VIEW_OPEN_HELPER_CODE = explorer_open_helper()
 AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_LABEL = wide_label("Titles")
 AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_LABEL = wide_label("Authors")
-AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_LABEL = wide_label("Series")
+AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_LABEL = wide_label("Bkmarks")
 AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_LABEL = wide_label("Folders")
 AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_PATH = wide_path("a:\\Audiobooks\\_views\\Titles\\*")
 AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_PATH = wide_path("a:\\Audiobooks\\_views\\Authors\\*")
-AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_PATH = wide_path("a:\\Audiobooks\\_views\\Series\\*")
+AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_PATH = wide_path("a:\\Audiobooks\\_views\\Bookmarks\\*")
 AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_PATH = wide_path("a:\\Audiobooks\\.\\*")
 AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CMD = b"/usr/bin/r1_audiobook_refresh.sh &\x00"
 
@@ -484,11 +551,12 @@ for name, blob, limit in (
     ("native hub Refresh row cave", AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CODE, 0x70),
     ("native hub Titles row cave", AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_CODE, 0x30),
     ("native hub Authors row cave", AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_CODE, 0x30),
-    ("native hub Series row cave", AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_CODE, 0x30),
+    ("native hub Bookmarks row cave", AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_CODE, 0x30),
     ("native hub Folders row cave", AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_CODE, 0x30),
+    ("native hub Bookmarks helper", AUDIOBOOK_NATIVE_HUB_VIEW_BOOKMARK_ROW_HELPER_CODE, 0xA0),
     ("native hub Titles label", AUDIOBOOK_NATIVE_HUB_VIEW_TITLE_LABEL, 0x10),
     ("native hub Authors label", AUDIOBOOK_NATIVE_HUB_VIEW_AUTHOR_LABEL, 0x10),
-    ("native hub Series label", AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_LABEL, 0x10),
+    ("native hub Bookmarks label", AUDIOBOOK_NATIVE_HUB_VIEW_SERIES_LABEL, 0x10),
     ("native hub Folders label", AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_LABEL, 0x10),
     ("native hub Refresh command", AUDIOBOOK_NATIVE_HUB_VIEW_REFRESH_CMD, 0x40),
     ("native hub explorer helper", AUDIOBOOK_NATIVE_HUB_VIEW_OPEN_HELPER_CODE, 0x180),
@@ -521,6 +589,11 @@ AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_PATCHES = (
         AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_CODE_OFFSET,
         b"\x00" * len(AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_CODE),
         AUDIOBOOK_NATIVE_HUB_VIEW_FOLDER_CODE,
+    ),
+    (
+        AUDIOBOOK_NATIVE_HUB_VIEW_BOOKMARK_ROW_HELPER_OFFSET,
+        b"\x00" * len(AUDIOBOOK_NATIVE_HUB_VIEW_BOOKMARK_ROW_HELPER_CODE),
+        AUDIOBOOK_NATIVE_HUB_VIEW_BOOKMARK_ROW_HELPER_CODE,
     ),
     (
         AUDIOBOOK_NATIVE_HUB_VIEW_OPEN_HELPER_OFFSET,
@@ -591,7 +664,7 @@ AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_PATCHES = (
         pack_u32(AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_ADDR + 0x30),
     ),
     (
-        # Row 3: Series.
+        # Row 3: Bookmarks.
         0x38D284,
         bytes.fromhex("480d5400"),
         pack_u32(AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_ADDR + 0x60),
