@@ -83,8 +83,10 @@ BOOK_TITLE_AUTOSTART_ENABLED=1
 BOOK_TITLE_CONTEXT_SECONDS=300
 BOOK_TITLE_MARKER_IDLE_POLL_SECONDS=5
 BOOK_TITLE_MARKER_MUSIC_POLL_SECONDS=15
+BOOK_TITLE_CONTEXT_SCREEN_PROBE_SECONDS=2
 book_title_context_until=0
 last_book_title_marker_poll_at=0
+last_book_title_context_screen_probe_at=0
 assert_true "marker poll runs immediately for music after start" should_poll_book_title_marker 'a:\Music\Artist\01.mp3' 100
 last_book_title_marker_poll_at=100
 assert_false "marker poll throttles while music is active" should_poll_book_title_marker 'a:\Music\Artist\01.mp3' 109
@@ -93,7 +95,21 @@ last_book_title_marker_poll_at=100
 assert_true "marker poll remains fast for audiobook context" should_poll_book_title_marker 'a:\Audiobooks\Book\01.mp3' 101
 book_title_context_until=200
 assert_true "marker poll remains fast during recent audiobook context" should_poll_book_title_marker '' 101
-assert_false "marker poll throttles music even during recent audiobook context" should_poll_book_title_marker 'a:\Music\Artist\01.mp3' 109
+assert_true "marker poll remains fast for music while audiobook title context is active" should_poll_book_title_marker 'a:\Music\Artist\01.mp3' 109
+title_list_visible_result=1
+audiobook_title_list_visible() {
+  [ "$title_list_visible_result" = 1 ]
+}
+book_title_context_until=0
+last_book_title_context_screen_probe_at=0
+assert_true "visible title list refreshes audiobook context over music playback" maybe_refresh_book_title_context_from_screen 120 'a:\Music\Artist\01.mp3'
+assert_true "refreshed context is active" book_title_context_active 121
+book_title_context_until=0
+last_book_title_context_screen_probe_at=120
+assert_false "visible title list screen probe is throttled" maybe_refresh_book_title_context_from_screen 121 'a:\Music\Artist\01.mp3'
+title_list_visible_result=0
+last_book_title_context_screen_probe_at=118
+assert_false "missing title list does not refresh audiobook context" maybe_refresh_book_title_context_from_screen 121 'a:\Music\Artist\01.mp3'
 book_title_context_until=0
 BOOK_TITLE_AUTOSTART_ENABLED=0
 assert_false "marker poll obeys autostart disable switch" should_poll_book_title_marker 'a:\Audiobooks\Book\01.mp3' 101

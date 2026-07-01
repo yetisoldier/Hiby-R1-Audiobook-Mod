@@ -38,6 +38,10 @@ from patch_hiby_player import (
 
 
 EXPECTED_CURRENT_HASHES = {
+    "r1-audiobooks-1.6.16.6-audiobook.upt": {
+        "md5": "f4b605a1edd8385a0d6ed5279dfa7add",
+        "sha256": "75d9d3d822bba35a9eb4a508fb604f720b97276b61e71f6dfa09360eff359ebf",
+    },
     "r1-audiobooks-1.6.18-audiobook.upt": {
         "md5": "e3dba87c24ef84196ec1c91fe3c3e26a",
         "sha256": "e42d70d84bf3353391c16fa60f83f399d2624226d2792f3c7882d9a1bbe45253",
@@ -99,8 +103,8 @@ EXPECTED_CURRENT_HASHES = {
         "sha256": "02b286676d93ec683307820e1ef40288f34ef21a42a24f5cbda361f2d3733b7b",
     },
     "rootfs.squashfs": {
-        "md5": "dd47cf5f338d70ecab1f8be108529505",
-        "sha256": "bfac581b61ff87c133bb5eb085a5ce5bb56db10678bae84697fae04d8697f8e6",
+        "md5": "74430b4fc06220419a0558a4a5b8b829",
+        "sha256": "400acaf978ed8beb7255e46acbda3f3905f3e8b350b26908cfae7cca5fd0d0b1",
     },
     "r1-audiobooks-1.6.3-audiobook.upt": {
         "md5": "1954b92ae7a394a0dc450c2d5f70f3d2",
@@ -111,8 +115,8 @@ EXPECTED_CURRENT_HASHES = {
         "sha256": "9138fd1e91c008205f81857095c50341898d535fae11cc42edec6ed12556e519",
     },
     "squashfs-root/usr/bin/hiby_player": {
-        "md5": "cd4d2812ab3425174b52925766424d2b",
-        "sha256": "a977d74043d997c6eb34720bd3e0e8c17f88caee6e0ec520cb05807b7a987bd4",
+        "md5": "09997a636c94112ff76c85a6d4a8d0ff",
+        "sha256": "f49ea55a48c1bdf1398a2a6672b1d596516650f7ebe77846ba7c33a5cfee329c",
     },
 }
 

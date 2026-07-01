@@ -26,6 +26,7 @@ INTERVAL_SECONDS=${AUDIOBOOK_INTERVAL_SECONDS:-5}
 IDLE_INTERVAL_SECONDS=${AUDIOBOOK_IDLE_INTERVAL_SECONDS:-3}
 BOOK_TITLE_MARKER_IDLE_POLL_SECONDS=${AUDIOBOOK_BOOK_TITLE_MARKER_IDLE_POLL_SECONDS:-5}
 BOOK_TITLE_MARKER_MUSIC_POLL_SECONDS=${AUDIOBOOK_BOOK_TITLE_MARKER_MUSIC_POLL_SECONDS:-15}
+BOOK_TITLE_CONTEXT_SCREEN_PROBE_SECONDS=${AUDIOBOOK_BOOK_TITLE_CONTEXT_SCREEN_PROBE_SECONDS:-2}
 DIAGNOSTICS_INTERVAL_SECONDS=${AUDIOBOOK_DIAGNOSTICS_INTERVAL_SECONDS:-60}
 MIN_SAVE_MS=${AUDIOBOOK_MIN_SAVE_MS:-3000}
 SAVE_BUCKET_MS=${AUDIOBOOK_SAVE_BUCKET_MS:-15000}
@@ -2280,12 +2281,29 @@ should_poll_book_title_marker() {
   now=$2
   [ "$BOOK_TITLE_AUTOSTART_ENABLED" = 1 ] || return 1
   path_preview_is_audiobook "$path_preview" && return 0
+  book_title_context_active "$now" && return 0
   if path_preview_is_music "$path_preview"; then
     poll_interval_due "${last_book_title_marker_poll_at:-0}" "$now" "$BOOK_TITLE_MARKER_MUSIC_POLL_SECONDS"
     return $?
   fi
-  book_title_context_active "$now" && return 0
   poll_interval_due "${last_book_title_marker_poll_at:-0}" "$now" "$BOOK_TITLE_MARKER_IDLE_POLL_SECONDS"
+}
+
+maybe_refresh_book_title_context_from_screen() {
+  now=$1
+  path_preview=${2:-}
+  [ "$BOOK_TITLE_AUTOSTART_ENABLED" = 1 ] || return 1
+  case "$BOOK_TITLE_CONTEXT_SECONDS:$BOOK_TITLE_CONTEXT_SCREEN_PROBE_SECONDS:$now" in
+    *[!0-9:]* | 0:* | *:0:* | *:) return 1 ;;
+  esac
+  path_preview_is_audiobook "$path_preview" && return 1
+  book_title_context_active "$now" && return 1
+  poll_interval_due "${last_book_title_context_screen_probe_at:-0}" "$now" "$BOOK_TITLE_CONTEXT_SCREEN_PROBE_SECONDS" || return 1
+  last_book_title_context_screen_probe_at=$now
+  audiobook_title_list_visible || return 1
+  book_title_context_until=$((now + BOOK_TITLE_CONTEXT_SECONDS))
+  log "book-title context refreshed from visible title list path=${path_preview:-none} context_until=$book_title_context_until"
+  return 0
 }
 
 should_attempt_restore_for_position() {
@@ -2449,7 +2467,7 @@ main() {
   close_inherited_socket_fds
   refresh_catalog_album_patterns
   echo "$$" >"$PID_FILE"
-  log "start interval=${INTERVAL_SECONDS}s idle_interval=${IDLE_INTERVAL_SECONDS}s marker_idle_poll=${BOOK_TITLE_MARKER_IDLE_POLL_SECONDS}s marker_music_poll=${BOOK_TITLE_MARKER_MUSIC_POLL_SECONDS}s diagnostics_interval=${DIAGNOSTICS_INTERVAL_SECONDS}s min_save_ms=$MIN_SAVE_MS save_bucket_ms=$SAVE_BUCKET_MS new_track_commit_ms=$NEW_TRACK_COMMIT_MS backward_save_guard_ms=$BACKWARD_SAVE_GUARD_MS restore_rewind_ms=$RESTORE_REWIND_MS closed_inherited_socket_fds=$CLOSED_INHERITED_SOCKET_FDS position_source=$POSITION_SOURCE duration_addr=$PLAYER_DURATION_ADDR restore_enabled=$RESTORE_ENABLED track_restore_enabled=$TRACK_RESTORE_ENABLED track_key_fallback=$TRACK_RESTORE_KEY_FALLBACK_ENABLED ui_seek_fallback=$UI_SEEK_FALLBACK_ENABLED ui_seek_screen_guard=$UI_SEEK_SCREEN_GUARD_ENABLED ui_seek_touch_frames=$UI_SEEK_TOUCH_FRAMES play_mode_enforce=$PLAY_MODE_ENFORCE_ENABLED play_mode_target=$PLAY_MODE_TARGET play_mode_offset=$PLAY_MODE_USER_INI_OFFSET back_guard=$BACK_GUARD_ENABLED back_guard_window=$BACK_GUARD_WINDOW_SECONDS back_guard_idle_interval=$BACK_GUARD_IDLE_INTERVAL_SECONDS book_title_autostart=$BOOK_TITLE_AUTOSTART_ENABLED book_title_direct_track_select=$BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED book_title_direct_track_preplay=$BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED book_title_memscan=$BOOK_TITLE_MEMSCAN_ENABLED book_title_direct_calibrate=$BOOK_TITLE_DIRECT_TRACK_CALIBRATE_ENABLED book_title_recovery_transport=$BOOK_TITLE_DIRECT_TRACK_RECOVERY_TRANSPORT_ENABLED book_title_recovery_max=$BOOK_TITLE_DIRECT_TRACK_RECOVERY_MAX_STEPS book_title_direct_open=$BOOK_TITLE_DIRECT_OPEN_ENABLED direct_open_probe=$DIRECT_OPEN_PROBE_ADDR direct_open_scratch=$DIRECT_OPEN_SCRATCH_ADDR book_title_require_path=$BOOK_TITLE_AUTOSTART_REQUIRE_PATH book_title_context_seconds=$BOOK_TITLE_CONTEXT_SECONDS catalog_albums=$CATALOG_ALBUM_PATTERNS catalog_books=$CATALOG_BOOKS"
+  log "start interval=${INTERVAL_SECONDS}s idle_interval=${IDLE_INTERVAL_SECONDS}s marker_idle_poll=${BOOK_TITLE_MARKER_IDLE_POLL_SECONDS}s marker_music_poll=${BOOK_TITLE_MARKER_MUSIC_POLL_SECONDS}s context_screen_probe=${BOOK_TITLE_CONTEXT_SCREEN_PROBE_SECONDS}s diagnostics_interval=${DIAGNOSTICS_INTERVAL_SECONDS}s min_save_ms=$MIN_SAVE_MS save_bucket_ms=$SAVE_BUCKET_MS new_track_commit_ms=$NEW_TRACK_COMMIT_MS backward_save_guard_ms=$BACKWARD_SAVE_GUARD_MS restore_rewind_ms=$RESTORE_REWIND_MS closed_inherited_socket_fds=$CLOSED_INHERITED_SOCKET_FDS position_source=$POSITION_SOURCE duration_addr=$PLAYER_DURATION_ADDR restore_enabled=$RESTORE_ENABLED track_restore_enabled=$TRACK_RESTORE_ENABLED track_key_fallback=$TRACK_RESTORE_KEY_FALLBACK_ENABLED ui_seek_fallback=$UI_SEEK_FALLBACK_ENABLED ui_seek_screen_guard=$UI_SEEK_SCREEN_GUARD_ENABLED ui_seek_touch_frames=$UI_SEEK_TOUCH_FRAMES play_mode_enforce=$PLAY_MODE_ENFORCE_ENABLED play_mode_target=$PLAY_MODE_TARGET play_mode_offset=$PLAY_MODE_USER_INI_OFFSET back_guard=$BACK_GUARD_ENABLED back_guard_window=$BACK_GUARD_WINDOW_SECONDS back_guard_idle_interval=$BACK_GUARD_IDLE_INTERVAL_SECONDS book_title_autostart=$BOOK_TITLE_AUTOSTART_ENABLED book_title_direct_track_select=$BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED book_title_direct_track_preplay=$BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED book_title_memscan=$BOOK_TITLE_MEMSCAN_ENABLED book_title_direct_calibrate=$BOOK_TITLE_DIRECT_TRACK_CALIBRATE_ENABLED book_title_recovery_transport=$BOOK_TITLE_DIRECT_TRACK_RECOVERY_TRANSPORT_ENABLED book_title_recovery_max=$BOOK_TITLE_DIRECT_TRACK_RECOVERY_MAX_STEPS book_title_direct_open=$BOOK_TITLE_DIRECT_OPEN_ENABLED direct_open_probe=$DIRECT_OPEN_PROBE_ADDR direct_open_scratch=$DIRECT_OPEN_SCRATCH_ADDR book_title_require_path=$BOOK_TITLE_AUTOSTART_REQUIRE_PATH book_title_context_seconds=$BOOK_TITLE_CONTEXT_SECONDS catalog_albums=$CATALOG_ALBUM_PATTERNS catalog_books=$CATALOG_BOOKS"
 
   last_path=
   last_saved_bucket=
@@ -2467,6 +2485,7 @@ main() {
   book_title_restore_wait_log_key=
   book_title_pre_restore_log_key=
   last_book_title_marker_poll_at=0
+  last_book_title_context_screen_probe_at=0
   audiobook_back_guard_until=0
   audiobook_back_guard_seen_at=0
   audiobook_back_guard_last_fire_at=0
@@ -2489,6 +2508,11 @@ main() {
     diag_inc diag_path_previews
 
     maybe_audiobook_back_guard "$now_loop" "$path_preview"
+    maybe_refresh_book_title_context_from_screen "$now_loop" "$path_preview" || true
+    if book_title_context_active "$now_loop" &&
+       [ "$INTERVAL_SECONDS" -lt "$loop_sleep" ] 2>/dev/null; then
+      loop_sleep=$INTERVAL_SECONDS
+    fi
 
     if should_poll_book_title_marker "$path_preview" "$now_loop"; then
       diag_inc diag_marker_polls

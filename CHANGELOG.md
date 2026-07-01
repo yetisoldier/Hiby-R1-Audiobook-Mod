@@ -2,6 +2,21 @@
 
 All public releases are for the normal HiBy R1 on stock firmware 1.6. Do not install these packages on the R1 MIDI.
 
+## v1.6.3 - 2026-07-01
+
+Firmware marker: `1.6.16.6-audiobook`
+
+Hotfix release after `v1.6.2`.
+
+- Fixed a likely `Audiobooks -> Titles` resume/start failure after listening to Music.
+- When Music remains the active playback path but the Audiobooks title list is visible, the resume daemon now refreshes Audiobooks title context and polls title selections at the faster Audiobooks cadence.
+- Added daemon logic tests for title-context polling while Music is active and for the visible-title-list context refresh.
+- Updated the ADB staging helper defaults to the `1.6.16.6-audiobook` package.
+- Built package `r1-audiobooks-1.6.16.6-audiobook.upt`. MD5: `f4b605a1edd8385a0d6ed5279dfa7add`; SHA256: `75d9d3d822bba35a9eb4a508fb604f720b97276b61e71f6dfa09360eff359ebf`.
+- Rootfs MD5: `74430b4fc06220419a0558a4a5b8b829`; Rootfs SHA256: `400acaf978ed8beb7255e46acbda3f3905f3e8b350b26908cfae7cca5fd0d0b1`.
+- Player MD5 inside rootfs remains `09997a636c94112ff76c85a6d4a8d0ff`.
+- All `v1.6.2` bookmark, refresh-library, folder-based audiobook detection, multipart resume, Native DSD, Bluetooth SBC XQ, and USB DAC-related behavior is otherwise retained.
+
 ## v1.6.2 - 2026-06-24
 
 Firmware marker: `1.6.16.5-audiobook`

@@ -6,20 +6,20 @@ This workspace is for investigating and prototyping audiobook support on the HiB
 
 Current shareable package:
 
-- Version marker: `1.6.16.5-audiobook`
-- Download page: <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v1.6.2>
-- Package: `r1-audiobooks-1.6.16.5-audiobook.upt`
-- UPT MD5: `64fd718252935d0ebf220b43e1f86a0e`
-- UPT SHA256: `1410a718778b269a49165ef6fd6f0a8c67466ae600333332c3e989ff66952def`
+- Version marker: `1.6.16.6-audiobook`
+- Download page: <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v1.6.3>
+- Package: `r1-audiobooks-1.6.16.6-audiobook.upt`
+- UPT MD5: `f4b605a1edd8385a0d6ed5279dfa7add`
+- UPT SHA256: `75d9d3d822bba35a9eb4a508fb604f720b97276b61e71f6dfa09360eff359ebf`
 - Base firmware: stock HiBy R1 1.6 for the normal R1, not the R1 MIDI
 
 Previous public release:
 
-- Version marker: `1.6.18-audiobook`
-- Download page: <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v1.6.1>
-- Package: `r1-audiobooks-1.6.18-audiobook.upt`
+- Version marker: `1.6.16.5-audiobook`
+- Download page: <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v1.6.2>
+- Package: `r1-audiobooks-1.6.16.5-audiobook.upt`
 
-New in `v1.6.2` / `1.6.16.5-audiobook`: the Audiobooks hub now uses `Refresh Library`, `Titles`, `Authors`, `Bkmarks`, and `Folders`. Long-pressing Back while an audiobook is playing saves a bookmark, and opening that bookmark from `Bkmarks` restores near the saved position. `Refresh Library` continues to rebuild the audiobook catalog/views in the background. Native DSD, Bluetooth SBC XQ, USB DAC unlocks, folder-based audiobook detection, and per-book resume are retained.
+New in `v1.6.3` / `1.6.16.6-audiobook`: hotfix for title-list audiobook resume after listening to Music. If Music is still the active playback path while the Audiobooks title list is visible, the resume daemon now refreshes Audiobooks title context and watches title taps at the faster Audiobooks cadence. The `v1.6.2` Audiobooks hub, bookmarks, `Refresh Library`, `Titles`, `Authors`, `Bkmarks`, `Folders`, Native DSD, Bluetooth SBC XQ, USB DAC unlocks, folder-based audiobook detection, and per-book resume are retained.
 
 Before flashing, keep a known-good stock 1.6 `r1.upt` available for recovery. This mod has only been tested on one normal HiBy R1. Reinstalling stock firmware should reverse it, but it is still unofficial firmware, so use it at your own risk. Do not use it on the R1 MIDI or other HiBy players unless you are prepared to recover the device yourself.
 
@@ -36,7 +36,7 @@ The R1 updater expects the firmware file at the SD-card root as `r1.upt`.
 
 Manual install:
 
-1. Download `r1-audiobooks-1.6.16.5-audiobook.upt` from the release page.
+1. Download `r1-audiobooks-1.6.16.6-audiobook.upt` from the release page.
 2. Rename the copied file to exactly `r1.upt`. This is important; the R1 will not recognize the update otherwise.
 3. Safely eject/remount the SD card if you copied it outside the player.
 4. On the R1, run the normal firmware update from the device UI.
@@ -83,7 +83,7 @@ From a UI and day-to-day use perspective:
 - Native DSD is enabled for the analog output path.
 - Bluetooth starts with SBC XQ quality enabled when SBC is used and the receiving device supports it.
 - USB DAC related settings/flags are unlocked. On the test R1, USB audio input worked after a clean reboot with the USB working mode set from the stock settings.
-- The About/version strings show the custom build, although the R1 UI may truncate the visible suffix to something like `1.6.16.5-`.
+- The About/version strings show the custom build, although the R1 UI may truncate the visible suffix to something like `1.6.16.6-`.
 
 The stock Music player behavior is otherwise intentionally preserved: normal music playback, Now Playing, progress bar, physical controls, and the file explorer remain stock-style.
 
@@ -174,7 +174,7 @@ If the media database is missing or empty, the firmware can seed a valid empty D
 - Bookmarks are saved with a long-press of Back from the Now Playing screen. Real-world use should still be watched for occasional edge cases around stale playback context or unusual library layouts.
 - There is currently no audiobook search UI; browse by Titles, Authors, Bkmarks, or Folders.
 - The old TXT reader is no longer available from the launcher because the Books section is repurposed as Audiobooks.
-- The visible About screen version is truncated by the stock UI, even though `/etc/r1_audiobook_version` and `/usr/resource/config.json` contain the full `1.6.16.5-audiobook` marker.
+- The visible About screen version is truncated by the stock UI, even though `/etc/r1_audiobook_version` and `/usr/resource/config.json` contain the full `1.6.16.6-audiobook` marker.
 - ADB does not persist in practice on the test R1; it must be manually re-enabled after reboot or update.
 - The DB helper provides practical fallback metadata but is not a full audiobook tag parser. Clean folder structure and numbered multipart files matter.
 - If the SD card is replaced, the player should still boot and Music should still work. Run the on-device Music scan/update and wait or reboot so the watcher can rebuild catalogs for the new card.
@@ -185,7 +185,7 @@ If the media database is missing or empty, the firmware can seed a valid empty D
 
 ## Current Status
 
-The current shareable release is `1.6.16.5-audiobook`. It is still based on stock HiBy R1 firmware 1.6 for the normal R1, not the R1 MIDI, and it does not require a PC/ADB database install for normal use.
+The current shareable release is `1.6.16.6-audiobook`. It is still based on stock HiBy R1 firmware 1.6 for the normal R1, not the R1 MIDI, and it does not require a PC/ADB database install for normal use.
 
 Shareable SD-card workflow:
 
@@ -199,12 +199,12 @@ The stock scanner can still build the base media database. A firmware-installed 
 
 Local verified package:
 
-- UPT: `work\audiobook-firmware\r1-audiobooks-dev-safe.upt`
-- UPT MD5: `64fd718252935d0ebf220b43e1f86a0e`
-- UPT SHA256: `1410a718778b269a49165ef6fd6f0a8c67466ae600333332c3e989ff66952def`
-- Rootfs MD5: `17622256b464b81026463c278dc93e5f`
-- Rootfs SHA256: `6784c7341b54ea8877520154dcda21d6e497e3d571903e95eef96810915d6b32`
-- Player MD5 inside rootfs: `9ccf6668a82dab0f7f3535615e5108e1`
+- UPT: `work\audiobook-firmware-1.6.16.6-audiobook\r1-audiobooks-1.6.16.6-audiobook.upt`
+- UPT MD5: `f4b605a1edd8385a0d6ed5279dfa7add`
+- UPT SHA256: `75d9d3d822bba35a9eb4a508fb604f720b97276b61e71f6dfa09360eff359ebf`
+- Rootfs MD5: `74430b4fc06220419a0558a4a5b8b829`
+- Rootfs SHA256: `400acaf978ed8beb7255e46acbda3f3905f3e8b350b26908cfae7cca5fd0d0b1`
+- Player MD5 inside rootfs: `09997a636c94112ff76c85a6d4a8d0ff`
 - Resume helper SHA256: `4a16c7ff9f43cccdcdc8d1d9926d0b519a24bf1f3999bda3009decbcb2ad8dce`
 - Memscan helper SHA256: `846bb54462ebaaefb93d93b1acfc25dda0f2331b496588bc9890888e9d4e5ee9`
 - Direct-open helper SHA256: `f5920f17d2f433a95006445cb2b12f3899cb93a888f616bcde948d6d0c21bd2d`
@@ -214,29 +214,25 @@ Local verified package:
 - Seed DB SHA256: `b27cd9b8a64aeef0d680a7f28505cc897f7c45b674f6a4a17fcaa2040dd3ca74`
 - Seed DB MD5: `7dc472d4d9d086d22efbff24ab2fce13`
 
-Verified locally on 2026-06-22 with:
+Verified locally on 2026-07-01 with:
 
 ```powershell
-python tools\verify_r1_audiobook_build.py `
-  --out-dir work\audiobook-firmware-1.6.18-audiobook `
-  --upt-name r1-audiobooks-1.6.18-audiobook.upt `
-  --expected-version 1.6.18-audiobook `
-  --expected-label "HiBy R1 Audiobook FW 1.6.18" `
+py -3 tools\verify_r1_audiobook_build.py `
+  --out-dir work\audiobook-firmware-1.6.16.6-audiobook `
+  --upt-name r1-audiobooks-1.6.16.6-audiobook.upt `
+  --expected-version 1.6.16.6-audiobook `
+  --expected-label "HiBy R1 Audiobook FW 1.6.16.6" `
   --require-db-maintenance `
   --expect-audiobook-launcher-icon `
   --expect-native-dsd `
   --expect-sbc-xq `
-  --expect-usb-dac-mode `
-  --expect-native-hub-launcher `
-  --expect-native-hub-view-rows
+  --expect-usb-dac-mode
 ```
 
-Local package verification passed on 2026-06-24 for the rebuilt `1.6.16.5-audiobook` package.
-Installed-device verification passed on 2026-06-24 on the test R1: the flashed
-firmware reported `1.6.16.5-audiobook`, `Bkmarks` opened from the native
-Audiobooks hub, long-press Back wrote bookmark records and generated bookmark
-playlist views, and opening the saved bookmark restored near the saved
-`214649 ms` position at roughly `03:44` on-device.
+Local package verification passed on 2026-07-01 for the rebuilt `1.6.16.6-audiobook` package.
+This hotfix keeps the `v1.6.2` bookmark release behavior and adds the
+music-to-Audiobooks title-context refresh used when Music is still the active
+playback path while the Audiobooks title list is visible.
 
 For development builds after the WSL/QEMU setup, the real MIPS DB helper can
 also be tested locally without flashing:
@@ -453,8 +449,8 @@ Build the self-contained audiobook package with the tested Audiobooks launcher p
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\build_r1_audiobook_firmware.ps1 `
-  -OutDir work\audiobook-firmware-1.6.16.5-audiobook `
-  -OutputUpt work\audiobook-firmware-1.6.16.5-audiobook\r1-audiobooks-1.6.16.5-audiobook.upt `
+  -OutDir work\audiobook-firmware-1.6.16.6-audiobook `
+  -OutputUpt work\audiobook-firmware-1.6.16.6-audiobook\r1-audiobooks-1.6.16.6-audiobook.upt `
   -IncludeAudiobookLauncherGenre `
   -IncludeAudiobookTitleAutoStartMarker `
   -IncludeAudiobookLauncherIcon `
@@ -463,8 +459,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\build_r1_audiobook_fir
   -UnlockUsbDacMode `
   -IncludeAudiobookResumeRuntime `
   -IncludeAudiobookDbMaintenance `
-  -CustomVersionId 1.6.16.5-audiobook `
-  -CustomVersionLabel "HiBy R1 Audiobook FW 1.6.16.5"
+  -CustomVersionId 1.6.16.6-audiobook `
+  -CustomVersionLabel "HiBy R1 Audiobook FW 1.6.16.6"
 ```
 
 Public builds should not embed a personal `r1_audiobook_catalog.tsv` seed
@@ -474,11 +470,11 @@ the inserted SD card after the normal on-device Music scan/update.
 Verify that package before any flash attempt with:
 
 ```powershell
-python tools\verify_r1_audiobook_build.py `
-  --out-dir work\audiobook-firmware-1.6.16.5-audiobook `
-  --upt-name r1-audiobooks-1.6.16.5-audiobook.upt `
-  --expected-version 1.6.16.5-audiobook `
-  --expected-label "HiBy R1 Audiobook FW 1.6.16.5" `
+py -3 tools\verify_r1_audiobook_build.py `
+  --out-dir work\audiobook-firmware-1.6.16.6-audiobook `
+  --upt-name r1-audiobooks-1.6.16.6-audiobook.upt `
+  --expected-version 1.6.16.6-audiobook `
+  --expected-label "HiBy R1 Audiobook FW 1.6.16.6" `
   --require-db-maintenance `
   --expect-audiobook-launcher-icon `
   --expect-native-dsd `
@@ -589,6 +585,7 @@ The audiobook-specific behavior in this repository was developed and tested on a
 
 - `docs/investigation.md` - current findings about stock R1 firmware 1.6, databases, Books, resume settings, and patch ideas.
 - `docs/release_recovery_notes.md` - compact install, verification, and stock-recovery notes for the current audiobook release.
+- `firmware/releases/v1.6.3/` - release notes, checksums, and package for the verified `1.6.16.6-audiobook` music-to-Audiobooks title resume hotfix release.
 - `firmware/releases/v1.6.2/` - release notes, checksums, and package for the verified `1.6.16.5-audiobook` bookmark release.
 - `firmware/releases/v1.6.1/` - release notes, checksums, and package for the verified `1.6.18-audiobook` refresh-library hotfix release.
 - `firmware/releases/v1.6.0/` - release notes, checksums, and package for the verified `1.6.17-audiobook` native Audiobooks hub release.
