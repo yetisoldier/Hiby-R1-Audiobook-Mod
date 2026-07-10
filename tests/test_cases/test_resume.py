@@ -171,9 +171,17 @@ def run(ctx: TestContext) -> None:
     # ── Step 6: Verify resume record fields ────────────────────────────────
     print(color("  Step 6: Verify resume record fields", C_DIM))
 
-    required_fields = ["path", "position", "track"]
-    missing = [f for f in required_fields if f not in resume_data]
-    if missing:
+    # The resume daemon uses: current_path, position_ms, track_index
+    # Accept both old and new field names
+    field_aliases = {
+        "path": ["path", "current_path", "root_hiby_path"],
+        "position": ["position", "position_ms"],
+        "track": ["track", "track_index"],
+    }
+    missing = []
+    for canonical, aliases in field_aliases.items():
+        if not any(a in resume_data for a in aliases):
+            missing.append(canonical)
         raise RuntimeError(
             f"Resume record missing required fields: {missing}. "
             f"Present fields: {list(resume_data.keys())}"
