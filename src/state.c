@@ -860,7 +860,7 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
                           catalog_db *cat) {
     time_t now_loop = time(NULL);
     state_diag_inc(rt, &rt->diag_loops);
-    uint32_t loop_sleep = cfg->idle_interval_seconds > 0 ? cfg->idle_interval_seconds : 3;
+    uint32_t loop_sleep = cfg->interval_seconds > 0 ? cfg->interval_seconds : 5;
 
     state_diag_log(rt, cfg, now_loop);
 

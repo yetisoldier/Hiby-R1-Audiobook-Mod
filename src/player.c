@@ -35,7 +35,9 @@ pid_t player_pid(void) {
     struct dirent *ent;
     while ((ent = readdir(dir)) != NULL) {
         /* Only numeric directory names */
-        if (ent->d_type != DT_DIR) continue;
+        /* On some systems (e.g. R1 procfs) d_type is DT_UNKNOWN; the
+         * isdigit check below already filters non-PID entries. */
+        if (ent->d_type != DT_DIR && ent->d_type != DT_UNKNOWN) continue;
         int is_num = 1;
         for (const char *p = ent->d_name; *p; p++) {
             if (!isdigit((unsigned char)*p)) { is_num = 0; break; }
