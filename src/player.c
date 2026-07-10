@@ -58,9 +58,14 @@ pid_t player_pid(void) {
         if (n <= 0) continue;
         buf[n] = '\0';
 
-        /* cmdline is null-separated; check if it contains "hiby_player" */
+        /* cmdline is null-separated; match /usr/bin/hiby_player exactly
+         * to exclude the hiby_player.sh wrapper process */
         for (ssize_t i = 0; i < n; i++) {
-            if (strncmp(buf + i, "hiby_player", 11) == 0) {
+            if (strncmp(buf + i, "/usr/bin/hiby_player", 20) == 0) {
+                /* Make sure it's not hiby_player.sh by checking the next char */
+                if (i + 20 < n && buf[i + 20] == '.') {
+                    continue;  /* Skip hiby_player.sh */
+                }
                 pid_t pid = (pid_t)atoi(ent->d_name);
                 closedir(dir);
                 return pid;
