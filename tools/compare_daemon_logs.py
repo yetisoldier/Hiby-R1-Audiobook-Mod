@@ -93,25 +93,46 @@ def parse_log(path: Path, source: str) -> list[LogEntry]:
 
 
 def compare_stats(shell_entries: list[LogEntry], c_entries: list[LogEntry]) -> list[str]:
-    """Compare stats entries between shell and C daemon."""
+    """Compare stats entries between shell and C daemon.
+    Only compares entries within the overlapping time range."""
     discrepancies = []
 
-    # Match stats by closest timestamp (within 5 seconds)
-    shell_stats = [e for e in shell_entries if e.category == 'stats']
-    c_stats = [e for e in c_entries if e.category == 'stats']
+    # Find overlapping time range
+    shell_times = [e.timestamp for e in shell_entries if e.category == 'stats']
+    c_times = [e.timestamp for e in c_entries if e.category == 'stats']
+
+    if not shell_times or not c_times:
+        return discrepancies
+
+    overlap_start = max(min(shell_times), min(c_times))
+    overlap_end = min(max(shell_times), max(c_times))
+
+    # Filter to overlapping range
+    shell_stats = [e for e in shell_entries if e.category == 'stats' and overlap_start <= e.timestamp <= overlap_end]
+    c_stats = [e for e in c_entries if e.category == 'stats' and overlap_start <= e.timestamp <= overlap_end]
+
+    if not shell_stats or not c_stats:
+        print(f"  (No overlapping stats period found)")
+        print(f"  Shell: {min(shell_times)} to {max(shell_times)}")
+        print(f"  C:     {min(c_times)} to {max(c_times)}")
+        return discrepancies
 
     for s in shell_stats:
-        # Find closest C stats entry
+        # Find closest C stats entry within 120 seconds
         best_c = None
-        best_diff = float('inf')
+        best_diff = 999999
         for c in c_stats:
-            # Simple timestamp comparison (string compare works for ISO format)
-            diff = abs(hash(s.timestamp) - hash(c.timestamp))  # rough
+            # Compare timestamps as strings (ISO format sorts correctly)
+            if abs(s.timestamp > c.timestamp and 1 or -1) * (s.timestamp != c.timestamp):
+                # Rough diff: count character positions where they differ
+                diff = sum(1 for a, b in zip(s.timestamp, c.timestamp) if a != b)
+            else:
+                diff = 0
             if diff < best_diff:
                 best_diff = diff
                 best_c = c
 
-        if best_c:
+        if best_c and best_diff < 20:  # within ~20 char positions = ~2 minutes
             # Compare key fields
             for key in ['loops', 'audiobook', 'non_audiobook', 'position_reads', 'saves']:
                 s_val = s.fields.get(key, 0)
@@ -207,6 +228,12 @@ def main():
     report_lines.append("")
 
     # Compare stats
+    if shell_entries and c_entries:
+        shell_ts = [e.timestamp for e in shell_entries]
+        c_ts = [e.timestamp for e in c_entries]
+        overlap_start = max(min(shell_ts), min(c_ts))
+        overlap_end = min(max(shell_ts), max(c_ts))
+        report_lines.append(f"Overlap period: {overlap_start} to {overlap_end}")
     report_lines.append("Stats comparison:")
     stats_discrepancies = compare_stats(shell_entries, c_entries)
     if stats_discrepancies:
