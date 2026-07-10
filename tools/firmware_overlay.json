@@ -1,0 +1,420 @@
+{
+  "_comment": "Overlay manifest for HiBy R1 Audiobook Firmware Mod. Lists all files the mod adds, patches, or removes from the stock rootfs. Applied by build_firmware_overlay.py against a stock rootfs.squashfs.",
+  "_format": "Each entry has: source (where the file comes from), target (rootfs-relative path), mode (octal permissions), and type (copy | script | generated | patch-binary | patch-resource | patch-text | remove | touch-event). Script entries contain inline shell script text. Generated entries are produced by helper scripts at build time.",
+
+  "metadata": {
+    "name": "hiby-r1-audiobook-mod",
+    "base_firmware": "1.6",
+    "default_version_id": "1.6.16.5-audiobook",
+    "default_version_label": "HiBy R1 Audiobook FW 1.6.16.5"
+  },
+
+  "add_files": [
+    {
+      "target": "usr/bin/r1_audiobook_resume_helper",
+      "source": "work/device-audiobook-helper-20260609/audiobooks/bin/r1_audiobook_resume_helper",
+      "mode": "0755",
+      "description": "Native MIPS resume helper binary"
+    },
+    {
+      "target": "usr/bin/r1_audiobook_memscan",
+      "source": "work/native-memscan/r1_audiobook_memscan",
+      "mode": "0755",
+      "description": "Native MIPS memory scan helper for direct track selection"
+    },
+    {
+      "target": "usr/bin/r1_audiobook_direct_open",
+      "source": "work/native-direct-open/r1_audiobook_direct_open",
+      "mode": "0755",
+      "description": "Native MIPS direct-open helper for off-screen track selection"
+    },
+    {
+      "target": "usr/bin/r1_audiobook_resume_daemon.sh",
+      "source": "tools/r1_audiobook_resume_daemon.sh",
+      "mode": "0755",
+      "description": "Resume daemon shell script"
+    },
+    {
+      "target": "usr/bin/r1_audiobook_db_maint",
+      "source": "work/native-db-maint/r1_audiobook_db_maint",
+      "mode": "0755",
+      "description": "Native MIPS audiobook database maintenance helper"
+    },
+    {
+      "target": "usr/bin/r1_audiobook_db_watch.sh",
+      "source": "tools/r1_audiobook_db_watch.sh",
+      "mode": "0755",
+      "description": "Database watcher shell script"
+    },
+    {
+      "target": "usr/bin/r1_audiobook_refresh.sh",
+      "source": "tools/r1_audiobook_refresh.sh",
+      "mode": "0755",
+      "description": "Refresh library trigger script"
+    },
+    {
+      "target": "usr/bin/r1_usrlocal_media_seed.db",
+      "source": "firmware/seed/usrlocal_media.seed.db",
+      "mode": "0644",
+      "description": "Seed media database for initial DB bootstrap"
+    },
+    {
+      "target": "usr/bin/r1_audiobook_catalog.tsv",
+      "source": "",
+      "mode": "0644",
+      "description": "Optional resume catalog TSV (used only if --audiobook-resume-catalog is provided)",
+      "optional": true
+    },
+
+    {
+      "target": "usr/bin/r1_touch_next_event1.bin",
+      "source_type": "generated",
+      "generator": "adb_inject_touch_event.py",
+      "generator_args": [],
+      "mode": "0644",
+      "description": "Touch event stream: tap next"
+    },
+    {
+      "target": "usr/bin/r1_touch_first_track_event1.bin",
+      "source_type": "generated",
+      "generator": "adb_inject_touch_event.py",
+      "generator_args": ["--x", "203", "--y", "197"],
+      "mode": "0644",
+      "description": "Touch event stream: tap first track"
+    },
+    {
+      "target": "usr/bin/r1_touch_first_track_down_event1.bin",
+      "source_type": "generated",
+      "generator": "adb_inject_touch_event.py",
+      "generator_args": ["--x", "203", "--y", "197", "--touch-phase", "down"],
+      "mode": "0644",
+      "description": "Touch event stream: first track press down"
+    },
+    {
+      "target": "usr/bin/r1_touch_first_track_move_event1.bin",
+      "source_type": "generated",
+      "generator": "adb_inject_touch_event.py",
+      "generator_args": ["--x", "203", "--y", "197", "--touch-phase", "move"],
+      "mode": "0644",
+      "description": "Touch event stream: first track move"
+    },
+    {
+      "target": "usr/bin/r1_touch_first_track_up_event1.bin",
+      "source_type": "generated",
+      "generator": "adb_inject_touch_event.py",
+      "generator_args": ["--x", "203", "--y", "197", "--touch-phase", "up"],
+      "mode": "0644",
+      "description": "Touch event stream: first track release"
+    },
+    {
+      "target": "usr/bin/r1_touch_back_event1.bin",
+      "source_type": "generated",
+      "generator": "adb_inject_touch_event.py",
+      "generator_args": ["--x", "30", "--y", "400", "--to-x", "360", "--to-y", "400", "--drag-frames", "18"],
+      "mode": "0644",
+      "description": "Touch event stream: back swipe"
+    },
+
+    {
+      "target": "usr/bin/r1_touch_track_row1_event1.bin",
+      "source_type": "generated",
+      "generator": "adb_inject_touch_event.py",
+      "generator_args": ["--x", "203", "--y", "197"],
+      "mode": "0644",
+      "description": "Touch event stream: track row 1 (same as first track)"
+    },
+    {
+      "target": "usr/bin/r1_touch_track_row2_event1.bin",
+      "source_type": "generated",
+      "generator": "adb_inject_touch_event.py",
+      "generator_args": ["--x", "203", "--y", "325"],
+      "mode": "0644",
+      "description": "Touch event stream: track row 2"
+    },
+    {
+      "target": "usr/bin/r1_touch_track_row3_event1.bin",
+      "source_type": "generated",
+      "generator": "adb_inject_touch_event.py",
+      "generator_args": ["--x", "203", "--y", "453"],
+      "mode": "0644",
+      "description": "Touch event stream: track row 3"
+    },
+    {
+      "target": "usr/bin/r1_touch_track_row4_event1.bin",
+      "source_type": "generated",
+      "generator": "adb_inject_touch_event.py",
+      "generator_args": ["--x", "203", "--y", "581"],
+      "mode": "0644",
+      "description": "Touch event stream: track row 4"
+    },
+    {
+      "target": "usr/bin/r1_touch_track_row5_event1.bin",
+      "source_type": "generated",
+      "generator": "adb_inject_touch_event.py",
+      "generator_args": ["--x", "203", "--y", "745"],
+      "mode": "0644",
+      "description": "Touch event stream: track row 5"
+    },
+
+    {
+      "target": "usr/bin/r1_touch_track_swipe_down_event1.bin",
+      "source_type": "generated",
+      "generator": "adb_inject_touch_event.py",
+      "generator_args": ["--x", "120", "--y", "680", "--touch-phase", "down"],
+      "mode": "0644",
+      "description": "Touch event stream: swipe down start"
+    },
+    {
+      "target": "usr/bin/r1_touch_track_swipe_move1_event1.bin",
+      "source_type": "generated",
+      "generator": "adb_inject_touch_event.py",
+      "generator_args": ["--x", "120", "--y", "600", "--touch-phase", "move"],
+      "mode": "0644",
+      "description": "Touch event stream: swipe move 1"
+    },
+    {
+      "target": "usr/bin/r1_touch_track_swipe_move2_event1.bin",
+      "source_type": "generated",
+      "generator": "adb_inject_touch_event.py",
+      "generator_args": ["--x", "120", "--y", "520", "--touch-phase", "move"],
+      "mode": "0644",
+      "description": "Touch event stream: swipe move 2"
+    },
+    {
+      "target": "usr/bin/r1_touch_track_swipe_move3_event1.bin",
+      "source_type": "generated",
+      "generator": "adb_inject_touch_event.py",
+      "generator_args": ["--x", "120", "--y", "440", "--touch-phase", "move"],
+      "mode": "0644",
+      "description": "Touch event stream: swipe move 3"
+    },
+    {
+      "target": "usr/bin/r1_touch_track_swipe_move4_event1.bin",
+      "source_type": "generated",
+      "generator": "adb_inject_touch_event.py",
+      "generator_args": ["--x", "120", "--y", "360", "--touch-phase", "move"],
+      "mode": "0644",
+      "description": "Touch event stream: swipe move 4"
+    },
+    {
+      "target": "usr/bin/r1_touch_track_swipe_move5_event1.bin",
+      "source_type": "generated",
+      "generator": "adb_inject_touch_event.py",
+      "generator_args": ["--x", "120", "--y", "280", "--touch-phase", "move"],
+      "mode": "0644",
+      "description": "Touch event stream: swipe move 5"
+    },
+    {
+      "target": "usr/bin/r1_touch_track_swipe_move6_event1.bin",
+      "source_type": "generated",
+      "generator": "adb_inject_touch_event.py",
+      "generator_args": ["--x", "120", "--y", "220", "--touch-phase", "move"],
+      "mode": "0644",
+      "description": "Touch event stream: swipe move 6"
+    },
+    {
+      "target": "usr/bin/r1_touch_track_swipe_up_event1.bin",
+      "source_type": "generated",
+      "generator": "adb_inject_touch_event.py",
+      "generator_args": ["--x", "120", "--y", "220", "--touch-phase", "up"],
+      "mode": "0644",
+      "description": "Touch event stream: swipe up release"
+    },
+
+    {
+      "target": "usr/bin/r1_key_next_event0.bin",
+      "source_type": "generated",
+      "generator": "adb_inject_touch_event.py",
+      "generator_args": ["--button", "next"],
+      "mode": "0644",
+      "description": "Key event stream: next button"
+    },
+    {
+      "target": "usr/bin/r1_key_prev_event2.bin",
+      "source_type": "generated",
+      "generator": "adb_inject_touch_event.py",
+      "generator_args": ["--button", "prev"],
+      "mode": "0644",
+      "description": "Key event stream: prev button"
+    }
+  ],
+
+  "add_scripts": [
+    {
+      "target": "etc/init.d/S91audiobook_resume.sh",
+      "mode": "0755",
+      "description": "Boot script for audiobook resume daemon (generated with feature flags substituted)",
+      "source_type": "build_firmware_overlay.py",
+      "template": "RESUME_BOOT_SCRIPT"
+    },
+    {
+      "target": "etc/init.d/S92audiobook_db_maint.sh",
+      "mode": "0755",
+      "description": "Boot script for audiobook DB maintenance watcher (generated with feature flags substituted)",
+      "source_type": "build_firmware_overlay.py",
+      "template": "DB_MAINT_BOOT_SCRIPT"
+    },
+    {
+      "target": "etc/init.d/S90adb",
+      "mode": "0755",
+      "description": "Boot script for persistent ADB (conditional on --enable-boot-adb)",
+      "source_type": "build_firmware_overlay.py",
+      "template": "ADB_BOOT_SCRIPT",
+      "conditional": "enable_boot_adb"
+    }
+  ],
+
+  "add_generated": [
+    {
+      "target": "etc/r1_audiobook_version",
+      "mode": "0644",
+      "description": "Firmware version marker file (generated from build options)",
+      "source_type": "build_firmware_overlay.py",
+      "template": "VERSION_MARKER"
+    },
+    {
+      "target": "etc/ota_info",
+      "mode": "0644",
+      "description": "OTA info file (modified from stock when --ota-version or --ota-site is set)",
+      "source_type": "build_firmware_overlay.py",
+      "template": "OTA_INFO",
+      "conditional": "ota_version_nonzero_or_ota_site"
+    }
+  ],
+
+  "patch_binary": [
+    {
+      "target": "usr/bin/hiby_player",
+      "tool": "patch_hiby_player.py",
+      "description": "Apply guarded byte patches to the stock hiby_player binary",
+      "flags": [
+        "--scan-skip",
+        "--book-audio-shim",
+        "--audiobook-launcher-genre",
+        "--audiobook-private-direct-route",
+        "--audiobook-native-hub-title-row",
+        "--audiobook-native-hub-launcher",
+        "--audiobook-native-hub-folder-rows",
+        "--audiobook-native-hub-view-rows",
+        "--audiobook-title-autostart-marker",
+        "--select-dispatch-branch"
+      ]
+    }
+  ],
+
+  "patch_resources": [
+    {
+      "target": "usr/resource/str",
+      "tool": "patch_r1_resource_text.py",
+      "description": "Patch resource string INI files (about_dev.ini, book.ini, songlist.ini, launcher.ini) and config.json product version",
+      "flags": [
+        "--about-model",
+        "--product-version",
+        "--audiobook-native-hub-labels",
+        "--audiobook-native-hub-view-labels"
+      ]
+    },
+    {
+      "target": "usr/resource/litegui",
+      "tool": "generate_audiobook_launcher_icons.py",
+      "description": "Generate audiobook launcher icons replacing stock book icons",
+      "conditional": "include_audiobook_launcher_icon"
+    }
+  ],
+
+  "patch_audio_unlocks": [
+    {
+      "target": "usr/resource/ot_devices.json",
+      "tool": "patch_r1_audio_feature_unlocks.py",
+      "flag": "--native-dsd",
+      "description": "Unlock native DSD playback for analog output",
+      "conditional": "unlock_native_dsd"
+    },
+    {
+      "target": "usr/resource/set_functions.json",
+      "tool": "patch_r1_audio_feature_unlocks.py",
+      "flag": "--usb-dac",
+      "description": "Unlock USB DAC mode settings",
+      "conditional": "unlock_usb_dac_mode"
+    },
+    {
+      "target": "usr/resource/midi_set_functions.json",
+      "tool": "patch_r1_audio_feature_unlocks.py",
+      "flag": "--usb-dac",
+      "description": "Unlock USB DAC mode settings (midi set)",
+      "conditional": "unlock_usb_dac_mode"
+    },
+    {
+      "target": "usr/resource/config.json",
+      "tool": "patch_r1_audio_feature_unlocks.py",
+      "flag": "--usb-dac",
+      "description": "Unlock USB DAC mode settings (config dac_to_store)",
+      "conditional": "unlock_usb_dac_mode"
+    },
+    {
+      "target": "usr/bin/bt_init",
+      "tool": "patch_r1_audio_feature_unlocks.py",
+      "flag": "--sbc-xq",
+      "description": "Enable Bluetooth SBC-XQ codec quality",
+      "conditional": "enable_bluetooth_sbc_xq"
+    }
+  ],
+
+  "patch_text": [
+    {
+      "target": "usr/bin/hiby_player.sh",
+      "description": "Remove batd SD logger from hiby_player.sh launch script",
+      "conditional": "disable_batd_logger",
+      "operation": "remove_batd_block"
+    }
+  ],
+
+  "mode_overrides": [
+    {"target": "etc/init.d/S90adb", "mode": "0755", "conditional": "enable_boot_adb"},
+    {"target": "etc/init.d/S91audiobook_resume.sh", "mode": "0755"},
+    {"target": "etc/init.d/S92audiobook_db_maint.sh", "mode": "0755"},
+    {"target": "etc/r1_audiobook_version", "mode": "0644"},
+    {"target": "usr/bin/r1_audiobook_resume_helper", "mode": "0755"},
+    {"target": "usr/bin/r1_audiobook_direct_open", "mode": "0755"},
+    {"target": "usr/bin/r1_audiobook_resume_daemon.sh", "mode": "0755"},
+    {"target": "usr/bin/r1_audiobook_db_maint", "mode": "0755"},
+    {"target": "usr/bin/r1_audiobook_db_watch.sh", "mode": "0755"},
+    {"target": "usr/bin/r1_audiobook_refresh.sh", "mode": "0755"},
+    {"target": "usr/bin/r1_usrlocal_media_seed.db", "mode": "0644"},
+    {"target": "usr/bin/r1_touch_next_event1.bin", "mode": "0644"},
+    {"target": "usr/bin/r1_touch_first_track_event1.bin", "mode": "0644"},
+    {"target": "usr/bin/r1_touch_first_track_down_event1.bin", "mode": "0644"},
+    {"target": "usr/bin/r1_touch_first_track_move_event1.bin", "mode": "0644"},
+    {"target": "usr/bin/r1_touch_first_track_up_event1.bin", "mode": "0644"},
+    {"target": "usr/bin/r1_touch_back_event1.bin", "mode": "0644"},
+    {"target": "usr/bin/r1_touch_track_row1_event1.bin", "mode": "0644"},
+    {"target": "usr/bin/r1_touch_track_row2_event1.bin", "mode": "0644"},
+    {"target": "usr/bin/r1_touch_track_row3_event1.bin", "mode": "0644"},
+    {"target": "usr/bin/r1_touch_track_row4_event1.bin", "mode": "0644"},
+    {"target": "usr/bin/r1_touch_track_row5_event1.bin", "mode": "0644"},
+    {"target": "usr/bin/r1_touch_track_swipe_down_event1.bin", "mode": "0644"},
+    {"target": "usr/bin/r1_touch_track_swipe_move1_event1.bin", "mode": "0644"},
+    {"target": "usr/bin/r1_touch_track_swipe_move2_event1.bin", "mode": "0644"},
+    {"target": "usr/bin/r1_touch_track_swipe_move3_event1.bin", "mode": "0644"},
+    {"target": "usr/bin/r1_touch_track_swipe_move4_event1.bin", "mode": "0644"},
+    {"target": "usr/bin/r1_touch_track_swipe_move5_event1.bin", "mode": "0644"},
+    {"target": "usr/bin/r1_touch_track_swipe_move6_event1.bin", "mode": "0644"},
+    {"target": "usr/bin/r1_touch_track_swipe_up_event1.bin", "mode": "0644"},
+    {"target": "usr/bin/r1_key_next_event0.bin", "mode": "0644"},
+    {"target": "usr/bin/r1_key_prev_event2.bin", "mode": "0644"},
+    {"target": "usr/bin/r1_audiobook_catalog.tsv", "mode": "0644"}
+  ],
+
+  "squashfs_options": {
+    "compression": "lzo",
+    "block_size": "131072",
+    "all_root": true,
+    "pseudo_file": true
+  },
+
+  "upt_options": {
+    "tool": "build_r1_upt.py",
+    "requires": ["xImage", "rootfs.squashfs"],
+    "chunk_size": "512K"
+  }
+}
