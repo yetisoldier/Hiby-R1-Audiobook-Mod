@@ -12,6 +12,7 @@
 #include "player.h"
 #include "catalog.h"
 #include "resume.h"
+#include "ui.h"
 
 #include <stdio.h>
 #include <stdlib.h>

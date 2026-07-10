@@ -21,6 +21,7 @@
 #include "resume.h"
 #include "player.h"
 #include "catalog.h"
+#include "ui.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -689,6 +690,229 @@ static void test_catalog_album_patterns(void) {
     catalog_free(&db);
 }
 
+/* ── UI tests ─────────────────────────────────────────────────────── */
+
+static void test_pixel_white_pure(void) {
+    /* Pure white in RGB565: r=31, g=63, b=31 → v = (31<<11)|(63<<5)|31 = 0xFFFF */
+    CHECK(pixel_is_white(0xFFFF));
+}
+
+static void test_pixel_white_near(void) {
+    /* Near-white: r=24, g=48, b=24 → just above threshold */
+    uint16_t v = (24 << 11) | (48 << 5) | 24;
+    CHECK(pixel_is_white(v));
+}
+
+static void test_pixel_white_below_r(void) {
+    /* r=23 (below threshold), g=48, b=24 */
+    uint16_t v = (23 << 11) | (48 << 5) | 24;
+    CHECK(!pixel_is_white(v));
+}
+
+static void test_pixel_white_below_g(void) {
+    /* r=24, g=47 (below threshold), b=24 */
+    uint16_t v = (24 << 11) | (47 << 5) | 24;
+    CHECK(!pixel_is_white(v));
+}
+
+static void test_pixel_white_below_b(void) {
+    /* r=24, g=48, b=23 (below threshold) */
+    uint16_t v = (24 << 11) | (48 << 5) | 23;
+    CHECK(!pixel_is_white(v));
+}
+
+static void test_pixel_blue_pure(void) {
+    /* Blue: r<=10, g>=24, b>=18 → r=0, g=24, b=18 */
+    uint16_t v = (0 << 11) | (24 << 5) | 18;
+    CHECK(pixel_is_blue(v));
+}
+
+static void test_pixel_blue_high_r(void) {
+    /* r=11 (above blue threshold) */
+    uint16_t v = (11 << 11) | (24 << 5) | 18;
+    CHECK(!pixel_is_blue(v));
+}
+
+static void test_pixel_blue_low_g(void) {
+    /* g=23 (below threshold) */
+    uint16_t v = (0 << 11) | (23 << 5) | 18;
+    CHECK(!pixel_is_blue(v));
+}
+
+static void test_pixel_blue_low_b(void) {
+    /* b=17 (below threshold) */
+    uint16_t v = (0 << 11) | (24 << 5) | 17;
+    CHECK(!pixel_is_blue(v));
+}
+
+static void test_seek_x_midpoint(void) {
+    /* saved_pos = half of duration → x should be midrange */
+    uint16_t x = ui_seek_compute_x(50000, 100000, 21, 459);
+    /* range = 438, x = 21 + (50000*438 + 50000)/100000 = 21 + 219 = 240 */
+    CHECK_INT_EQ((int)x, 240);
+}
+
+static void test_seek_x_start(void) {
+    /* saved_pos near 0 → x should be x_min + 1 */
+    uint16_t x = ui_seek_compute_x(100, 100000, 21, 459);
+    CHECK_INT_EQ((int)x, 22);
+}
+
+static void test_seek_x_end(void) {
+    /* saved_pos near duration → x should be x_max - 1 */
+    uint16_t x = ui_seek_compute_x(99900, 100000, 21, 459);
+    CHECK_INT_EQ((int)x, 458);
+}
+
+static void test_seek_x_zero_duration(void) {
+    uint16_t x = ui_seek_compute_x(50000, 0, 21, 459);
+    CHECK_INT_EQ((int)x, 0);
+}
+
+static void test_seek_x_tiny_range(void) {
+    /* range <= 2 → should return 0 */
+    uint16_t x = ui_seek_compute_x(50000, 100000, 21, 22);
+    CHECK_INT_EQ((int)x, 0);
+}
+
+static void test_seek_x_clamp_min(void) {
+    /* saved_pos = 0 → x = x_min + (0 + duration/2)/duration = x_min + 0 → clamp to x_min+1 */
+    uint16_t x = ui_seek_compute_x(0, 100000, 21, 459);
+    CHECK_INT_EQ((int)x, 22);
+}
+
+static void test_seek_x_clamp_max(void) {
+    /* saved_pos = duration → x = x_min + (duration*range + duration/2)/duration
+       = x_min + range + 0 = x_max → clamp to x_max-1 */
+    uint16_t x = ui_seek_compute_x(100000, 100000, 21, 459);
+    CHECK_INT_EQ((int)x, 458);
+}
+
+static void test_fb_white_region_mock(void) {
+    /* Create a mock framebuffer file with known pixel data.
+       We write a small buffer where some pixels are white.
+       Stride = 4 bytes (2 pixels at 2 bytes each). */
+    char fb_path[512];
+    snprintf(fb_path, sizeof(fb_path), "%s/mock_fb.bin", tmpdir);
+
+    int fd = open(fb_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    CHECK(fd >= 0);
+
+    /* Row 0: pixel 0 = white (0xFFFF), pixel 1 = black (0x0000) */
+    unsigned char row0[4] = { 0xFF, 0xFF, 0x00, 0x00 };
+    /* Row 1: pixel 0 = black, pixel 1 = white */
+    unsigned char row1[4] = { 0x00, 0x00, 0xFF, 0xFF };
+    write(fd, row0, 4);
+    write(fd, row1, 4);
+    close(fd);
+
+    /* Open for reading */
+    fd = open(fb_path, O_RDONLY);
+    CHECK(fd >= 0);
+
+    /* Count white pixels in region x0=0, y0=0, x1=2, y1=2, stride=4 */
+    int count = fb_white_pixels_region(fd, 0, 0, 2, 2, 4);
+    close(fd);
+    CHECK_INT_EQ(count, 2);
+}
+
+static void test_fb_white_region_empty(void) {
+    /* All-black mock framebuffer */
+    char fb_path[512];
+    snprintf(fb_path, sizeof(fb_path), "%s/mock_fb_black.bin", tmpdir);
+
+    int fd = open(fb_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    CHECK(fd >= 0);
+    unsigned char row[4] = { 0x00, 0x00, 0x00, 0x00 };
+    write(fd, row, 4);
+    write(fd, row, 4);
+    close(fd);
+
+    fd = open(fb_path, O_RDONLY);
+    CHECK(fd >= 0);
+
+    int count = fb_white_pixels_region(fd, 0, 0, 2, 2, 4);
+    close(fd);
+    CHECK_INT_EQ(count, 0);
+}
+
+static void test_fb_white_region_partial(void) {
+    /* Mock framebuffer with partial white pixels in a sub-region */
+    char fb_path[512];
+    snprintf(fb_path, sizeof(fb_path), "%s/mock_fb_partial.bin", tmpdir);
+
+    int fd = open(fb_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    CHECK(fd >= 0);
+
+    /* 4 pixels per row, stride=8 bytes. Row 0: first 2 pixels white */
+    unsigned char row0[8] = { 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00 };
+    unsigned char row1[8] = { 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00 };
+    write(fd, row0, 8);
+    write(fd, row1, 8);
+    close(fd);
+
+    fd = open(fb_path, O_RDONLY);
+    CHECK(fd >= 0);
+
+    /* Count white in x0=0, x1=2 (pixels 0-1), y0=0, y1=2 → 2+0 = 2 */
+    int count = fb_white_pixels_region(fd, 0, 0, 2, 2, 8);
+    close(fd);
+    CHECK_INT_EQ(count, 2);
+}
+
+static void test_play_mode_value_read(void) {
+    daemon_config cfg;
+    make_test_config(&cfg);
+
+    /* Write a byte at the configured offset */
+    cfg.play_mode_user_ini_offset = 100;
+
+    int fd = open(cfg.user_ini_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    CHECK(fd >= 0);
+    /* Write 100 zero bytes, then the mode value 3 */
+    unsigned char buf[101];
+    memset(buf, 0, 100);
+    buf[100] = 3;
+    write(fd, buf, 101);
+    close(fd);
+
+    int mode = play_mode_value(&cfg);
+    CHECK_INT_EQ(mode, 3);
+}
+
+static void test_play_mode_value_missing(void) {
+    daemon_config cfg;
+    make_test_config(&cfg);
+    cfg.play_mode_user_ini_offset = 200;
+
+    /* user.ini doesn't exist or is too short */
+    int mode = play_mode_value(&cfg);
+    CHECK_INT_EQ(mode, -1);
+}
+
+static void test_play_mode_value_zero_offset(void) {
+    daemon_config cfg;
+    make_test_config(&cfg);
+    cfg.play_mode_user_ini_offset = 0;
+
+    int mode = play_mode_value(&cfg);
+    CHECK_INT_EQ(mode, -1);
+}
+
+static void test_seek_x_quarter(void) {
+    /* saved_pos = 25000, duration = 100000 → x = x_min + 25000*438/100000 ≈ 21 + 109 */
+    uint16_t x = ui_seek_compute_x(25000, 100000, 21, 459);
+    /* (25000 * 438 + 50000) / 100000 = (10950000 + 50000) / 100000 = 110 */
+    CHECK_INT_EQ((int)x, 131);
+}
+
+static void test_seek_x_three_quarter(void) {
+    /* saved_pos = 75000, duration = 100000 */
+    uint16_t x = ui_seek_compute_x(75000, 100000, 21, 459);
+    /* (75000 * 438 + 50000) / 100000 = (32850000 + 50000) / 100000 = 329 */
+    CHECK_INT_EQ((int)x, 350);
+}
+
 /* ── Main ─────────────────────────────────────────────────────────── */
 
 int main(int argc, char *argv[]) {
@@ -769,6 +993,32 @@ int main(int argc, char *argv[]) {
     RUN_TEST(test_catalog_parse);
     RUN_TEST(test_catalog_missing_file);
     RUN_TEST(test_catalog_album_patterns);
+
+    /* UI module tests */
+    RUN_TEST(test_pixel_white_pure);
+    RUN_TEST(test_pixel_white_near);
+    RUN_TEST(test_pixel_white_below_r);
+    RUN_TEST(test_pixel_white_below_g);
+    RUN_TEST(test_pixel_white_below_b);
+    RUN_TEST(test_pixel_blue_pure);
+    RUN_TEST(test_pixel_blue_high_r);
+    RUN_TEST(test_pixel_blue_low_g);
+    RUN_TEST(test_pixel_blue_low_b);
+    RUN_TEST(test_seek_x_midpoint);
+    RUN_TEST(test_seek_x_start);
+    RUN_TEST(test_seek_x_end);
+    RUN_TEST(test_seek_x_zero_duration);
+    RUN_TEST(test_seek_x_tiny_range);
+    RUN_TEST(test_seek_x_clamp_min);
+    RUN_TEST(test_seek_x_clamp_max);
+    RUN_TEST(test_seek_x_quarter);
+    RUN_TEST(test_seek_x_three_quarter);
+    RUN_TEST(test_fb_white_region_mock);
+    RUN_TEST(test_fb_white_region_empty);
+    RUN_TEST(test_fb_white_region_partial);
+    RUN_TEST(test_play_mode_value_read);
+    RUN_TEST(test_play_mode_value_missing);
+    RUN_TEST(test_play_mode_value_zero_offset);
 
     printf("\n=== Results ===\n");
     printf("  Total:   %d\n", tests_run);
