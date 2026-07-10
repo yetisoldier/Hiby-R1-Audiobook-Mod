@@ -32,7 +32,7 @@ SOURCES = [
 # test_resume_daemon.c provides main(); main.c's main() is excluded via source_only config
 TEST_SOURCES = [
     "config.c", "log.c", "proc_mem.c", "helpers.c",
-    "player.c", "catalog.c", "resume.c", "ui.c", "shadow.c",
+    "player.c", "catalog.c", "resume.c", "ui.c", "state.c", "shadow.c",
     "test_resume_daemon.c",  # from tests/ dir — provides main()
 ]
 
@@ -42,7 +42,7 @@ LINUX_TARGET = "x86_64-linux-gnu"
 MIPS_BINARY = os.path.join(BUILD_DIR, "r1_audiobook_resume_daemon")
 LINUX_BINARY = os.path.join(BUILD_DIR, "r1_audiobook_resume_daemon_test")
 
-MIPS_SIZE_BUDGET = 100 * 1024    # 100 KB stripped
+MIPS_SIZE_BUDGET = 128 * 1024    # 128 KB stripped (all modules linked)
 LINUX_SIZE_BUDGET = 300 * 1024  # 300 KB (grown due to more modules)
 
 
