@@ -230,7 +230,8 @@ def main():
     # Start in shadow mode
     log.info("Starting C daemon in shadow mode...")
     start_cmd = (
-        f"nohup {REMOTE_BINARY} --shadow --base-dir /usr/data/audiobooks > /dev/null 2>&1 &"
+        f"AUDIOBOOK_RESUME_LOG={REMOTE_LOG} AUDIOBOOK_RESUME_PID={REMOTE_PID}"
+        f" nohup {REMOTE_BINARY} --shadow --base-dir /usr/data/audiobooks > /dev/null 2>&1 &"
         f" PID=$!; echo $PID > {REMOTE_PID}"
     )
     adb_shell(adb, start_cmd, dev)
