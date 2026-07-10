@@ -182,6 +182,7 @@ def run(ctx: TestContext) -> None:
     for canonical, aliases in field_aliases.items():
         if not any(a in resume_data for a in aliases):
             missing.append(canonical)
+    if missing:
         raise RuntimeError(
             f"Resume record missing required fields: {missing}. "
             f"Present fields: {list(resume_data.keys())}"
