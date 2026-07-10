@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Deploy the C resume daemon to the R1 in shadow mode (runtime-only, no flash).
 
-This pushes the MIPS binary to /usr/data/audiobooks/bin/ and starts it
+This pushes the MIPS binary to /tmp/ (UBIFS on /usr/data doesn't allow execution) and starts it
 alongside the existing shell daemon. The shell daemon continues to act
 as before. The C daemon only logs what it *would* do — no side effects.
 
@@ -27,7 +27,7 @@ log = logging.getLogger("deploy_shadow")
 
 # ── Config ────────────────────────────────────────────────────────────────
 
-REMOTE_DIR = "/usr/data/audiobooks/bin"
+REMOTE_DIR = "/tmp"  # /usr/data is UBIFS (noexec), /tmp is tmpfs (exec allowed)
 REMOTE_BINARY = f"{REMOTE_DIR}/r1_audiobook_resume_daemon_c"
 REMOTE_PID = "/usr/data/audiobooks/resume-daemon-c.pid"
 REMOTE_LOG = "/usr/data/audiobooks/resume-daemon-c.log"
@@ -230,8 +230,8 @@ def main():
     # Start in shadow mode
     log.info("Starting C daemon in shadow mode...")
     start_cmd = (
-        f"{REMOTE_BINARY} --shadow > {REMOTE_LOG} 2>&1 &"
-        f" echo $! > {REMOTE_PID}"
+        f"{REMOTE_BINARY} --shadow --base-dir /usr/data/audiobooks &"
+        f" PID=$!; echo $PID > {REMOTE_PID}"
     )
     adb_shell(adb, start_cmd, dev)
     time.sleep(2)
