@@ -1,27 +1,11 @@
-# HiBy R1 Audiobook Firmware 
+# HiBy R1 Audiobook Firmware
 
-This workspace is for investigating and prototyping audiobook support on the HiBy R1 without taking unnecessary flashing risks.
+Unofficial audiobook firmware mod for the normal HiBy R1 on stock firmware 1.6.
+Not for the R1 MIDI or other HiBy players.
 
-## Release Build Quick Guide
-
-Current shareable package:
-
-- Version marker: `1.6.18-audiobook`
-- Download page: <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v1.6.1>
-- Package: `r1-audiobooks-1.6.18-audiobook.upt`
-- UPT MD5: `e3dba87c24ef84196ec1c91fe3c3e26a`
-- UPT SHA256: `e42d70d84bf3353391c16fa60f83f399d2624226d2792f3c7882d9a1bbe45253`
-- Base firmware: stock HiBy R1 1.6 for the normal R1, not the R1 MIDI
-
-Previous public release:
-
-- Version marker: `1.6.17-audiobook`
-- Download page: <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v1.6.0>
-- Package: `r1-audiobooks-1.6.17-audiobook.upt`
-
-New in `1.6.18-audiobook`: the Audiobooks hub now uses `Refresh Library`, `Titles`, `Authors`, `Series`, and `Folders`. `Refresh Library` replaces the misleading stock text-book `Scan` action, opens the `Titles` view as visible feedback, and starts an audiobook catalog/view refresh in the background. All `1.6.17-audiobook` native hub, resume, SD-swap, Native DSD, Bluetooth SBC XQ, and USB DAC-related behavior is retained.
-
-Before flashing, keep a known-good stock 1.6 `r1.upt` available for recovery. This mod has only been tested on one normal HiBy R1. Reinstalling stock firmware should reverse it, but it is still unofficial firmware, so use it at your own risk. Do not use it on the R1 MIDI or other HiBy players unless you are prepared to recover the device yourself.
+This is unofficial firmware tested on one normal HiBy R1. Reinstalling stock
+firmware should reverse it, but use it at your own risk. Keep a known-good stock
+1.6 `r1.upt` available for recovery.
 
 ## Screenshots
 
@@ -30,80 +14,104 @@ Before flashing, keep a known-good stock 1.6 `r1.upt` available for recovery. Th
   <img src="docs/images/audiobook-title-list.png" alt="Audiobook title list on the HiBy R1" width="240">
 </p>
 
-## Install The Build
+## Install
 
-The R1 updater expects the firmware file at the SD-card root as `r1.upt`.
+### Manual Install
 
-Manual install:
-
-1. Download `r1-audiobooks-1.6.18-audiobook.upt` from the release page.
-2. Rename the copied file to exactly `r1.upt`. This is important; the R1 will not recognize the update otherwise.
+1. Download `r1-audiobooks-1.6.18-audiobook.upt` from the
+   [latest release](https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v1.6.1).
+2. Copy it to the SD-card root and rename it to exactly `r1.upt`. The R1 will
+   not recognize the update otherwise.
 3. Safely eject/remount the SD card if you copied it outside the player.
 4. On the R1, run the normal firmware update from the device UI.
 5. Wait for the update to report success and reboot.
-6. After a successful boot, delete or rename SD-root `r1.upt` so the updater does not keep offering the same update.
-7. On the R1, go into Music and run `Update Database`, then wait for the scan to complete.
+6. After a successful boot, delete or rename SD-root `r1.upt` so the updater
+   does not keep offering the same update.
+7. Go to Music and run `Update Database`, then wait for the scan to complete.
 
-ADB-assisted install from this workspace (Ignore this if you did the manual install):
+### ADB-Assisted Install
 
-```powershell
-python tools\verify_r1_audiobook_build.py --require-db-maintenance --expect-current-hashes
+If you have ADB set up, see [DEVELOPMENT.md](DEVELOPMENT.md) for the verified
+staging workflow. The staging script verifies the package, refuses known bad
+packages, and pushes the file to the SD card.
 
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\adb_stage_verified_firmware.ps1 `
-  -ExpectCurrentHashes `
-  -IUnderstandThisStagesFirmware
-```
+## After Installing
 
-Then run the updater from the R1 UI. The staging script verifies the local package, refuses known bad packages, pushes the file as `/usr/data/mnt/sd_0/r1.upt`, and checks the remote byte count plus hashes when available.
+1. Remove or rename SD-root `r1.upt`.
+2. Put music under `/Music` and audiobooks under `/Audiobooks`.
+3. Run the normal on-device Music scan/update.
+4. Wait about a minute for the audiobook DB watcher, or reboot once.
+5. Open `Audiobooks` from the main launcher.
+6. Choose `Refresh Library`, `Titles`, `Authors`, `Series`, or `Folders`.
+7. Confirm book rows appear and a title/author/series row starts playback on
+   the Now Playing screen.
+8. Confirm normal Music Albums and Search do not list audiobooks.
 
 ## What Changes From Stock
 
 From a UI and day-to-day use perspective:
 
 - The main launcher label `Books` is renamed to `Audiobooks`.
-- Opening `Audiobooks` shows a native Audiobooks hub instead of the old text-book menu.
-- The Audiobooks hub has `Refresh Library`, `Titles`, `Authors`, `Series`, and `Folders`.
-- `Refresh Library` rebuilds the audiobook catalog/views in the background and opens `Titles` as visible feedback.
+- Opening `Audiobooks` shows a native Audiobooks hub instead of the old
+  text-book menu.
+- The Audiobooks hub has `Refresh Library`, `Titles`, `Authors`, `Series`, and
+  `Folders`.
+- `Refresh Library` rebuilds the audiobook catalog/views in the background and
+  opens `Titles` as visible feedback.
 - `Titles` shows generated book-title playlist rows.
 - `Authors` shows generated `Author - Title` rows.
-- `Series` shows generated series rows for books that have series metadata or a series-like folder structure. Standalone books are not forced into a fake series.
+- `Series` shows generated series rows for books that have series metadata or a
+  series-like folder structure. Standalone books are not forced into a fake
+  series.
 - `Folders` opens the SD-card `/Audiobooks` folder for normal folder browsing.
 - The launcher uses a dedicated Audiobooks icon.
-- Tapping a title/author/series row starts playback through the stock audio player path and switches to the Now Playing screen.
-- The firmware remembers a separate resume point for each audiobook, including multipart books, across listening to music and across reboots.
-- An audiobook must play for at least 15 seconds before the current position is saved. Very quick starts, wrong taps, and short previews are intentionally ignored.
-- If a multipart book resumes from a later file, the runtime attempts to select the saved file directly and seek to the saved position.
-- If playback reaches within 45 seconds of the end of the whole book, the book is treated as completed; the next title tap starts it from the beginning.
-- Pressing Back from generated Audiobooks views usually returns to the Audiobooks hub, and edge-back returns cleanly from the Folders root.
-- Audiobook files are kept out of normal Music Albums and Search catalog tables. The database keeps one internal `Audiobook` route row so the Audiobooks section can open reliably after scans.
-- Folder browsing still works, so files under `/Audiobooks` can still be found through file/explorer style views.
+- Tapping a title/author/series row starts playback through the stock audio
+  player path and switches to the Now Playing screen.
+- The firmware remembers a separate resume point for each audiobook, including
+  multipart books, across listening to music and across reboots.
+- An audiobook must play for at least 15 seconds before the current position is
+  saved. Very quick starts, wrong taps, and short previews are intentionally
+  ignored.
+- If a multipart book resumes from a later file, the runtime attempts to select
+  the saved file directly and seek to the saved position.
+- If playback reaches within 45 seconds of the end of the whole book, the book
+  is treated as completed; the next title tap starts it from the beginning.
+- Pressing Back from generated Audiobooks views usually returns to the
+  Audiobooks hub, and edge-back returns cleanly from the Folders root.
+- Audiobook files are kept out of normal Music Albums and Search catalog
+  tables. The database keeps one internal `Audiobook` route row so the
+  Audiobooks section can open reliably after scans.
+- Folder browsing still works, so files under `/Audiobooks` can still be found
+  through file/explorer style views.
 - The old text-file Books/TXT reader launcher flow is replaced by Audiobooks.
 - Native DSD is enabled for the analog output path.
-- Bluetooth starts with SBC XQ quality enabled when SBC is used and the receiving device supports it.
-- USB DAC related settings/flags are unlocked. On the test R1, USB audio input worked after a clean reboot with the USB working mode set from the stock settings.
-- The About/version strings show the custom build, although the R1 UI may truncate the visible suffix to something like `1.6.18-`.
+- Bluetooth starts with SBC XQ quality enabled when SBC is used and the
+  receiving device supports it.
+- USB DAC related settings/flags are unlocked. On the test R1, USB audio input
+  worked after a clean reboot with the USB working mode set from the stock
+  settings.
+- The About/version strings show the custom build, although the R1 UI may
+  truncate the visible suffix to something like `1.6.18-`.
 
-The stock Music player behavior is otherwise intentionally preserved: normal music playback, Now Playing, progress bar, physical controls, and the file explorer remain stock-style.
+The stock Music player behavior is otherwise intentionally preserved: normal
+music playback, Now Playing, progress bar, physical controls, and the file
+explorer remain stock-style.
 
 ## Audio Unlock Notes
 
-- Native DSD does not add a new Audiobooks control. Play DSD files normally; the analog output path is configured for native DSD support.
-- Bluetooth SBC XQ is automatic when Bluetooth audio uses SBC and the receiving device supports it. Pair and use Bluetooth normally.
-- USB DAC related options are exposed through the stock Settings/System USB working mode area. For the test R1, setting USB working mode to `Auto`, rebooting cleanly, then connecting a phone as the USB source allowed the R1 to receive audio and play it out through its selected output. This is lightly tested compared with the audiobook features.
+- **Native DSD**: play DSD files normally; analog output is configured for
+  native DSD.
+- **Bluetooth SBC XQ**: automatic when SBC is used and the device supports it.
+- **USB DAC**: exposed through stock Settings/System USB working mode. Lightly
+  tested.
 
 ## Folder And Metadata Expectations
 
-For the shareable on-device flow, use these SD-card folders:
+Use these SD-card folders:
 
 ```text
 /Music
 /Audiobooks
-```
-
-Recommended music layout:
-
-```text
-/Music/Artist/Album/01 - Track.flac
 ```
 
 Recommended audiobook layout:
@@ -119,523 +127,102 @@ Single-file books such as `.m4b` files are fine:
 /Audiobooks/Author/Year - Book Title/Book Title.m4b
 ```
 
-Metadata expectations:
-
-- `TALB` / Album should be the book title.
-- `TIT2` / Title should be the chapter or file display title.
-- `TPE2` / Album Artist should be the author.
-- `TPE1` / Artist may be author, narrator, or both.
-- `TCOM` / Composer may be narrator.
-- Track numbers or numbered filenames are strongly recommended for multipart books.
-
-The firmware does not require perfect audiobook tags. The genre tag does not need to be exactly `Audiobook`; files under `/Audiobooks` are normalized into the Audiobooks section by the on-device helper after Music -> Update Database runs. If metadata is missing, the helper derives basic author, book title, chapter/title, and order from folder and filename structure. Better tags and numbered files make the book list and multipart resume more reliable. MP3Tag works well for this; the Seanap/Plex-style convention, with album as the book title and album artist as the author, is a good fit.
-
-For best results, especially if you want future series support, this folder
-shape is recommended but not required:
+For best results, especially if you want series support:
 
 ```text
 /Audiobooks/Author/Series/2020 - Book Title [Series 02]/01 - Chapter.mp3
 /Audiobooks/Author/2021 - Standalone Book/01 - Chapter.mp3
 ```
 
-The second form intentionally has no series folder. The catalog leaves its
-series fields blank, so standalone books are not forced into a fake series.
-
-## After Installing
-
-After the first boot into the custom firmware:
-
-1. Remove or rename SD-root `r1.upt`.
-2. Put music under `/Music` and audiobooks under `/Audiobooks`.
-3. Run the normal on-device Music scan/update.
-4. Wait about a minute for the audiobook DB watcher, or reboot once.
-5. Open `Audiobooks` from the main launcher.
-6. Choose `Titles`, `Authors`, `Series`, or `Folders`.
-7. Confirm book rows appear and a title/author/series row starts playback on the Now Playing screen.
-8. Confirm normal Music Albums and Search do not list audiobooks.
-
-If ADB is enabled for verification, it still has to be enabled manually after reboot on the test device. Optional installed-release verification:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\adb_verify_installed_audiobook_release.ps1 `
-  -CaptureFramebuffer
-```
-
-If the media database is missing or empty, the firmware can seed a valid empty DB schema and scan `/Music` plus `/Audiobooks` itself. If the stock scanner already created music rows, the helper preserves those music rows and refreshes only audiobook rows and catalog tables.
-
-## Known Quirks And Odd Behavior
-
-- Back navigation from generated Audiobooks views usually returns to the Audiobooks hub. Edge-back is the most reliable gesture from the Folders root.
-- The Folders view may show the generated `_views` folder. It contains the playlist files used by the `Titles`, `Authors`, and `Series` views.
-- Title selection can take a second or two. Multipart resume may briefly show the track list or a nearby file while it lands on the saved file and position.
-- Resume saves are intentionally delayed until at least 15 seconds of audiobook playback, so a position change shorter than that may not be remembered.
-- There is currently no audiobook search UI; browse by Titles, Authors, Series, or Folders.
-- The old TXT reader is no longer available from the launcher because the Books section is repurposed as Audiobooks.
-- The visible About screen version is truncated by the stock UI, even though `/etc/r1_audiobook_version` and `/usr/resource/config.json` contain the full `1.6.18-audiobook` marker.
-- ADB does not persist in practice on the test R1; it must be manually re-enabled after reboot or update.
-- The DB helper provides practical fallback metadata but is not a full audiobook tag parser. Clean folder structure and numbered multipart files matter.
-- If the SD card is replaced, the player should still boot and Music should still work. Run the on-device Music scan/update and wait or reboot so the watcher can rebuild catalogs for the new card.
-- Existing per-book resume records are stored internally under `/usr/data/audiobooks/resume.d`. They are small and survive SD-card replacement, but a resume record may not match a different card's renamed or reorganized audiobook files.
-- The firmware now guards audiobook play mode while an audiobook is active, but the stock play-mode UI is still shared with music.
-- The resume daemon uses lower-power idle polling while normal music or non-audiobook content is active.
-- If an update ever boots to a black screen, use the normal R1 flash/recovery flow with a stock 1.6 `r1.upt`.
-
-## Current Status
-
-The current shareable release is `1.6.18-audiobook`. It is still based on stock HiBy R1 firmware 1.6 for the normal R1, not the R1 MIDI, and it does not require a PC/ADB database install for normal use.
-
-Shareable SD-card workflow:
-
-1. Put music under `/Music`.
-2. Put audiobook files under `/Audiobooks`.
-3. Run the normal on-device Music scan/update.
-4. Wait about a minute, or reboot once, then open `Audiobooks`.
-5. Choose `Titles`, `Authors`, `Series`, or `Folders`.
-
-The stock scanner can still build the base media database. A firmware-installed watcher waits for the DB to settle, then runs a static MIPS helper on-device. If `/usr/data/usrlocal_media.db` is missing or empty, the watcher first copies an embedded seed schema and the helper scans `/Music` plus `/Audiobooks` itself. If the stock DB already has music rows, the helper preserves them and only refreshes audiobook rows. It derives reasonable fallback metadata from folders and filenames when needed, writes `/usr/data/audiobooks/catalog.tsv`, generates the `/Audiobooks/_views` playlist folders, and rebuilds normal Music catalog/search/count tables without audiobook album/search leakage. If there is no SD card, the watcher skips scan work and the player still boots normally. If the SD card is replaced, the next scan/watch pass rebuilds from that card.
-
-Local verified package:
-
-- UPT: `work\audiobook-firmware-1.6.18-audiobook\r1-audiobooks-1.6.18-audiobook.upt`
-- UPT MD5: `e3dba87c24ef84196ec1c91fe3c3e26a`
-- UPT SHA256: `e42d70d84bf3353391c16fa60f83f399d2624226d2792f3c7882d9a1bbe45253`
-- Rootfs MD5: `dd47cf5f338d70ecab1f8be108529505`
-- Rootfs SHA256: `bfac581b61ff87c133bb5eb085a5ce5bb56db10678bae84697fae04d8697f8e6`
-- Player MD5 inside rootfs: `cd4d2812ab3425174b52925766424d2b`
-- Resume helper SHA256: `4a16c7ff9f43cccdcdc8d1d9926d0b519a24bf1f3999bda3009decbcb2ad8dce`
-- Memscan helper SHA256: `846bb54462ebaaefb93d93b1acfc25dda0f2331b496588bc9890888e9d4e5ee9`
-- Direct-open helper SHA256: `f5920f17d2f433a95006445cb2b12f3899cb93a888f616bcde948d6d0c21bd2d`
-- DB maintenance helper SHA256: `bfb8ceb62cf0868d55ad9b6115d0af3590f06393ec43ffd8da49b50014e39e5f`
-- DB watcher SHA256: `6bf32b11f8764500a96d252f10b4da67ab867257902ec7029daeb43b9e9f4271`
-- Refresh helper SHA256: `d6af7d94c005c5e297e0867b15e38b44238834d641d2c54d4df2f1d9f40cd47d`
-- Seed DB SHA256: `b27cd9b8a64aeef0d680a7f28505cc897f7c45b674f6a4a17fcaa2040dd3ca74`
-- Seed DB MD5: `7dc472d4d9d086d22efbff24ab2fce13`
-
-Verified locally on 2026-06-22 with:
-
-```powershell
-python tools\verify_r1_audiobook_build.py `
-  --out-dir work\audiobook-firmware-1.6.18-audiobook `
-  --upt-name r1-audiobooks-1.6.18-audiobook.upt `
-  --expected-version 1.6.18-audiobook `
-  --expected-label "HiBy R1 Audiobook FW 1.6.18" `
-  --require-db-maintenance `
-  --expect-audiobook-launcher-icon `
-  --expect-native-dsd `
-  --expect-sbc-xq `
-  --expect-usb-dac-mode `
-  --expect-native-hub-launcher `
-  --expect-native-hub-view-rows
-```
-
-Local package verification passed on 2026-06-22 for `1.6.18-audiobook`.
-Installed-device verification passed on 2026-06-22 for the matching
-`1.6.17.2-refresh-dev` test build, with latest artifacts under
-`work\installed-release-verification\20260622-144832`: DB integrity was `ok`,
-the test SD card had 135 audiobook rows across six books, title/author/series
-catalogs were present, Music album/search leakage was zero, one resume daemon
-and one DB watcher were running, and `Refresh Library` rebuilt the catalog while
-opening the Titles view as visible feedback.
-
-For development builds after the WSL/QEMU setup, the real MIPS DB helper can
-also be tested locally without flashing:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass `
-  -File tools\test_r1_db_maint_qemu_wsl.ps1 `
-  -Helper work\native-db-maint\r1_audiobook_db_maint
-```
-
-The resume daemon's multipart title-selection logic can also be tested locally:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass `
-  -File tools\test_r1_resume_daemon_logic_wsl.ps1
-```
-
-For live resume testing, `tools\adb_collect_audiobook_resume_debug.ps1` collects
-the daemon logs, catalog, resume records, process/memory/kernel state, and
-`user.ini` snapshot into `work\resume-debug\...` before a reboot clears useful
-clues.
-
-For battery or music-playback responsiveness checks, use the read-only runtime
-monitor while the R1 is playing:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass `
-  -File tools\adb_monitor_r1_runtime.ps1 `
-  -DurationMinutes 120 `
-  -IntervalSeconds 60
-```
-
-It writes battery/sysfs, load, memory, process, current-path, and recent
-audiobook logs to `work\runtime-monitor\...`.
-
-For local development, this wrapper runs the fast parser, shell, Python,
-resume-daemon, DB-helper, and diff checks we use before pushing:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass `
-  -File tools\run_local_dev_sanity.ps1
-```
-
-Author/Title/Series audiobook subviews are being researched in
-`docs\audiobook_views_research.md`. The current release opens the Title view;
-the route research tool can test alternate stock routes in RAM without flashing.
-
-Live self-contained rebuild testing on 2026-06-10 passed before flashing `1.6.4`: after deleting the active DB/catalog, the updated watcher copied the embedded seed DB and the helper rebuilt 114 `/Music` rows plus 135 `/Audiobooks` rows entirely on-device. The pulled DB under `work\watcher-seed-rebuild-test-20260610-152923` had integrity `ok`, 249 rows in both playback tables, six audiobook books, zero audiobook rows in `SEARCH_TABLE`, zero album leaks, and no `Audiobook` genre. The `1.6.4` package was staged to `/usr/data/mnt/sd_0/r1.upt` with matching byte count, MD5, and SHA-256.
-
-Post-flash verification on 2026-06-10 passed for `1.6.4-audiobook` with artifacts under `work\installed-release-verification\20260610-153805`: the installed device reports `1.6.4-audiobook`, the main launcher shows `Audiobooks`, the resume daemon and DB watcher are running, SD-root `r1.upt` was renamed to `/usr/data/mnt/sd_0/r1-audiobooks-1.6.4-audiobook-installed-20260610-1531.upt`, `user.ini` has no saved-last audiobook references, `/usr/data` has about 18.3 MB free, and the live DB/catalog release-state check passed with 135 audiobook rows in both playback tables and no Music album/genre/search leakage. The pulled installed DB also has 114 `/Music` rows and 135 `/Audiobooks` rows in both `MEDIA_TABLE` and `MEDIA2_TABLE`.
-
-Previous post-flash verification on 2026-06-10 passed for `1.6.3-audiobook` with artifacts under `work\installed-release-verification\20260610-150139`: the installed device reports `1.6.3-audiobook`, the resume daemon and DB watcher are running, SD-root `r1.upt` was renamed after install, `user.ini` has no saved-last audiobook references, `/usr/data` has about 11 MB free, and the live DB/catalog release-state check passed with 135 audiobook rows in both playback tables and no Music album/genre/search leakage. The installed helper also passed a fresh-DB rebuild test under `work\native-db-maint\installed-helper-fresh-db-test-20260610-150158`: starting from a copied DB with all audiobook rows removed, `/usr/bin/r1_audiobook_db_maint` rescanned `/Audiobooks`, rebuilt all 135 rows, and wrote a valid catalog.
-
-The firmware has been unpacked and analyzed. The first verified prototype was the database filter, which keeps audiobook files out of the normal Music library without flashing firmware.
-
-A live DB-only test then added one audiobook as a normal media row. The R1 played it through the stock music path with the normal Now Playing screen and moving progress bar. That makes the current direction clear: audiobooks should be real media rows, with Music views filtered separately, rather than text-reader rows calling the audio engine directly.
-
-The current live prototype does that. The Books/Audiobooks launcher opens an audiobook-only book list, selecting a book opens its tracks/files, selecting a track starts stock playback, Now Playing opens automatically, and the progress bar moves normally.
-
-The reusable DB generator can add every `/Audiobooks/` audio file as a real media row:
-
-```powershell
-python tools\add_audiobooks_to_media_db.py `
-  work\device-db-20260609-093915\usrlocal_media.db `
-  --adb-scan --adb-sizes `
-  -o work\db-audiobooks-all-20260609\usrlocal_media.with-audiobooks.sized.db
-```
-
-For local SD-card copies, it can also read common audiobook tags with `ffprobe`:
-
-```powershell
-python tools\add_audiobooks_to_media_db.py `
-  work\device-db-20260609-093915\usrlocal_media.db `
-  --local-sd E:\ `
-  --read-tags `
-  -o work\usrlocal_media.with-audiobooks.db
-```
-
-The important tag mapping is intentionally small: `TALB`/album is the book title, `TIT2`/title is the chapter/file display title, `TPE2`/album artist is the author, and `TPE1`/artist remains the author/narrator display value. Generated rows force genre to `Audiobook` so the firmware has a reliable route for the separate section.
-
-The split-catalog mode keeps audiobook rows in `MEDIA_TABLE`/`MEDIA2_TABLE` for playback and the Audiobooks route, while rebuilding normal Music catalog/search/count tables from non-audiobook rows:
-
-```powershell
-python tools\add_audiobooks_to_media_db.py `
-  work\live-db-before-split-20260609-105855\usrlocal_media.live-before-split.db `
-  --adb-scan --adb-sizes `
-  --music-catalog-excludes-audiobooks `
-  --id-base 1000 `
-  -o work\live-db-before-split-20260609-105855\usrlocal_media.split-catalog.db
-```
-
-Checked split DB:
-
-- MD5: `ea5b1206957ec4c3e5721ad6f96df2d1`
-- SHA256: `521146961024f6c9970de057e17720babd4b0a8a9832d06e9e310fdcf188fc54`
-- Integrity: `ok`
-- `MEDIA_TABLE`: 249 rows total, 135 audiobook rows
-- `SEARCH_TABLE`: 114 rows, 0 audiobook rows
-- `ALBUM_TABLE`/`GENRE_TABLE`: no audiobook album or `Audiobook` genre entries
-
-The current release-clean DB/catalog path is now scripted and checked:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\adb_build_release_audiobook_db.ps1
-```
-
-Install a checked candidate with:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\adb_install_release_audiobook_db.ps1 `
-  -Database work\release-db-candidate\20260610-125907\usrlocal_media.release-candidate.db `
-  -Catalog work\release-db-candidate\20260610-125907\catalog.release-candidate.tsv `
-  -RestartResumeDaemon `
-  -MoveRemoteBackupsToSd `
-  -IUnderstandThisModifiesDevice
-```
-
-Release-clean DB/catalog installed on 2026-06-10:
-
-- Source build dir: `work\release-db-candidate\20260610-125907`
-- Installed-check dir: `work\release-db-installed-check-20260610-130213`
-- Local install backup dir: `work\release-db-install-backups\20260610-130148`
-- SD-card DB backup: `/usr/data/mnt/sd_0/.r1-audiobook-backups/release-db-20260610-130148/usrlocal_media.db.pre-release-20260610-130148.bak`
-- SD-card catalog backup: `/usr/data/mnt/sd_0/.r1-audiobook-backups/release-db-20260610-130148/catalog.tsv.pre-release-20260610-130148.bak`
-- Pre-install DB backup MD5: `776775878efc771d0a086564075878b8`
-- Pre-install catalog backup MD5: `01a163da3a9a00a874e464a5b180eb20`
-- DB MD5: `632146fea93eadf5d84b5b649516680a`
-- DB SHA256: `62d7b64790dcb299192394c35d1d45629c821a200d3d868136e6a684b9ee835e`
-- Catalog MD5: `01a163da3a9a00a874e464a5b180eb20`
-- Catalog SHA256: `7d87bd086aba4e2e0ca1c0cf8a0c072d3b778703ada0e7b326e72f8342a6d481`
-- Release checker: passed with 135 audiobook rows in both `MEDIA_TABLE` and `MEDIA2_TABLE`, 6 audiobook book roots, 0 audiobook rows in `SEARCH_TABLE`, 0 audiobook album leaks, and no `Audiobook` genre in Music catalog tables.
-
-The previous live DB was not release-clean: `MEDIA_TABLE` had the full 135 audiobook rows, but `MEDIA2_TABLE` only had one wildcard audiobook row. That was repaired by regenerating and installing the checked release candidate above.
-
-The current offline development package is intentionally conservative:
-
-- UPT: `work/audiobook-firmware/r1-audiobooks-dev-safe.upt`
-- UPT MD5: `f0759f913f011289a3eeb6ef8da9e399`
-- Rootfs MD5: `0574354b74af722a8d359d755c8957d6`
-- `/usr/bin/hiby_player` MD5: `ad69fa8377fb85b01ed5d65fe976b19a` (stock bytes)
-
-This package only applies English Audiobooks labels and was kept as an early development reference. Newer development builds can install `/etc/init.d/S90adb` as a wrapper around the stock ADB helper, gated by the stock `System -> USB working mode` setting. Public release builds still leave boot ADB out by default.
-
-Default local binary patcher behavior is safe and applies no binary patches:
-
-```powershell
-python tools\patch_hiby_player.py work\rootfs\usr\bin\hiby_player -o work\patched\hiby_player.default-safe
-```
-
-The current UI experiment is also opt-in and repurposes the Books launcher callback to open the stock media route for the `Audiobook` genre:
-
-```powershell
-python tools\patch_hiby_player.py work\rootfs\usr\bin\hiby_player `
-  --audiobook-launcher-genre `
-  -o work\patched\hiby_player.audiobook-launcher-genre
-```
-
-Current checked output:
-
-- MD5: `68879f5cb8409ca9dd07cd02729b3fd6`
-- SHA256: `0921626ea0aeb86c72acf1f4e67c935255c64db0697f00e57d69b507143d3a4b`
-
-The live per-book resume daemon has also been tested. It reads the current stock playback path from `/usr/data/user.ini`, reads playback position from a stable live-memory field in `hiby_player`, and stores JSON records under `/usr/data/audiobooks/resume.d`. This save path is now the safer default because it does not depend on the DMR socket. After a clean reboot cleared a stale DMR socket, a guarded same-file restore test passed: the daemon saved `Ice Like Fire` at `45504` ms, playback was sought down near 6 seconds, then `-RestoreEnabled` restored it to `45@45`.
-
-For multipart books, `tools/write_audiobook_resume_catalog.py` exports an audiobook track catalog from the copied media DB. When that catalog is pushed as `/usr/data/audiobooks/catalog.tsv`, resume records also include `media_id`, `track_index`, `track_count`, and `chapter_title`. The daemon now defers overwriting a saved multipart track for 15 seconds when a different file from the same book is started, which protects the saved location from an accidental wrong-track tap while still letting intentional manual moves take over quickly. Controlled live tests proved correct-file restore in both directions: Sedaris `05 -> 07` restored to `66@66`, and Sedaris `10 -> 08` restored to `211@211`.
-
-Generate the live resume catalog with:
-
-```powershell
-python tools\write_audiobook_resume_catalog.py `
-  work\live-db-before-split-20260609-105855\usrlocal_media.split-catalog.db `
-  -o work\audiobook-resume-catalog.tsv
-```
-
-Install/restart the live resume runtime with:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\adb_install_audiobook_resume_runtime.ps1 `
-  -CatalogSource work\audiobook-resume-catalog.tsv
-```
-
-Enable live restore, including multipart track correction, with:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\adb_install_audiobook_resume_runtime.ps1 `
-  -CatalogSource work\audiobook-resume-catalog.tsv `
-  -PositionSource memory `
-  -RestoreEnabled
-```
-
-The flashed build now defaults to `AUDIOBOOK_INTERVAL_SECONDS=2` and `AUDIOBOOK_BOOK_TITLE_AUTOSTART_DELAY_SECONDS=1`. In live testing after stock recovery, tapping a book title started playback in about two seconds. The daemon now keeps `AUDIOBOOK_BOOK_TITLE_CONTEXT_SECONDS=300` by default, so strict mode can use a recent Audiobooks-list context instead of the global relaxed fallback. Repeated failed DMR seeks back off to `AUDIOBOOK_RESTORE_RETRY_MAX_AFTER_FAILURE_SECONDS=300`, failed-restore save-guard logs are bucketed with `AUDIOBOOK_FAILED_RESTORE_SKIP_LOG_BUCKET_MS=30000`, and title-start restore logs are bucketed with `AUDIOBOOK_BOOK_TITLE_RESTORE_LOG_BUCKET_MS=5000`. If the DMR seek socket refuses a time seek, the daemon can read live track duration from `hiby_player`, verify that the framebuffer row looks like the Now Playing seek bar, synthesize a short progress-bar tap, and verify the restored position from memory before marking the restore complete. Use `-DisableBookTitlePathGuard` only for trusted Audiobooks-title-list testing; it is not intended as the permanent global guard.
-
-The live-installed runtime currently uses about 2.1 MB under `/usr/data/audiobooks`; on the test device `/usr/data` still had about 11.7 MB free. In the flashed build, the daemon/helper live in rootfs and `/usr/data` is mainly used for small bookmark JSON files, so replacing the SD card should not prevent the player from booting or the Music app from working.
-
-The guarded seek test helper refuses to run unless playback is actively advancing:
-
-```powershell
-python tools\adb_test_audiobook_seek_restore.py --sample-seconds 4 --back-seconds 20
-```
-
-DMR command probing on 2026-06-09 showed that `/data/dmr_streamer` can be useful for `get_position_info` and `seek` only when its listener is cleanly bound. A stale socket inherited by `adbd` caused `bind socket error !!!` and `connect /data/dmr_streamer: Connection refused`; a normal reboot cleared it. Gated `next`, `play@1`, `play@1002`, `set_uri:file://...`, and `set_position@3@0` probes did not change the current local audiobook path. Correct-file auto-resume now uses verified stock input events instead of DMR: physical Next/Previous key packets for track changes and DMR only for seek. Live tests have passed both forward correction (`05 -> 07`) and backward correction (`10 -> 08`) followed by seek restore. If a same-track restore is attempted after playback is already more than 15 seconds in, it only retries when the saved point is still more than five seconds ahead. If that seek fails, the daemon protects the deeper bookmark from being overwritten by the lower position. The daemon also closes inherited socket fds on startup so it does not keep stale DMR sockets alive during ADB-launched development runs.
-
-Title-only book selection is now live-tested. The player patch records a Genre -> Album list-open marker in RAM at `0x8E4000` from the shared opener at `0x49FE40`, and the Audiobooks launcher/root helpers also write a source marker so the daemon can identify a list opened by the Audiobooks launcher. The daemon validates the opened list by source marker, `a:\Audiobooks\` path, visible title-list memory against the seed audiobook catalog, or recent Audiobooks context; then it taps the first visible track and lets the existing correct-file restore land on the saved file/position. From the Audiobooks title list, tapping `Ice Like Fire` opened the track list, autostarted the first file, switched to Now Playing, and restored to about `02:03`. Later strict-guard tests logged `reason=catalog`, `reason=context`, and finally `reason=launcher`.
-
-Known UI limitation: entering Audiobooks from the main launcher opens the Audiobook title list directly, but pressing Back once lands on the stock Genres page and a second Back returns to the main launcher. RAM-only route experiments were tried after the `1.6.1-audiobook` flash: the direct-filter helper did not open Audiobooks, `genre_all\Audiobook` still backed through Genres, and `album\Audiobook` produced a redraw glitch while still backing through Genres. The current `genre\Audiobook` route remains the safest release route.
-
-Build the conservative offline package with:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\build_r1_audiobook_firmware.ps1
-```
-
-Build the self-contained audiobook package with the tested Audiobooks launcher patch, resume runtime, and on-device DB maintenance:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\build_r1_audiobook_firmware.ps1 `
-  -OutDir work\audiobook-firmware-1.6.16.5-audiobook `
-  -OutputUpt work\audiobook-firmware-1.6.16.5-audiobook\r1-audiobooks-1.6.16.5-audiobook.upt `
-  -IncludeAudiobookLauncherGenre `
-  -IncludeAudiobookTitleAutoStartMarker `
-  -IncludeAudiobookLauncherIcon `
-  -UnlockNativeDsd `
-  -EnableBluetoothSbcXq `
-  -UnlockUsbDacMode `
-  -IncludeAudiobookResumeRuntime `
-  -IncludeAudiobookDbMaintenance `
-  -CustomVersionId 1.6.16.5-audiobook `
-  -CustomVersionLabel "HiBy R1 Audiobook FW 1.6.16.5"
-```
-
-Public builds should not embed a personal `r1_audiobook_catalog.tsv` seed
-catalog. The firmware-installed DB watcher rebuilds the audiobook catalog from
-the inserted SD card after the normal on-device Music scan/update.
-
-Verify that package before any flash attempt with:
-
-```powershell
-python tools\verify_r1_audiobook_build.py `
-  --out-dir work\audiobook-firmware-1.6.16.5-audiobook `
-  --upt-name r1-audiobooks-1.6.16.5-audiobook.upt `
-  --expected-version 1.6.16.5-audiobook `
-  --expected-label "HiBy R1 Audiobook FW 1.6.16.5" `
-  --require-db-maintenance `
-  --expect-audiobook-launcher-icon `
-  --expect-native-dsd `
-  --expect-sbc-xq `
-  --expect-usb-dac-mode
-```
-
-Self-contained package, locally verified and installed:
-
-- UPT: `work\audiobook-firmware-1.6.4\r1-audiobooks-1.6.4-audiobook.upt`
-- UPT MD5: `71c8d0d94bf50529a06aa9a31350f595`
-- UPT SHA256: `02b286676d93ec683307820e1ef40288f34ef21a42a24f5cbda361f2d3733b7b`
-- Rootfs MD5: `2d88686810d7b6782b56386776af7a52`
-- Rootfs SHA256: `2da94366031bdaeac8c0908fccf3988d29e4296ed10776c54b5cd2504e88d3da`
-- Player MD5 inside rootfs: `09997a636c94112ff76c85a6d4a8d0ff`
-
-This package preserves stock modes for all 5488 stock paths and stock targets for all 482 symlinks checked by `unsquashfs -ll`, repacks the rootfs as root-owned, and includes the launcher-source-marker title autostart path plus the same-path title resume reset fix. The About screen model label is changed to `HiBy R1 Audiobook FW 1.6.4`, `/usr/resource/config.json` records product `version=1.6.4-audiobook` for the visible firmware line, and `/etc/r1_audiobook_version` records `version=1.6.4-audiobook` while leaving the OTA numeric version fields compatible with stock recovery packages. The resume init script avoids the R1 BusyBox `case` parse issue found after the first custom install, is written with LF-only line endings so BusyBox redirects parse correctly, and launches the daemon as `/bin/sh -- r1_audiobook_resume_daemon.sh` with stdout/stderr redirected. Before `hiby_player` starts, it also clears the stock saved-last-file slot and adjacent media-fragment strings when `/usr/data/user.ini` points into `A:\Audiobooks` or the already-partially-cleared form, so post-update boots should land at the normal menu instead of reopening the Engulfed audiobook; the per-book audiobook resume files are not touched. It starts the daemon with the same tuned live settings: 1-second polling, 1-second title autostart delay, 300-second title-list context, seek retry backoff, throttled logs, a 15-second new-track commit guard, completed-book detection within 45 seconds of the final track end, and guarded UI seek fallback. Multipart track correction polls for each stock Next/Previous transition instead of sleeping the full settle window, so the fallback correction should advance as soon as the player reports the new track. The daemon also has a semi-direct title-start path: after a title tap starts playback, it can right-swipe out of Now Playing, use timed list swipes and row taps to land near the saved part, then fall back from the actually selected track if needed. The DB maintenance watcher starts after boot and after media DB updates; it can seed a missing DB schema, scan `/Music` when no music rows exist, scan `/Audiobooks`, update the media database, and rebuild Music catalog tables without audiobook leakage. `tools\adb_stage_verified_firmware.ps1` now defaults to this package, runs the local verifier first, refuses both black-screen package MD5s, backs up an existing different target file, verifies temp/final byte counts plus MD5/SHA-256 when available, and still requires `-IUnderstandThisStagesFirmware`.
-
-Post-flash verification on 2026-06-10 for `1.6.4-audiobook` passed with artifacts under `work\installed-release-verification\20260610-153805`. A framebuffer capture showed the normal launcher with `Audiobooks`; `/etc/r1_audiobook_version` and `/usr/resource/config.json` both carry `1.6.4-audiobook`; the resume daemon and DB watcher are running; SD-root `r1.upt` is absent after archiving; `/usr/data` free space is about 18.3 MB; and the installed DB has 114 Music rows plus 135 Audiobook rows while keeping audiobooks out of normal Music search, albums, and genres.
-
-Post-flash verification on 2026-06-10 passed with artifacts under `work\installed-release-verification\20260610-140926`: the device reports `1.6.2-audiobook`, the About screen renders `HiBy R1 1.6.2-a`, the resume daemon is running, SD-root `r1.upt` is absent, `user.ini` has no saved-last audiobook references, DB/catalog release-state checks passed, and no known development artifacts remain under `/usr/data/audiobooks`. The installed package archive is `/usr/data/mnt/sd_0/r1-audiobooks-1.6.2-audiobook-installed-20260610.upt`.
-
-Post-flash check on 2026-06-10 for the previous `1.6.1-audiobook` package: the package installed cleanly, and the user manually re-enabled ADB for verification. `/etc/r1_audiobook_version` and `/usr/resource/config.json` both carried `1.6.1-audiobook`; the visible About line rendered as `HiBy R1 1.6.1-a` because the R1 truncates the long suffix. The installed init script parsed with `/bin/sh -n`, had zero CR bytes, and launched `/bin/sh /usr/data/audiobooks/bin/r1_audiobook_resume_daemon.sh` from init as PID 1014 with a fresh `12:26:03` daemon log entry. A framebuffer capture after swiping back from About showed the normal launcher, not the old Engulfed now-playing screen. An ADB tap smoke test opened Audiobooks and started `Squirrel Seeks Chipmunk` from the title list with `book-title autostart reason=launcher`; that test intentionally paused playback afterward but left a real resume record at `40751` ms for that book. After verification, the staged SD-card update trigger was renamed from `r1.upt` to `r1-audiobooks-1.6.1-audiobook-installed-20260610.upt`, preserving the package while avoiding repeated update prompts. A release-clean DB/catalog was then installed without reflashing or rebooting; it matches the checked hashes above and restarted the resume daemon as `/bin/sh /usr/data/audiobooks/bin/r1_audiobook_resume_daemon.sh` with PID 15714. The large pre-install DB backup was moved from internal `/usr/data` to the SD-card backup folder above, and a later normal reboot landed at the main launcher with daemon PID 1017, no audiobook saved-last references in `user.ini`, and a post-reboot DB/catalog copy that still passed release invariants. A post-reboot title tap on `Squirrel Seeks Chipmunk` opened Now Playing and restored to `41@41`, then paused at `45.2s`. A post-reboot multipart title tap on `When You Are Engulfed in Flames` direct-selected track `14/30` after 3 list swipes and restored to `906@906` for the saved `905206 ms` bookmark; after brief playback and pause, the resume record stayed on track `14/30` at `925419 ms`. Finally, 20 development-only artifacts were moved to `/usr/data/mnt/sd_0/.r1-audiobook-backups/dev-artifacts/dev-archive-20260610-131619`; active runtime files, catalog files, resume records, and logs remained under `/usr/data/audiobooks`. Internal `/usr/data` free space was about 11.9 MB after cleanup.
-
-Known bad full dev package:
-
-- UPT: `work\audiobook-firmware-full-dev-fixed\r1-audiobooks-full-dev-fixed.BAD-black-screen-20260609.upt`
-- UPT MD5: `3bed523d5843522186164029139db7b1`
-- UPT SHA256: `5bb628f33f0f0239333f6eb04988f5593fdc6c7fb919ecec3a63770c260f6042`
-- Rootfs MD5: `4b5340f2eea44b5893fb92b70180e111`
-- Rootfs SHA256: `a70ae7c3625c3d5a7850e4a2807ecb15566cd3587e810764911dbe6e41625dde`
-- Player MD5 inside rootfs: `4a1729fbb3c8cff520487e75317aa0ac`
-- Resume daemon MD5 inside rootfs: `68637068425a23cb1719e87720ab5b00`
-- Touch event MD5 inside rootfs: `49a00ac268c37fd2911c61ccf7a03f39`
-- First-track touch event MD5 inside rootfs: `f5cf6462f609a54b17d2c5bfd0461e67`
-- Next key event MD5 inside rootfs: `d939a6191a85f125d5bb62dde728d603`
-- Previous key event MD5 inside rootfs: `909ba365650d77c290159f85cabcfb5c`
-- Seed catalog MD5 inside rootfs: `01a163da3a9a00a874e464a5b180eb20`
-
-Do not flash this package. It was flashed on 2026-06-09; the updater reported success, but the R1 rebooted to a black screen with no ADB. Follow-up inspection found broader mode/ownership drift in the repacked rootfs; for example, `/bin/busybox` lost its stock setuid executable mode. The live prototype is still promising: forward/backward correct-file restore, same-file restore, Music separation, Now Playing transition, and title-only audiobook start have passed guarded live tests. The database generation path remains PC/ADB-assisted rather than fully native scanner behavior.
-
-Earlier known bad package: `work\audiobook-firmware-full-dev\r1-audiobooks-full-dev.BAD-nonexec-hiby-player.upt` was the first package flashed on 2026-06-09 that booted to a black screen. Root cause found afterward: the repacked rootfs had `/usr/bin/hiby_player` as `-rw-r--r--` instead of executable.
-
-The earlier `work/audiobook-firmware/r1-audiobooks-test.upt` package is a historical prototype only. It used the experimental Books-row audio shim, which could start backend playback but left the Now Playing UI/progress out of sync and triggered reboot/error paths during follow-up tests.
-
-The old shim can still be reproduced for analysis with explicit opt-in flags:
-
-```powershell
-python tools\patch_hiby_player.py work\rootfs\usr\bin\hiby_player --scan-skip --book-audio-shim -o work\patched\hiby_player.experimental-shim
-```
-
-Historical controlled relaunch test:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\adb_live_test_patched_player.ps1 -StartPatched -IUnderstandThisRestartsUi
-```
-
-That test made the screen unresponsive because launching a second full UI binary from `/usr/data` is too rough on the framebuffer/DMA init path. The R1 was restored by `adb reboot`, and stock firmware was verified afterward.
-
-Restore the stock runtime without flashing by rebooting the R1, or by running:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\adb_live_test_patched_player.ps1 -RestoreStock
-```
-
-Historical RAM patch helper command. Its default mode remains read-only:
-
-```powershell
-python tools\adb_runtime_patch_hiby_player.py
-```
-
-Applying it writes only to the running process memory and requires an explicit opt-in flag. This path is no longer the preferred implementation direction, because the DB-only media-row test reached the stock Now Playing path cleanly.
-
-RAM patch status from the first live test:
-
-- The UI stayed responsive.
-- Selecting an audiobook from Books/Audiobooks started backend playback.
-- The backend playback position advanced, confirmed by `r1_audiobook_resume_helper position`.
-- The app did not automatically switch to Now Playing.
-- The visible list-screen time/progress stayed at `00:00`.
-- A follow-up test that passed `s1 - 4` as playback metadata caused `error 13 playback failure`; it was reverted in RAM.
-
-Development firmware builds can opt into boot ADB with
-`tools\build_r1_audiobook_firmware.ps1 -EnableBootAdb`, which installs
-`/etc/init.d/S90adb` as a wrapper around stock `/etc/init.d/T90adb`. Stock
-`rcS` only runs `S??*` scripts, and the wrapper only starts ADB when
-`System -> USB working mode` is set to `Device`, using `/usr/data/user.ini`
-offset `0x740`.
+Standalone books do not need a fake series folder.
+
+Metadata recommendations:
+
+- `TALB` / Album = book title
+- `TIT2` / Title = chapter or file display title
+- `TPE2` / Album Artist = author
+- `TPE1` / Artist = author, narrator, or both
+- `TCOM` / Composer = narrator (optional)
+- Track numbers or numbered filenames for multipart books
+
+The genre tag does not need to be exactly `Audiobook`; files under
+`/Audiobooks` are normalized into the Audiobooks section by the on-device
+helper after Music -> Update Database runs. If metadata is missing, the helper
+derives basic author, book title, chapter/title, and order from folder and
+filename structure. MP3Tag works well for this; the Seanap/Plex-style
+convention (album = book title, album artist = author) is a good fit.
+
+## FAQ
+
+**Will this work on the R1 MIDI?**
+No. This mod is for the normal HiBy R1 on stock firmware 1.6 only.
+
+**How do I revert to stock firmware?**
+Put an official stock HiBy R1 1.6 `r1.upt` on the SD card and run the normal R1
+update/recovery flow.
+
+**What if the update boots to a black screen?**
+Use the normal R1 flash/recovery flow with a stock 1.6 `r1.upt`. This is a
+known risk with any unofficial firmware.
+
+**Does ADB persist after reboot?**
+ADB does not persist in practice on the test R1; it must be manually re-enabled
+after reboot or update.
+
+**Is there an audiobook search?**
+There is currently no audiobook search UI. Browse by Titles, Authors, Series, or
+Folders.
+
+**What happened to the old Books/TXT reader?**
+The old text-file Books/TXT reader launcher flow is replaced by Audiobooks.
+
+**Why does the About screen show a shortened version?**
+The stock UI truncates the visible suffix. The full `1.6.18-audiobook` marker is
+in `/etc/r1_audiobook_version` and `/usr/resource/config.json`.
+
+**What is the `_views` folder under Folders?**
+It contains the playlist files used by the `Titles`, `Authors`, and `Series`
+generated views. It is safe to ignore.
+
+## Known Quirks
+
+- Back navigation from generated views usually returns to the Audiobooks hub.
+  Edge-back is most reliable from the Folders root.
+- The Folders view may show the generated `_views` folder (playlist files).
+- Title selection can take a second or two. Multipart resume may briefly show
+  the track list while landing on the saved file.
+- Resume saves are delayed until 15 seconds of playback.
+- The stock play-mode UI is shared with music; the firmware guards audiobook
+  play mode while an audiobook is active.
+- If the SD card is replaced, run Music scan/update and wait or reboot so the
+  watcher can rebuild catalogs.
+- Per-book resume records survive SD-card replacement but may not match a
+  different card's reorganized files.
 
 ## Attribution And Sources
 
-This project is unofficial and is not affiliated with or endorsed by HiBy. HiBy, HiBy R1, and the stock firmware remain HiBy's work.
+This project is unofficial and is not affiliated with or endorsed by HiBy. HiBy,
+HiBy R1, and the stock firmware remain HiBy's work.
 
 Information and techniques used while building this mod came from:
 
-- [HiBy R1 User Manual](https://guide.hiby.com/en/docs/products/audio_player/hiby_r1/guide) - official R1 behavior, menus, and user-facing device reference.
-- [HiBy R1 firmware 1.6 update page](https://store.hiby.com/apps/help-center#hc-r1-firmware-v16-update) - official stock firmware/recovery reference used as the base firmware target.
-- [Rockbox HiBy Port wiki](https://www.rockbox.org/wiki/HibyPort) - background on HiBy Linux players, hardware families, and porting context.
-- [bidhata/Hiby-R1-Mod](https://github.com/bidhata/Hiby-R1-Mod) - R1 custom firmware reference and proof that R1 firmware could be unpacked, patched, and repacked.
-- [SuperTaiyaki/hiby-firmware-tools](https://github.com/SuperTaiyaki/hiby-firmware-tools) - reference for HiBy firmware unpacking/repacking concepts.
-- [hiby-modding/hiby-mods](https://github.com/hiby-modding/hiby-mods) - broader HiBy custom firmware research, OTA format notes, database ideas, and recovery cautions.
-- [hiby-modding/hiby_os_crack](https://github.com/hiby-modding/hiby_os_crack) - additional HiBy OS firmware cracking and tooling reference.
-- [seanap/Plex-Audiobook-Guide](https://github.com/seanap/Plex-Audiobook-Guide) - audiobook tagging and folder-structure convention used to improve fallback author/title handling and to add optional series fields to the internal audiobook catalog.
+- [HiBy R1 User Manual](https://guide.hiby.com/en/docs/products/audio_player/hiby_r1/guide)
+- [HiBy R1 firmware 1.6 update page](https://store.hiby.com/apps/help-center#hc-r1-firmware-v16-update)
+- [Rockbox HiBy Port wiki](https://www.rockbox.org/wiki/HibyPort)
+- [bidhata/Hiby-R1-Mod](https://github.com/bidhata/Hiby-R1-Mod)
+- [SuperTaiyaki/hiby-firmware-tools](https://github.com/SuperTaiyaki/hiby-firmware-tools)
+- [hiby-modding/hiby-mods](https://github.com/hiby-modding/hiby-mods)
+- [hiby-modding/hiby_os_crack](https://github.com/hiby-modding/hiby_os_crack)
+- [seanap/Plex-Audiobook-Guide](https://github.com/seanap/Plex-Audiobook-Guide)
 
-The audiobook-specific behavior in this repository was developed and tested on a personal normal HiBy R1 through local reverse engineering, live ADB testing, and repeated stock-firmware recovery tests. The audiobook metadata recommendations are based on common audiobook tagging practice, the Seanap/Plex guide, and the user-supplied Audible/MP3Tag mapping used during development: album as the book title, album artist as the author, and numbered tracks/files for multipart books.
+The audiobook-specific behavior was developed and tested on a personal normal
+HiBy R1 through local reverse engineering, live ADB testing, and repeated
+stock-firmware recovery tests.
 
-## What Is Here
+## Links
 
-- `docs/investigation.md` - current findings about stock R1 firmware 1.6, databases, Books, resume settings, and patch ideas.
-- `docs/release_recovery_notes.md` - compact install, verification, and stock-recovery notes for the current audiobook release.
-- `firmware/releases/v1.6.1/` - release notes, checksums, and package for the verified `1.6.18-audiobook` refresh-library hotfix release.
-- `firmware/releases/v1.6.0/` - release notes, checksums, and package for the verified `1.6.17-audiobook` native Audiobooks hub release.
-- `firmware/releases/v1.5.4/` - release notes, checksums, and package for the verified `1.6.16.5-audiobook` hotfix release.
-- `firmware/releases/v1.5.3/` - release notes, checksums, and package for the verified `1.6.16.4-audiobook` hotfix release.
-- `firmware/releases/v1.5.2/` - release notes, checksums, and package for the verified `1.6.16.2-audiobook` hotfix release.
-- `firmware/releases/v1.5.1/` - release notes, checksums, and package for the verified `1.6.16.1-audiobook` hotfix release.
-- `CHANGELOG.md` - human-readable release history.
-- `docs/release_draft_1.6.7.md` - GitHub release notes source for the previous `1.6.7-audiobook` release.
-- `docs/production_release_checklist.md` - release and verification checklist for the current firmware line.
-- `docs/github_release_process.md` - GitHub Release publishing runbook, including the Git Credential Manager token workaround used when `gh` is unavailable.
-- `docs/firmware_improvement_plan.md` - forward plan for post-1.6.9 improvements based on hiby-modding references and local test strategy.
-- `docs/adb_control_tools.md` - live ADB control notes for screenshots, taps, drags, playback keys, and screenshot-assisted Audiobooks flows.
-- `docs/network_ota_research.md` - stock network OTA format notes, GitHub hosting constraints, and the safer staged path toward hosted updates.
-- `docs/safe_prototype.md` - older non-flash ADB/database-filter prototype workflow, kept for developers and recovery-minded tinkerers.
-- `docs/images/` - README screenshots captured from the test R1.
-- `tools/extract_r1_firmware.ps1` - extracts `stock/r1.upt` and reconstructs `rootfs.squashfs` plus `xImage`.
-- `tools/filter_music_db.py` - removes `/Audiobooks/` style folders from a copied `usrlocal_media.db`.
-- `tools/add_audiobooks_to_media_db.py` - adds `/Audiobooks/` audio files to a copied `usrlocal_media.db` as stock media rows.
-- `tools/check_audiobook_release_state.py` - verifies release DB/catalog invariants: audiobook rows in media tables, no Music album/genre/search leakage, and catalog consistency.
-- `tools/adb_build_release_audiobook_db.ps1` - pulls the live media DB, scans `/Audiobooks`, builds a release-clean DB/catalog pair, and runs the release checker.
-- `tools/adb_install_release_audiobook_db.ps1` - installs a checked release DB/catalog pair over ADB with local and on-device backups.
-- `tools/adb_verify_installed_audiobook_release.ps1` - post-reboot installed-release verifier for version markers, daemon status, update-trigger hygiene, free space, DB/catalog invariants, and optional framebuffer capture.
-- `tools/adb_collect_r1_state.ps1` - read-only ADB collection script for device state and databases.
-- `tools/r1_adb_control.py` - unified non-persistent R1 control console for framebuffer screenshots, named tap presets, drags, playback keys, seek-bar taps, and screenshot-assisted macros.
-- `tools/adb_probe_usb_mode_toggle.ps1` - guided before/after ADB snapshot workflow for discovering where the stock USB working mode UI setting is saved.
-- `tools/adb_manage_boot_adb.ps1` - development helper for checking and toggling the `/usr/data/disableadb` marker used by opt-in boot-ADB builds.
-- `tools/adb_snapshot_r1_settings.ps1` - read-only before/after snapshot helper for finding where stock UI settings, such as USB working mode, are persisted.
-- `tools/compare_r1_settings_snapshots.ps1` - local comparison helper that summarizes changed writable state and pulled settings files between two R1 snapshots.
-- `tools/compare_binary_settings.py` - byte-level diff helper for small binary settings files such as `/data/user.ini`.
-- `tools/build_r1_db_maint_helper.ps1` - reproducibly builds the static MIPS audiobook DB maintenance helper from Zig and SQLite upstream sources.
-- `tools/test_r1_db_maint_local_fixture.py` - local disposable-fixture test for DB helper fallback scans, sidecar cover/LRC paths, `.m4b`, `.iso`, and release-state invariants.
-- `tools/patch_hiby_player.py` - guarded stock-1.6 binary patcher; experimental scanner-skip, Books playback, and Audiobooks launcher patches are opt-in.
-- `tools/patch_r1_resource_text.py` - patches English UI labels from Books/E-book to Audiobooks.
-- `tools/build_r1_upt.py` - rebuilds an R1-style OTA `.upt` from `xImage` and `rootfs.squashfs`.
-- `tools/build_r1_ota_site.py` - prepares a stock-compatible `ota_config.in` plus `ota_vN` static directory tree for future hosted OTA experiments.
-- `tools/build_r1_audiobook_firmware.ps1` - offline build wrapper for the audiobook prototype firmware image.
-- `tools/verify_r1_audiobook_build.py` - local pre-flash sanity checker for the rebuilt release package.
-- `tools/install_mips_binutils_wsl.ps1` - downloads and extracts MIPS objdump under `.deps` without installing WSL packages system-wide.
-- `tools/mips_objdump_wsl.ps1` - wrapper for disassembling R1 MIPS binaries with the locally extracted objdump.
-- `tools/adb_live_test_patched_player.ps1` - opt-in ADB helper for a temporary, non-flash patched-player test.
-- `tools/adb_runtime_patch_hiby_player.py` - guarded dry-run/apply/revert helper for patching the running stock player in RAM.
-- `tools/adb_install_audiobook_resume_runtime.ps1` - installs and starts the live per-book resume daemon over ADB.
-- `tools/adb_test_audiobook_ui_seek_fallback.py` - guarded live test for the daemon's progress-bar seek fallback; it requires an explicit flag because it changes playback position.
-- `tools/adb_stage_verified_firmware.ps1` - stages a verified `.upt` to the SD card as `r1.upt`, running the local verifier first, refusing known-bad or suspiciously small packages, backing up an existing different target file, and verifying both the temp-copy and final byte count, MD5, and SHA-256 when the device provides `sha256sum`.
-- `tools/publish_github_release.ps1` - creates or verifies the GitHub Release object and uploads the `.upt` plus checksum assets using Git Credential Manager or a GitHub token environment variable.
-- `tools/adb_test_audiobook_direct_filter_route.py` - RAM-only experiment for a direct filtered Audiobooks album route; it is useful for investigation but not part of the release route because live testing did not improve the back stack.
-- `tools/adb_archive_audiobook_dev_artifacts.ps1` - dry-run-first helper for moving known development leftovers under `/usr/data/audiobooks` into a timestamped archive directory.
-- `tools/r1_audiobook_resume_daemon.sh` - on-device shell daemon that saves/restores audiobook positions.
-- `tools/r1_audiobook_db_maint.c` - on-device native helper that scans `/Audiobooks`, updates the media DB, and writes the audiobook catalog.
-- `tools/r1_audiobook_db_watch.sh` - on-device watcher that seeds a missing media DB when needed and runs the DB helper after boot or media DB updates.
-- `tools/adb_inject_touch_event.py` - builds/replays verified R1 touchscreen and physical-button input events used by multipart track restore tests.
+- [Releases](RELEASES.md) — consolidated release hash table
+- [Development](DEVELOPMENT.md) — build, verify, flash, and test documentation
+- [Roadmap](ROADMAP.md) — forward-looking work items
+- [Changelog](CHANGELOG.md) — release history
+- [Dev History Archive](docs/dev-history/firmware-improvement-plan-archive.md) — historical development tracking

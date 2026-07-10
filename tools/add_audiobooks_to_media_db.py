@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import sqlite3
+import struct
 import subprocess
 import time
 from dataclasses import dataclass
@@ -347,6 +348,135 @@ def find_lrc_path(local_path: str, hiby_path: str) -> str:
         return ""
     lrc = Path(local_path).with_suffix(".lrc")
     return hiby_sibling_path(hiby_path, lrc.name) if lrc.is_file() else ""
+
+
+# ---------------------------------------------------------------------------
+# Cover art size checking
+# ---------------------------------------------------------------------------
+
+COVER_MAX_FILE_SIZE = 500 * 1024  # 500 KB
+COVER_MAX_DIMENSION = 1000        # 1000×1000 pixels
+
+
+def _jpeg_dimensions(data: bytes) -> tuple[int, int] | None:
+    """Parse JPEG SOF marker to extract width and height (stdlib only)."""
+    i = 0
+    length = len(data)
+    while i < length:
+        # Look for a marker starting with 0xFF
+        if data[i] != 0xFF:
+            i += 1
+            continue
+        # Skip padding 0xFF bytes
+        while i < length and data[i] == 0xFF:
+            i += 1
+        if i >= length:
+            return None
+        marker = data[i]
+        i += 1
+        # SOF markers: C0–CF except C4 (DHT), C8 (JPG), CC (DAC)
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            if i + 7 > length:
+                return None
+            # 2 bytes length, 1 byte precision, 2 bytes height, 2 bytes width
+            height = struct.unpack(">H", data[i + 3 : i + 5])[0]
+            width = struct.unpack(">H", data[i + 5 : i + 7])[0]
+            return (width, height)
+        # Skip non-SOF markers that have a length field
+        if marker in (0xD0, 0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9):
+            # RSTn and SOI/EOI have no length field
+            continue
+        if marker == 0xDA:  # SOS - start of scan, rest is image data
+            return None
+        if i + 2 > length:
+            return None
+        seg_len = struct.unpack(">H", data[i : i + 2])[0]
+        i += seg_len
+    return None
+
+
+def _png_dimensions(data: bytes) -> tuple[int, int] | None:
+    """Parse PNG IHDR chunk to extract width and height (stdlib only)."""
+    if len(data) < 24:
+        return None
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    # IHDR is always the first chunk: 4 bytes length, 4 bytes type, then data
+    width = struct.unpack(">I", data[16:20])[0]
+    height = struct.unpack(">I", data[20:24])[0]
+    return (width, height)
+
+
+def get_image_dimensions(file_path: Path) -> tuple[int, int] | None:
+    """Return (width, height) for a JPEG or PNG file, or None if unreadable."""
+    try:
+        with open(file_path, "rb") as fh:
+            header = fh.read(64)
+    except OSError:
+        return None
+    if header[:2] == b"\xff\xd8":
+        # JPEG - need more than 64 bytes for SOF; read up to 256 KB
+        try:
+            with open(file_path, "rb") as fh:
+                data = fh.read(262144)
+        except OSError:
+            return None
+        return _jpeg_dimensions(data)
+    if header[:8] == b"\x89PNG\r\n\x1a\n":
+        return _png_dimensions(header)
+    return None
+
+
+def check_cover_sizes(files: list[AudioFile]) -> None:
+    """Scan audiobook folders for cover files and warn about oversized ones."""
+    warnings: list[str] = []
+    checked = 0
+
+    # Collect unique directories from local paths
+    seen_dirs: set[Path] = set()
+    for item in files:
+        if not item.local_path:
+            continue
+        directory = Path(item.local_path).parent
+        if directory in seen_dirs:
+            continue
+        seen_dirs.add(directory)
+
+        for cover_name in COVER_NAMES:
+            cover_path = directory / cover_name
+            if not cover_path.is_file():
+                continue
+            checked += 1
+            try:
+                file_size = os.path.getsize(cover_path)
+            except OSError:
+                continue
+            dims = get_image_dimensions(cover_path)
+            issues: list[str] = []
+            if file_size > COVER_MAX_FILE_SIZE:
+                issues.append(f"file size {file_size:,} bytes (max {COVER_MAX_FILE_SIZE:,})")
+            if dims and (dims[0] > COVER_MAX_DIMENSION or dims[1] > COVER_MAX_DIMENSION):
+                issues.append(f"dimensions {dims[0]}×{dims[1]} (max {COVER_MAX_DIMENSION}×{COVER_MAX_DIMENSION})")
+            if issues:
+                rel = cover_path.relative_to(directory.parent) if directory.parent != directory else cover_path
+                warnings.append(f"  {rel}: {'; '.join(issues)}")
+            break  # only check the first matching cover per directory
+
+    print("\n--- Cover Art Size Check ---")
+    if checked == 0:
+        print("No cover files found in audiobook folders.")
+        return
+    print(f"Cover files checked: {checked}")
+    if warnings:
+        print(f"Warnings: {len(warnings)}")
+        for line in warnings:
+            print(line)
+        print(
+            f"\nRecommendation: resize covers to 360×360 JPEG, under "
+            f"{COVER_MAX_FILE_SIZE // 1024} KB for best R1 performance."
+        )
+    else:
+        print("All cover files are within recommended size and dimension limits.")
 
 
 def clean_book_folder(folder: str) -> tuple[str, int]:
@@ -879,6 +1009,11 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Path to ffprobe.exe. If omitted, PATH and known OpenAudible/ffmpeg locations are checked.",
     )
+    parser.add_argument(
+        "--check-cover-size",
+        action="store_true",
+        help="Check audiobook folder cover files for oversized images (warns at >500KB or >1000x1000px).",
+    )
     return parser.parse_args()
 
 
@@ -897,6 +1032,8 @@ def main() -> None:
     ffprobe = find_ffprobe(args.ffprobe) if args.read_tags else None
     if args.read_tags and not ffprobe:
         raise SystemExit("Could not find ffprobe. Pass --ffprobe or install ffprobe in PATH.")
+    if args.check_cover_size:
+        check_cover_sizes(files)
     write_db(
         args.db,
         args.output,
