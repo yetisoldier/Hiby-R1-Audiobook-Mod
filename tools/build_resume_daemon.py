@@ -67,7 +67,7 @@ def build_mips(stripped=True):
     srcs = [os.path.join(SRC_DIR, f) for f in SOURCES]
     cmd = [ZIG, "cc", "-target", MIPS_TARGET, "-Oz",
            "-I", SRC_DIR,
-           "-static", "-fno-stack-protector",
+           "-static", "-msoft-float", "-fno-stack-protector",
            "-fno-unwind-tables", "-fno-asynchronous-unwind-tables",
            "-ffunction-sections", "-fdata-sections",
            "-Wl,--gc-sections", "-Wl,--strip-all", "-Wl,--no-eh-frame-hdr"]
