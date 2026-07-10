@@ -3,12 +3,15 @@
  *          config loading, log init, main loop skeleton
  *
  * Spec section 8 (signals), section 3 (main loop).
- * Phase 1: stub poll_cycle() that logs "alive" each interval.
+ * Phase 2: poll_cycle() calls player functions (PID, position).
  */
 
 #include "config.h"
 #include "log.h"
 #include "helpers.h"
+#include "player.h"
+#include "catalog.h"
+#include "resume.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -92,13 +95,99 @@ static void reap_children(void) {
     }
 }
 
-/* ── Stub poll cycle ─────────────────────────────────────────────── */
+/* ── Poll cycle (Phase 2) ──────────────────────────────────────────── */
+
+static int diag_loops = 0;
+static int diag_audiobook_loops = 0;
+static int diag_non_audiobook_loops = 0;
+static int diag_position_reads = 0;
+static int diag_saves = 0;
+static time_t diag_last_log_at = 0;
+
+static void log_diagnostics(const daemon_config *cfg) {
+    time_t now = time(NULL);
+    if (now - diag_last_log_at < (time_t)cfg->diagnostics_interval_seconds) return;
+
+    log_msg("stats loops=%d audiobook=%d non_audiobook=%d position_reads=%d saves=%d",
+            diag_loops, diag_audiobook_loops, diag_non_audiobook_loops,
+            diag_position_reads, diag_saves);
+
+    diag_loops = 0;
+    diag_audiobook_loops = 0;
+    diag_non_audiobook_loops = 0;
+    diag_position_reads = 0;
+    diag_saves = 0;
+    diag_last_log_at = now;
+}
 
 static void poll_cycle(const daemon_config *cfg) {
-    /* Phase 1 stub: just log that we're alive.
-       Real implementation will call into player/catalog/resume/state modules. */
-    (void)cfg;
-    log_msg("alive");
+    diag_loops++;
+
+    /* Read path preview from user.ini */
+    char preview[129];
+    if (current_path_slot_preview(cfg, preview, sizeof(preview)) != 0) {
+        preview[0] = '\0';
+    }
+
+    /* Classify path */
+    bool is_audiobook = path_preview_is_audiobook(preview);
+    bool is_music = path_preview_is_music(preview);
+
+    if (is_audiobook) {
+        diag_audiobook_loops++;
+
+        /* Find hiby_player PID */
+        pid_t pid = player_pid_cached();
+        if (pid < 0) {
+            log_msg("hiby_player not running");
+            return;
+        }
+
+        /* Read position */
+        uint32_t pos = position_ms_memory(cfg);
+        diag_position_reads++;
+
+        /* Read duration */
+        uint32_t dur = duration_ms_memory(cfg);
+
+        /* Read full path */
+        char full_path[512];
+        if (current_path_from_hex(cfg, full_path, sizeof(full_path)) != 0) {
+            full_path[0] = '\0';
+        }
+
+        /* Log audiobook state (throttled by diagnostics) */
+        if (diag_loops == 1 || (diag_audiobook_loops % 10 == 0)) {
+            log_msg("audiobook path=%s pos=%ums dur=%ums pid=%d",
+                    full_path[0] ? full_path : "?",
+                    pos, dur, (int)pid);
+        }
+
+        /* Phase 2: save/restore logic would go here (Phase 3 wiring) */
+
+    } else if (is_music) {
+        diag_non_audiobook_loops++;
+        /* Idle for music — no action needed */
+    } else {
+        diag_non_audiobook_loops++;
+        /* Other path — idle */
+    }
+
+    /* Poll book-title marker (if enabled) */
+    if (cfg->book_title_autostart_enabled) {
+        uint32_t seq = book_title_marker_seq(cfg);
+        if (seq > 0) {
+            /* Phase 3 will handle autostart trigger; Phase 2 just logs */
+            static uint32_t last_seq = 0;
+            if (seq != last_seq) {
+                log_msg("book_title marker seq changed: %u -> %u", last_seq, seq);
+                last_seq = seq;
+            }
+        }
+    }
+
+    /* Log diagnostics periodically */
+    log_diagnostics(cfg);
 }
 
 /* ── Main ────────────────────────────────────────────────────────── */
