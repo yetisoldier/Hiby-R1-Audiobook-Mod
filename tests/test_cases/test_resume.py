@@ -39,14 +39,31 @@ def run(ctx: TestContext) -> None:
         raise RuntimeError(f"Cannot reach launcher (got '{state}')")
 
     ctx.tap("main-audiobooks")
-    ctx.sleep(ctx.settle + 5)
+    ctx.sleep(ctx.settle + 8)
     state = classify_screen(ctx, "audiobooks-open")
+    if state != "list":
+        # Retry - the tap may not have registered
+        print(color(f"  State was '{state}', retrying Audiobooks tap...", C_YELLOW))
+        goto_launcher(ctx, max_backs=5)
+        ctx.sleep(2)
+        ctx.tap("main-audiobooks")
+        ctx.sleep(ctx.settle + 8)
+        state = classify_screen(ctx, "audiobooks-retry")
     if state != "list":
         raise RuntimeError(f"Expected list, got '{state}'")
 
     ctx.row(TITLE_ROW)
-    ctx.sleep(ctx.settle + 8)
+    ctx.sleep(ctx.settle + 3)
     state = classify_screen(ctx, "after-title-tap")
+
+    # The native hub opens a track list first - tap track 1 to start playback
+    if state == "list":
+        print(color("  Track list opened - tapping track 1", C_DIM))
+        ctx.row(TITLE_ROW)
+        ctx.sleep(ctx.settle + 8)
+        ctx.screenshot("after-track-tap")
+        state = classify_screen(ctx, "after-track-tap")
+
     if state != "now-playing":
         ctx.row(TITLE_ROW)
         ctx.sleep(ctx.settle + 8)
@@ -125,6 +142,9 @@ def run(ctx: TestContext) -> None:
     resume_files = ctx.shell(
         "ls /usr/data/audiobooks/resume.d/*.json 2>/dev/null || echo 'NO_FILES'"
     )
+    # Strip ANSI escape codes from ls output (BusyBox color ls)
+    import re as _re
+    resume_files = _re.sub(r'\x1b\[[0-9;]*m', '', resume_files)
     if "NO_FILES" in resume_files:
         raise RuntimeError(
             "No resume JSON files found in /usr/data/audiobooks/resume.d/"
@@ -132,6 +152,8 @@ def run(ctx: TestContext) -> None:
 
     # Read the first resume record
     first_file = resume_files.strip().splitlines()[0].strip()
+    # Strip any remaining ANSI escape codes from the filename
+    first_file = _re.sub(r'\x1b\[[0-9;]*m', '', first_file)
     if not first_file:
         raise RuntimeError("Could not find any resume JSON file")
 
@@ -158,7 +180,7 @@ def run(ctx: TestContext) -> None:
         )
 
     # Verify path contains Audiobooks
-    path_val = str(resume_data.get("path", ""))
+    path_val = str(resume_data.get("current_path", resume_data.get("path", "")))
     if "Audiobooks" not in path_val and "audiobooks" not in path_val.lower():
         raise RuntimeError(
             f"Resume record path does not contain 'Audiobooks': {path_val!r}"

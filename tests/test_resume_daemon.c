@@ -22,6 +22,7 @@
 #include "player.h"
 #include "catalog.h"
 #include "ui.h"
+#include "state.h"
 #include "shadow.h"
 #include "log.h"
 
@@ -1216,6 +1217,304 @@ static void test_shadow_env_enables(void) {
     config_free(&cfg);
 }
 
+
+/* ── State module tests ────────────────────────────────────────────── */
+
+static void test_state_init(void) {
+    daemon_runtime rt;
+    state_init(&rt);
+    CHECK_INT_EQ((int)rt.state, (int)STATE_IDLE);
+    CHECK_INT_EQ(rt.last_saved_bucket, -1);
+    CHECK(rt.last_path[0] == '\0');
+    CHECK(rt.restored_path[0] == '\0');
+}
+
+static void test_state_book_root_simple(void) {
+    char root[512];
+    state_book_root("a:\\Audiobooks\\Book\\03.mp3", root, sizeof(root));
+    CHECK_STR_EQ(root, "a:\\Audiobooks\\Book");
+}
+
+static void test_state_book_root_no_backslash(void) {
+    char root[512];
+    state_book_root("nofile", root, sizeof(root));
+    CHECK_STR_EQ(root, "nofile");
+}
+
+static void test_state_book_root_empty(void) {
+    char root[512];
+    state_book_root("", root, sizeof(root));
+    CHECK_STR_EQ(root, "");
+}
+
+static void test_state_same_book_root_match(void) {
+    CHECK(state_same_book_root("a:\\B\\01.mp3", "a:\\B"));
+}
+
+static void test_state_same_book_root_nomatch(void) {
+    CHECK(!state_same_book_root("a:\\B\\01.mp3", "a:\\C"));
+}
+
+static void test_state_same_book_root_prefix(void) {
+    CHECK(!state_same_book_root("a:\\BookX\\01.mp3", "a:\\Book"));
+}
+
+static void test_state_settle_ticks_default(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    int ticks = state_settle_ticks(&cfg);
+    CHECK_INT_EQ(ticks, 15);
+}
+
+static void test_state_settle_ticks_calc(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.track_switch_settle_seconds = 3;
+    cfg.track_switch_poll_us = 200000;
+    int ticks = state_settle_ticks(&cfg);
+    CHECK_INT_EQ(ticks, 15);
+}
+
+static void test_state_settle_ticks_fast_poll(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.track_switch_settle_seconds = 5;
+    cfg.track_switch_poll_us = 100000;
+    int ticks = state_settle_ticks(&cfg);
+    CHECK_INT_EQ(ticks, 50);
+}
+
+static void test_state_autostart_inactive(void) {
+    daemon_runtime rt;
+    state_init(&rt);
+    CHECK(!state_autostart_active(&rt));
+}
+
+static void test_state_autostart_active(void) {
+    daemon_runtime rt;
+    state_init(&rt);
+    rt.book_title_autostart_until = time(NULL) + 60;
+    CHECK(state_autostart_active(&rt));
+}
+
+static void test_state_autostart_expired(void) {
+    daemon_runtime rt;
+    state_init(&rt);
+    rt.book_title_autostart_until = time(NULL) - 10;
+    CHECK(!state_autostart_active(&rt));
+}
+
+static void test_state_context_active(void) {
+    daemon_runtime rt;
+    state_init(&rt);
+    time_t now = time(NULL);
+    rt.book_title_context_until = now + 60;
+    CHECK(state_context_active(&rt, now));
+}
+
+static void test_state_context_expired(void) {
+    daemon_runtime rt;
+    state_init(&rt);
+    time_t now = time(NULL);
+    rt.book_title_context_until = now - 10;
+    CHECK(!state_context_active(&rt, now));
+}
+
+static void test_state_clear_autostart(void) {
+    daemon_runtime rt;
+    state_init(&rt);
+    rt.book_title_autostart_until = time(NULL) + 60;
+    rt.book_title_autostart_seq = 42;
+    strcpy(rt.book_title_autostart_reset_key, "test");
+    state_clear_autostart(&rt);
+    CHECK_INT_EQ((int)rt.book_title_autostart_until, 0);
+    CHECK_INT_EQ((int)rt.book_title_autostart_seq, 0);
+    CHECK(rt.book_title_autostart_reset_key[0] == '\0');
+}
+
+static void test_state_should_poll_audiobook(void) {
+    daemon_runtime rt;
+    daemon_config cfg;
+    state_init(&rt);
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.book_title_autostart_enabled = 1;
+    CHECK(state_should_poll_marker(&rt, &cfg, "a:\\Audiobooks\\Book", time(NULL)));
+}
+
+static void test_state_should_poll_music_throttle(void) {
+    daemon_runtime rt;
+    daemon_config cfg;
+    state_init(&rt);
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.book_title_autostart_enabled = 1;
+    cfg.book_title_marker_music_poll_seconds = 15;
+    CHECK(state_should_poll_marker(&rt, &cfg, "a:\\Music\\Album", 1000));
+    rt.last_book_title_marker_poll_at = 1005;
+    CHECK(!state_should_poll_marker(&rt, &cfg, "a:\\Music\\Album", 1010));
+    CHECK(state_should_poll_marker(&rt, &cfg, "a:\\Music\\Album", 1020));
+}
+
+static void test_state_should_poll_disabled(void) {
+    daemon_runtime rt;
+    daemon_config cfg;
+    state_init(&rt);
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.book_title_autostart_enabled = 0;
+    CHECK(!state_should_poll_marker(&rt, &cfg, "a:\\Audiobooks\\Book", time(NULL)));
+}
+
+static void test_state_log_bucket_zero(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.book_title_restore_log_bucket_ms = 30000;
+    CHECK_INT_EQ(state_log_bucket(&cfg, 0), 0);
+}
+
+static void test_state_log_bucket_calc(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.book_title_restore_log_bucket_ms = 30000;
+    CHECK_INT_EQ(state_log_bucket(&cfg, 60000), 2);
+}
+
+static void test_state_log_bucket_disabled(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.book_title_restore_log_bucket_ms = 0;
+    CHECK_INT_EQ(state_log_bucket(&cfg, 60000), 0);
+}
+
+static void test_state_diag_inc(void) {
+    daemon_runtime rt;
+    state_init(&rt);
+    int counter = 0;
+    state_diag_inc(&rt, &counter);
+    CHECK_INT_EQ(counter, 1);
+    state_diag_inc(&rt, &counter);
+    state_diag_inc(&rt, &counter);
+    CHECK_INT_EQ(counter, 3);
+}
+
+static void test_state_diag_log_not_due(void) {
+    daemon_runtime rt;
+    daemon_config cfg;
+    state_init(&rt);
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.diagnostics_interval_seconds = 60;
+    time_t now = time(NULL);
+    rt.diag_last_log_at = now;
+    rt.diag_loops = 5;
+    state_diag_log(&rt, &cfg, now);
+    CHECK_INT_EQ(rt.diag_loops, 5);
+}
+
+static void test_state_diag_log_due(void) {
+    daemon_runtime rt;
+    daemon_config cfg;
+    state_init(&rt);
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.diagnostics_interval_seconds = 60;
+    time_t now = time(NULL);
+    rt.diag_last_log_at = now - 120;
+    rt.diag_loops = 10;
+    rt.diag_audiobook_loops = 7;
+    rt.diag_non_audiobook_loops = 3;
+    rt.diag_saves = 2;
+    state_diag_log(&rt, &cfg, now);
+    CHECK_INT_EQ(rt.diag_loops, 0);
+    CHECK_INT_EQ(rt.diag_audiobook_loops, 0);
+    CHECK_INT_EQ(rt.diag_saves, 0);
+    CHECK_INT_EQ((int)rt.diag_last_log_at, (int)now);
+}
+
+static void test_state_diag_log_first_call(void) {
+    daemon_runtime rt;
+    daemon_config cfg;
+    state_init(&rt);
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.diagnostics_interval_seconds = 60;
+    time_t now = time(NULL);
+    rt.diag_loops = 5;
+    state_diag_log(&rt, &cfg, now);
+    CHECK_INT_EQ(rt.diag_loops, 5);
+    CHECK_INT_EQ((int)rt.diag_last_log_at, (int)now);
+}
+
+static void test_state_geometry_row1(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.book_title_direct_track_visible_rows = 5;
+    cfg.book_title_direct_track_rows_per_swipe = 4;
+    cfg.book_title_direct_track_max_swipes = 20;
+    int sw, row;
+    CHECK_INT_EQ(state_direct_geometry(&cfg, 1, &sw, &row), 0);
+    CHECK_INT_EQ(sw, 0);
+    CHECK_INT_EQ(row, 1);
+}
+
+static void test_state_geometry_row5(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.book_title_direct_track_visible_rows = 5;
+    cfg.book_title_direct_track_rows_per_swipe = 4;
+    cfg.book_title_direct_track_max_swipes = 20;
+    int sw, row;
+    CHECK_INT_EQ(state_direct_geometry(&cfg, 5, &sw, &row), 0);
+    CHECK_INT_EQ(sw, 0);
+    CHECK_INT_EQ(row, 5);
+}
+
+static void test_state_geometry_swipe_once(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.book_title_direct_track_visible_rows = 5;
+    cfg.book_title_direct_track_rows_per_swipe = 4;
+    cfg.book_title_direct_track_max_swipes = 20;
+    int sw, row;
+    CHECK_INT_EQ(state_direct_geometry(&cfg, 6, &sw, &row), 0);
+    CHECK_INT_EQ(sw, 1);
+    CHECK_INT_EQ(row, 2);
+}
+
+static void test_state_geometry_swipe_twice(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.book_title_direct_track_visible_rows = 5;
+    cfg.book_title_direct_track_rows_per_swipe = 4;
+    cfg.book_title_direct_track_max_swipes = 20;
+    int sw, row;
+    CHECK_INT_EQ(state_direct_geometry(&cfg, 10, &sw, &row), 0);
+    CHECK_INT_EQ(sw, 2);
+    CHECK_INT_EQ(row, 2);
+}
+
+static void test_state_geometry_too_many(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.book_title_direct_track_visible_rows = 5;
+    cfg.book_title_direct_track_rows_per_swipe = 4;
+    cfg.book_title_direct_track_max_swipes = 3;
+    int sw, row;
+    CHECK_INT_EQ(state_direct_geometry(&cfg, 20, &sw, &row), -1);
+}
+
+static void test_state_geometry_invalid_index(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    int sw, row;
+    CHECK_INT_EQ(state_direct_geometry(&cfg, 0, &sw, &row), -1);
+    CHECK_INT_EQ(state_direct_geometry(&cfg, -1, &sw, &row), -1);
+}
+
+static void test_state_geometry_defaults(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    int sw, row;
+    CHECK_INT_EQ(state_direct_geometry(&cfg, 5, &sw, &row), 0);
+    CHECK_INT_EQ(sw, 0);
+    CHECK_INT_EQ(row, 5);
+}
+
 /* ── Main ─────────────────────────────────────────────────────────── */
 
 int main(int argc, char *argv[]) {
@@ -1344,7 +1643,42 @@ int main(int argc, char *argv[]) {
     RUN_TEST(test_shadow_config_file_enables);
     RUN_TEST(test_shadow_env_enables);
 
-    printf("\n=== Results ===\n");
+    
+    RUN_TEST(test_state_init);
+    RUN_TEST(test_state_book_root_simple);
+    RUN_TEST(test_state_book_root_no_backslash);
+    RUN_TEST(test_state_book_root_empty);
+    RUN_TEST(test_state_same_book_root_match);
+    RUN_TEST(test_state_same_book_root_nomatch);
+    RUN_TEST(test_state_same_book_root_prefix);
+    RUN_TEST(test_state_settle_ticks_default);
+    RUN_TEST(test_state_settle_ticks_calc);
+    RUN_TEST(test_state_settle_ticks_fast_poll);
+    RUN_TEST(test_state_autostart_inactive);
+    RUN_TEST(test_state_autostart_active);
+    RUN_TEST(test_state_autostart_expired);
+    RUN_TEST(test_state_context_active);
+    RUN_TEST(test_state_context_expired);
+    RUN_TEST(test_state_clear_autostart);
+    RUN_TEST(test_state_should_poll_audiobook);
+    RUN_TEST(test_state_should_poll_music_throttle);
+    RUN_TEST(test_state_should_poll_disabled);
+    RUN_TEST(test_state_log_bucket_zero);
+    RUN_TEST(test_state_log_bucket_calc);
+    RUN_TEST(test_state_log_bucket_disabled);
+    RUN_TEST(test_state_diag_inc);
+    RUN_TEST(test_state_diag_log_not_due);
+    RUN_TEST(test_state_diag_log_due);
+    RUN_TEST(test_state_diag_log_first_call);
+    RUN_TEST(test_state_geometry_row1);
+    RUN_TEST(test_state_geometry_row5);
+    RUN_TEST(test_state_geometry_swipe_once);
+    RUN_TEST(test_state_geometry_swipe_twice);
+    RUN_TEST(test_state_geometry_too_many);
+    RUN_TEST(test_state_geometry_invalid_index);
+    RUN_TEST(test_state_geometry_defaults);
+
+printf("\n=== Results ===\n");
     printf("  Total:   %d\n", tests_run);
     printf("  Passed:  %d\n", tests_passed);
     printf("  Failed:  %d\n", tests_failed);

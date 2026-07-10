@@ -461,14 +461,14 @@ def classify_screen(ctx: TestContext, label: str) -> str:
     return "unknown"
 
 
-def goto_launcher(ctx: TestContext, max_backs: int = 5) -> str:
+def goto_launcher(ctx: TestContext, max_backs: int = 10) -> str:
     """Navigate back to the launcher by sending edge-back gestures."""
     for _ in range(max_backs):
         state = classify_screen(ctx, "goto-launcher-check")
         if state == "launcher":
             return state
         ctx.back()
-        ctx.sleep(ctx.settle)
+        ctx.sleep(ctx.settle + 1)  # extra settle for deep back stacks
     state = classify_screen(ctx, "goto-launcher-final")
     return state
 

@@ -27,7 +27,7 @@ def run(ctx: TestContext) -> None:
     if state != "launcher":
         # Try one more reset
         ctx.back()
-        ctx.sleep(ctx.settle)
+        ctx.sleep(ctx.settle + 2)
         state = classify_screen(ctx, "launcher-retry")
     if state != "launcher":
         raise RuntimeError(
@@ -40,7 +40,7 @@ def run(ctx: TestContext) -> None:
     print(color("  Step 2: Open Audiobooks", C_DIM))
     ctx.screenshot("launcher-before-open")
     ctx.tap("main-audiobooks")
-    ctx.sleep(ctx.settle + 5)  # extra settle for app launch
+    ctx.sleep(ctx.settle + 8)  # extra settle for app launch (native hub can be slow)
     ctx.screenshot("audiobooks-opened")
 
     state = classify_screen(ctx, "audiobooks-state")
@@ -48,10 +48,10 @@ def run(ctx: TestContext) -> None:
         # Retry opening
         print(color(f"  Screen state was '{state}', retrying…", C_YELLOW))
         ctx.back()
-        ctx.sleep(ctx.settle)
-        goto_launcher(ctx, max_backs=3)
+        ctx.sleep(ctx.settle + 2)
+        goto_launcher(ctx, max_backs=5)
         ctx.tap("main-audiobooks")
-        ctx.sleep(ctx.settle + 5)
+        ctx.sleep(ctx.settle + 8)
         state = classify_screen(ctx, "audiobooks-retry")
 
     if state != "list":
@@ -79,13 +79,13 @@ def run(ctx: TestContext) -> None:
     # ── Step 4: Back returns to launcher ───────────────────────────────────
     print(color("  Step 4: Back returns to launcher", C_DIM))
     ctx.back()
-    ctx.sleep(ctx.settle)
+    ctx.sleep(ctx.settle + 2)
     ctx.screenshot("after-back")
     state = classify_screen(ctx, "after-back-state")
     if state != "launcher":
         # Try a second back
         ctx.back()
-        ctx.sleep(ctx.settle)
+        ctx.sleep(ctx.settle + 2)
         state = classify_screen(ctx, "after-back-retry")
     if state != "launcher":
         raise RuntimeError(

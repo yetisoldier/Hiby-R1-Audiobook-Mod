@@ -33,8 +33,16 @@ def run(ctx: TestContext) -> None:
         raise RuntimeError(f"Cannot reach launcher (got '{state}')")
 
     ctx.tap("main-audiobooks")
-    ctx.sleep(ctx.settle + 5)
+    ctx.sleep(ctx.settle + 8)
     state = classify_screen(ctx, "audiobooks-open")
+    if state != "list":
+        # Retry - the tap may not have registered
+        print(color(f"  State was '{state}', retrying Audiobooks tap...", C_YELLOW))
+        goto_launcher(ctx, max_backs=5)
+        ctx.sleep(2)
+        ctx.tap("main-audiobooks")
+        ctx.sleep(ctx.settle + 8)
+        state = classify_screen(ctx, "audiobooks-retry")
     if state != "list":
         raise RuntimeError(f"Expected list state after opening Audiobooks, got '{state}'")
     print(color("  ✓ Audiobooks list open", C_GREEN))
@@ -43,10 +51,19 @@ def run(ctx: TestContext) -> None:
     print(color("  Step 2: Select title row 1", C_DIM))
     ctx.screenshot("before-title-tap")
     ctx.row(1)
-    ctx.sleep(ctx.settle + 8)  # extra settle for playback start
+    ctx.sleep(ctx.settle + 3)  # settle for track list to open
     ctx.screenshot("after-title-tap")
 
     state = classify_screen(ctx, "after-title-tap")
+
+    # The native hub opens a track list first - tap track 1 to start playback
+    if state == "list":
+        print(color("  Track list opened - tapping track 1", C_DIM))
+        ctx.row(1)
+        ctx.sleep(ctx.settle + 8)  # extra settle for playback start
+        ctx.screenshot("after-track-tap")
+        state = classify_screen(ctx, "after-track-tap")
+
     if state != "now-playing":
         # Retry
         print(color(f"  State was '{state}', retrying…", C_YELLOW))
