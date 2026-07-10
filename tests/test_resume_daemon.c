@@ -22,6 +22,8 @@
 #include "player.h"
 #include "catalog.h"
 #include "ui.h"
+#include "shadow.h"
+#include "log.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -913,6 +915,307 @@ static void test_seek_x_three_quarter(void) {
     CHECK_INT_EQ((int)x, 350);
 }
 
+/* ── Config file parsing tests ──────────────────────────────────── */
+
+static void test_config_defaults(void) {
+    daemon_config cfg;
+    config_load(&cfg, NULL);  /* NULL = try default path, which won't exist in tmpdir */
+    CHECK_INT_EQ((int)cfg.interval_seconds, 5);
+    CHECK_INT_EQ((int)cfg.idle_interval_seconds, 3);
+    CHECK_INT_EQ((int)cfg.min_save_ms, 3000);
+    CHECK_INT_EQ((int)cfg.save_bucket_ms, 15000);
+    CHECK_INT_EQ((int)cfg.shadow_mode, 0);
+    CHECK_STR_EQ(cfg.base_dir, "/usr/data/audiobooks");
+    config_free(&cfg);
+}
+
+static void test_config_file_basic(void) {
+    daemon_config cfg;
+    make_test_config(&cfg);
+
+    /* Write a config file */
+    char conf_path[512];
+    snprintf(conf_path, sizeof(conf_path), "%s/resume-daemon.conf", tmpdir);
+    FILE *fp = fopen(conf_path, "w");
+    CHECK(fp != NULL);
+    fprintf(fp, "# Test config file\n");
+    fprintf(fp, "INTERVAL_SECONDS=10\n");
+    fprintf(fp, "MIN_SAVE_MS=5000\n");
+    fprintf(fp, "SHADOW_MODE=1\n");
+    fprintf(fp, "SAVE_BUCKET_MS=30000\n");
+    fprintf(fp, "  # Indented comment\n");
+    fprintf(fp, "IDLE_INTERVAL_SECONDS = 7\n");
+    fclose(fp);
+
+    /* Load with explicit config file path */
+    config_load(&cfg, conf_path);
+    CHECK_INT_EQ((int)cfg.interval_seconds, 10);
+    CHECK_INT_EQ((int)cfg.min_save_ms, 5000);
+    CHECK_INT_EQ((int)cfg.save_bucket_ms, 30000);
+    CHECK_INT_EQ((int)cfg.idle_interval_seconds, 7);
+    CHECK_INT_EQ((int)cfg.shadow_mode, 1);
+    config_free(&cfg);
+}
+
+static void test_config_file_comments(void) {
+    daemon_config cfg;
+    make_test_config(&cfg);
+
+    char conf_path[512];
+    snprintf(conf_path, sizeof(conf_path), "%s/test_comments.conf", tmpdir);
+    FILE *fp = fopen(conf_path, "w");
+    CHECK(fp != NULL);
+    fprintf(fp, "# Only comments\n");
+    fprintf(fp, "# Another comment\n");
+    fprintf(fp, "\n");
+    fprintf(fp, "  # Indented comment\n");
+    fclose(fp);
+
+    /* Should not crash, values stay at defaults from make_test_config */
+    int rc = config_load_file(&cfg, conf_path);
+    CHECK_INT_EQ(rc, 0);
+    config_free(&cfg);
+}
+
+static void test_config_file_missing(void) {
+    daemon_config cfg;
+    int rc = config_load_file(&cfg, "/nonexistent/path/to/config.conf");
+    /* Should return -1 for missing file */
+    CHECK_INT_EQ(rc, -1);
+}
+
+static void test_config_file_bool_variants(void) {
+    daemon_config cfg;
+    make_test_config(&cfg);
+
+    char conf_path[512];
+    snprintf(conf_path, sizeof(conf_path), "%s/test_bools.conf", tmpdir);
+    FILE *fp = fopen(conf_path, "w");
+    CHECK(fp != NULL);
+    fprintf(fp, "SHADOW_MODE=yes\n");
+    fprintf(fp, "RESTORE_ENABLED=true\n");
+    fprintf(fp, "TRACK_RESTORE_ENABLED=1\n");
+    fprintf(fp, "PLAY_MODE_ENFORCE_ENABLED=no\n");
+    fprintf(fp, "BACK_GUARD_ENABLED=false\n");
+    fclose(fp);
+
+    config_load(&cfg, conf_path);
+    CHECK_INT_EQ((int)cfg.shadow_mode, 1);
+    CHECK_INT_EQ((int)cfg.restore_enabled, 1);
+    CHECK_INT_EQ((int)cfg.track_restore_enabled, 1);
+    CHECK_INT_EQ((int)cfg.play_mode_enforce_enabled, 0);
+    CHECK_INT_EQ((int)cfg.back_guard_enabled, 0);
+    config_free(&cfg);
+}
+
+static void test_config_env_override(void) {
+    daemon_config cfg;
+    make_test_config(&cfg);
+
+    /* Write config file with one value */
+    char conf_path[512];
+    snprintf(conf_path, sizeof(conf_path), "%s/test_env.conf", tmpdir);
+    FILE *fp = fopen(conf_path, "w");
+    CHECK(fp != NULL);
+    fprintf(fp, "INTERVAL_SECONDS=10\n");
+    fclose(fp);
+
+    /* Set env var that should override config file */
+    setenv("AUDIOBOOK_INTERVAL_SECONDS", "15", 1);
+    config_load(&cfg, conf_path);
+    CHECK_INT_EQ((int)cfg.interval_seconds, 15);
+    unsetenv("AUDIOBOOK_INTERVAL_SECONDS");
+    config_free(&cfg);
+}
+
+static void test_config_invalid_values(void) {
+    daemon_config cfg;
+    make_test_config(&cfg);
+
+    char conf_path[512];
+    snprintf(conf_path, sizeof(conf_path), "%s/test_invalid.conf", tmpdir);
+    FILE *fp = fopen(conf_path, "w");
+    CHECK(fp != NULL);
+    fprintf(fp, "INTERVAL_SECONDS=notanumber\n");
+    fprintf(fp, "MIN_SAVE_MS=abc\n");
+    fclose(fp);
+
+    /* Invalid values should be ignored, defaults kept */
+    config_load(&cfg, conf_path);
+    CHECK_INT_EQ((int)cfg.interval_seconds, 5);
+    CHECK_INT_EQ((int)cfg.min_save_ms, 3000);
+    config_free(&cfg);
+}
+
+/* ── Shadow mode tests ───────────────────────────────────────────── */
+
+static void test_shadow_init(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.shadow_mode = 0;
+    shadow_init(&cfg);
+    CHECK_INT_EQ((int)cfg.shadow_mode, 1);
+    CHECK(shadow_is_active(&cfg));
+}
+
+static void test_shadow_not_active(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.shadow_mode = 0;
+    CHECK(!shadow_is_active(&cfg));
+}
+
+static void test_shadow_wrap_save_logs(void) {
+    daemon_config cfg;
+    make_test_config(&cfg);
+    cfg.shadow_mode = 1;
+    log_init(cfg.log_path, cfg.log_max_bytes);
+
+    resume_record tmpl;
+    memset(&tmpl, 0, sizeof(tmpl));
+    strcpy(tmpl.book_key, "testkey");
+    tmpl.track_index = 2;
+    tmpl.completed = false;
+
+    /* In shadow mode, should return 0 and NOT write a record file */
+    int rc = shadow_wrap_save(&cfg, "a:\\Audiobooks\\Book\\01.mp3",
+                              60000, &tmpl);
+    CHECK_INT_EQ(rc, 0);
+
+    /* Verify no resume record file was created */
+    char rec_path[512];
+    int rc2 = record_for_path(&cfg, "a:\\Audiobooks\\Book\\01.mp3",
+                              "testkey", "a:\\Audiobooks\\Book",
+                              rec_path, sizeof(rec_path));
+    CHECK_INT_EQ(rc2, 0);
+    FILE *fp = fopen(rec_path, "r");
+    CHECK(fp == NULL);  /* file should NOT exist in shadow mode */
+
+    log_close();
+    config_free(&cfg);
+}
+
+static void test_shadow_wrap_save_real_when_off(void) {
+    daemon_config cfg;
+    make_test_config(&cfg);
+    cfg.shadow_mode = 0;  /* shadow mode OFF */
+    log_init(cfg.log_path, cfg.log_max_bytes);
+
+    resume_record tmpl;
+    memset(&tmpl, 0, sizeof(tmpl));
+    strcpy(tmpl.book_id, "test_id");
+    strcpy(tmpl.book_key, "testkey2");
+    strcpy(tmpl.root_hiby_path, "a:\\Audiobooks\\Book2");
+
+    /* In non-shadow mode, should actually write the record */
+    int rc = shadow_wrap_save(&cfg, "a:\\Audiobooks\\Book2\\01.mp3",
+                              42000, &tmpl);
+    CHECK_INT_EQ(rc, 0);
+
+    /* Verify the record was actually written */
+    resume_record loaded;
+    int rc2 = existing_record_for_path(&cfg, "a:\\Audiobooks\\Book2\\01.mp3",
+                                        "testkey2", "a:\\Audiobooks\\Book2",
+                                        &loaded);
+    CHECK_INT_EQ(rc2, 0);
+    CHECK_INT_EQ((int)loaded.position_ms, 42000);
+
+    log_close();
+    config_free(&cfg);
+}
+
+static void test_shadow_wrap_restore_logs(void) {
+    daemon_config cfg;
+    make_test_config(&cfg);
+    cfg.shadow_mode = 1;
+    cfg.restore_rewind_ms = 5000;
+    cfg.restore_min_ms = 10000;
+    log_init(cfg.log_path, cfg.log_max_bytes);
+
+    /* In shadow mode, should return 0 and NOT actually restore */
+    int rc = shadow_wrap_restore(&cfg, "a:\\Audiobooks\\Book\\01.mp3",
+                                120000, "bookkey", "a:\\Audiobooks\\Book");
+    CHECK_INT_EQ(rc, 0);
+
+    log_close();
+    config_free(&cfg);
+}
+
+static void test_shadow_wrap_play_mode_logs(void) {
+    daemon_config cfg;
+    make_test_config(&cfg);
+    cfg.shadow_mode = 1;
+    cfg.play_mode_target = 3;
+    log_init(cfg.log_path, cfg.log_max_bytes);
+
+    /* In shadow mode, should return 0 and NOT enforce play mode */
+    int rc = shadow_wrap_play_mode(&cfg);
+    CHECK_INT_EQ(rc, 0);
+
+    log_close();
+    config_free(&cfg);
+}
+
+static void test_shadow_wrap_ui(void) {
+    daemon_config cfg;
+    make_test_config(&cfg);
+    cfg.shadow_mode = 1;
+    log_init(cfg.log_path, cfg.log_max_bytes);
+
+    /* In shadow mode, should return 0 without calling real action */
+    int called = 0;
+    /* We can't easily pass a closure in C, but we can test with NULL fn */
+    int rc = shadow_wrap_ui(&cfg, "tap_track_row", NULL);
+    CHECK_INT_EQ(rc, 0);
+    (void)called;
+
+    log_close();
+    config_free(&cfg);
+}
+
+static void test_shadow_wrap_ui_real_when_off(void) {
+    daemon_config cfg;
+    make_test_config(&cfg);
+    cfg.shadow_mode = 0;
+    log_init(cfg.log_path, cfg.log_max_bytes);
+
+    /* When shadow is off and real_action is NULL, should return -1 */
+    int rc = shadow_wrap_ui(&cfg, "test_action", NULL);
+    CHECK_INT_EQ(rc, -1);
+
+    log_close();
+    config_free(&cfg);
+}
+
+static void test_shadow_config_file_enables(void) {
+    daemon_config cfg;
+    make_test_config(&cfg);
+
+    char conf_path[512];
+    snprintf(conf_path, sizeof(conf_path), "%s/test_shadow.conf", tmpdir);
+    FILE *fp = fopen(conf_path, "w");
+    CHECK(fp != NULL);
+    fprintf(fp, "SHADOW_MODE=1\n");
+    fclose(fp);
+
+    config_load(&cfg, conf_path);
+    CHECK_INT_EQ((int)cfg.shadow_mode, 1);
+    CHECK(shadow_is_active(&cfg));
+    config_free(&cfg);
+}
+
+static void test_shadow_env_enables(void) {
+    daemon_config cfg;
+    make_test_config(&cfg);
+
+    setenv("AUDIOBOOK_SHADOW_MODE", "1", 1);
+    config_load(&cfg, NULL);
+    CHECK_INT_EQ((int)cfg.shadow_mode, 1);
+    CHECK(shadow_is_active(&cfg));
+    unsetenv("AUDIOBOOK_SHADOW_MODE");
+    config_free(&cfg);
+}
+
 /* ── Main ─────────────────────────────────────────────────────────── */
 
 int main(int argc, char *argv[]) {
@@ -1019,6 +1322,27 @@ int main(int argc, char *argv[]) {
     RUN_TEST(test_play_mode_value_read);
     RUN_TEST(test_play_mode_value_missing);
     RUN_TEST(test_play_mode_value_zero_offset);
+
+    /* Config file parsing tests */
+    RUN_TEST(test_config_defaults);
+    RUN_TEST(test_config_file_basic);
+    RUN_TEST(test_config_file_comments);
+    RUN_TEST(test_config_file_missing);
+    RUN_TEST(test_config_file_bool_variants);
+    RUN_TEST(test_config_env_override);
+    RUN_TEST(test_config_invalid_values);
+
+    /* Shadow mode tests */
+    RUN_TEST(test_shadow_init);
+    RUN_TEST(test_shadow_not_active);
+    RUN_TEST(test_shadow_wrap_save_logs);
+    RUN_TEST(test_shadow_wrap_save_real_when_off);
+    RUN_TEST(test_shadow_wrap_restore_logs);
+    RUN_TEST(test_shadow_wrap_play_mode_logs);
+    RUN_TEST(test_shadow_wrap_ui);
+    RUN_TEST(test_shadow_wrap_ui_real_when_off);
+    RUN_TEST(test_shadow_config_file_enables);
+    RUN_TEST(test_shadow_env_enables);
 
     printf("\n=== Results ===\n");
     printf("  Total:   %d\n", tests_run);

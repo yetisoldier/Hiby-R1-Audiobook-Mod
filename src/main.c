@@ -13,6 +13,8 @@
 #include "catalog.h"
 #include "resume.h"
 #include "ui.h"
+#include "state.h"
+#include "shadow.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -96,100 +98,10 @@ static void reap_children(void) {
     }
 }
 
-/* ── Poll cycle (Phase 2) ──────────────────────────────────────────── */
+/* ── Poll cycle (Phase 4: state machine) ───────────────────────────── */
 
-static int diag_loops = 0;
-static int diag_audiobook_loops = 0;
-static int diag_non_audiobook_loops = 0;
-static int diag_position_reads = 0;
-static int diag_saves = 0;
-static time_t diag_last_log_at = 0;
-
-static void log_diagnostics(const daemon_config *cfg) {
-    time_t now = time(NULL);
-    if (now - diag_last_log_at < (time_t)cfg->diagnostics_interval_seconds) return;
-
-    log_msg("stats loops=%d audiobook=%d non_audiobook=%d position_reads=%d saves=%d",
-            diag_loops, diag_audiobook_loops, diag_non_audiobook_loops,
-            diag_position_reads, diag_saves);
-
-    diag_loops = 0;
-    diag_audiobook_loops = 0;
-    diag_non_audiobook_loops = 0;
-    diag_position_reads = 0;
-    diag_saves = 0;
-    diag_last_log_at = now;
-}
-
-static void poll_cycle(const daemon_config *cfg) {
-    diag_loops++;
-
-    /* Read path preview from user.ini */
-    char preview[129];
-    if (current_path_slot_preview(cfg, preview, sizeof(preview)) != 0) {
-        preview[0] = '\0';
-    }
-
-    /* Classify path */
-    bool is_audiobook = path_preview_is_audiobook(preview);
-    bool is_music = path_preview_is_music(preview);
-
-    if (is_audiobook) {
-        diag_audiobook_loops++;
-
-        /* Find hiby_player PID */
-        pid_t pid = player_pid_cached();
-        if (pid < 0) {
-            log_msg("hiby_player not running");
-            return;
-        }
-
-        /* Read position */
-        uint32_t pos = position_ms_memory(cfg);
-        diag_position_reads++;
-
-        /* Read duration */
-        uint32_t dur = duration_ms_memory(cfg);
-
-        /* Read full path */
-        char full_path[512];
-        if (current_path_from_hex(cfg, full_path, sizeof(full_path)) != 0) {
-            full_path[0] = '\0';
-        }
-
-        /* Log audiobook state (throttled by diagnostics) */
-        if (diag_loops == 1 || (diag_audiobook_loops % 10 == 0)) {
-            log_msg("audiobook path=%s pos=%ums dur=%ums pid=%d",
-                    full_path[0] ? full_path : "?",
-                    pos, dur, (int)pid);
-        }
-
-        /* Phase 2: save/restore logic would go here (Phase 3 wiring) */
-
-    } else if (is_music) {
-        diag_non_audiobook_loops++;
-        /* Idle for music — no action needed */
-    } else {
-        diag_non_audiobook_loops++;
-        /* Other path — idle */
-    }
-
-    /* Poll book-title marker (if enabled) */
-    if (cfg->book_title_autostart_enabled) {
-        uint32_t seq = book_title_marker_seq(cfg);
-        if (seq > 0) {
-            /* Phase 3 will handle autostart trigger; Phase 2 just logs */
-            static uint32_t last_seq = 0;
-            if (seq != last_seq) {
-                log_msg("book_title marker seq changed: %u -> %u", last_seq, seq);
-                last_seq = seq;
-            }
-        }
-    }
-
-    /* Log diagnostics periodically */
-    log_diagnostics(cfg);
-}
+static daemon_runtime g_rt;
+static catalog_db     g_cat;
 
 /* ── Main ────────────────────────────────────────────────────────── */
 
@@ -199,6 +111,7 @@ int main(int argc, char *argv[]) {
     uint32_t override_interval = 0;
     int show_help = 0;
     int show_version = 0;
+    int shadow_mode = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -213,6 +126,8 @@ int main(int argc, char *argv[]) {
             override_interval = (uint32_t)strtoul(argv[i] + 11, NULL, 10);
         } else if (strncmp(argv[i], "--config=", 9) == 0) {
             config_file = argv[i] + 9;
+        } else if (strcmp(argv[i], "--shadow") == 0) {
+            shadow_mode = 1;
         }
     }
 
@@ -236,6 +151,11 @@ int main(int argc, char *argv[]) {
     /* Apply --interval override */
     if (override_interval > 0) {
         cfg.interval_seconds = override_interval;
+    }
+
+    /* Apply --shadow override */
+    if (shadow_mode) {
+        cfg.shadow_mode = 1;
     }
 
     /* If source-only mode, exit after config load (testing) */
@@ -285,16 +205,29 @@ int main(int argc, char *argv[]) {
     log_msg("r1_audiobook_resume_daemon v%s starting (pid=%d)", VERSION, (int)getpid());
     config_log_summary(&cfg);
 
+    /* Initialize runtime state */
+    state_init(&g_rt);
+
+    /* Load catalog */
+    if (catalog_load(&g_cat, cfg.catalog_path, cfg.catalog_albums_path,
+                     cfg.catalog_books_path) != 0) {
+        log_msg("warning: catalog load failed, continuing with empty catalog");
+    }
+    refresh_catalog_album_patterns(&g_cat);
+
+    /* Initialize last marker seq */
+    g_rt.last_book_title_seq = book_title_marker_seq(&cfg);
+
     /* Main loop */
     while (!shutdown_requested) {
         /* Reap any zombie children from helper calls */
         reap_children();
 
-        /* Run one poll cycle */
-        poll_cycle(&cfg);
+        /* Run one state machine poll cycle */
+        uint32_t sleep_secs = state_poll_cycle(&g_rt, &cfg, &g_cat);
 
-        /* Sleep for interval */
-        unsigned int sleep_remaining = cfg.interval_seconds;
+        /* Sleep for the recommended interval */
+        unsigned int sleep_remaining = sleep_secs;
         while (sleep_remaining > 0 && !shutdown_requested) {
             sleep_remaining = sleep(sleep_remaining);
         }
@@ -303,6 +236,7 @@ int main(int argc, char *argv[]) {
     /* Clean shutdown */
     log_msg("shutdown signal received");
     remove_pid_file(cfg.pid_file);
+    catalog_free(&g_cat);
     log_close();
     config_free(&cfg);
 

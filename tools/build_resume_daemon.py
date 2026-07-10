@@ -25,14 +25,14 @@ ZIG = os.environ.get("ZIG_CC", "/home/yetisoldier/tools/zig/zig")
 # Source files for the daemon
 SOURCES = [
     "main.c", "config.c", "log.c", "proc_mem.c", "helpers.c",
-    "player.c", "catalog.c", "resume.c", "ui.c",
+    "player.c", "catalog.c", "resume.c", "ui.c", "state.c", "shadow.c",
 ]
 
 # Source files for the test binary (daemon sources + test file)
 # test_resume_daemon.c provides main(); main.c's main() is excluded via source_only config
 TEST_SOURCES = [
     "config.c", "log.c", "proc_mem.c", "helpers.c",
-    "player.c", "catalog.c", "resume.c", "ui.c",
+    "player.c", "catalog.c", "resume.c", "ui.c", "shadow.c",
     "test_resume_daemon.c",  # from tests/ dir — provides main()
 ]
 

@@ -440,9 +440,10 @@ static void apply_field(daemon_config *c, const config_field *f, const char *val
 
 /* ── Config file parser ───────────────────────────────────────────── */
 
-static void load_config_file(daemon_config *c, const char *path) {
+int config_load_file(daemon_config *c, const char *path) {
+    if (!c || !path) return -1;
     FILE *fp = fopen(path, "r");
-    if (!fp) return;
+    if (!fp) return -1;
 
     char line[1024];
     while (fgets(line, sizeof(line), fp)) {
@@ -477,6 +478,7 @@ static void load_config_file(daemon_config *c, const char *path) {
         }
     }
     fclose(fp);
+    return 0;
 }
 
 /* ── Environment variable overrides ───────────────────────────────── */
@@ -498,12 +500,12 @@ int config_load(daemon_config *cfg, const char *config_file_path) {
 
     /* Tier 2: config file (if provided) */
     if (config_file_path) {
-        load_config_file(cfg, config_file_path);
+        config_load_file(cfg, config_file_path);
     } else {
         /* Try default config path: base_dir/resume-daemon.conf */
         char def[512];
         snprintf(def, sizeof(def), "%s/resume-daemon.conf", cfg->base_dir);
-        load_config_file(cfg, def);
+        config_load_file(cfg, def);
     }
 
     /* Tier 3: env vars (highest priority) */
@@ -539,6 +541,7 @@ void config_print_help(void) {
         "Options:\n"
         "  --interval N          Poll interval in seconds (default: 5)\n"
         "  --config PATH         Path to config file (default: base_dir/resume-daemon.conf)\n"
+        "  --shadow              Enable shadow/log-only mode (log actions, no side effects)\n"
         "  --help                Show this help and exit\n"
         "  --version             Show version and exit\n\n"
         "Environment variables (override config file, prefix AUDIOBOOK_):\n"

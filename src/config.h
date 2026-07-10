@@ -164,6 +164,7 @@ typedef struct {
 
 /* API */
 int  config_load(daemon_config *cfg, const char *config_file_path);
+int  config_load_file(daemon_config *cfg, const char *path);
 void config_free(daemon_config *cfg);
 void config_log_summary(const daemon_config *cfg);
 void config_print_help(void);
