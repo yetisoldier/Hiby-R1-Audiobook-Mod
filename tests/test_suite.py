@@ -35,7 +35,7 @@ from typing import Any, Callable
 
 DEFAULT_ADB = ""
 DEFAULT_TIMEOUT = 120          # per-test timeout in seconds
-DEFAULT_TAP_FRAMES = 36
+DEFAULT_TAP_FRAMES = 12
 DEFAULT_SETTLE = 3              # seconds to wait after UI actions
 DEFAULT_SCREENSHOT_DIR = "work/test-screenshots"
 SUITE_SMOKE_TESTS = ["test_launcher", "test_playback", "test_resume"]
