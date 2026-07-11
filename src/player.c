@@ -45,7 +45,7 @@ pid_t player_pid(void) {
         if (!is_num) continue;
 
         /* Read /proc/PID/cmdline */
-        char path[64];
+        char path[512];
         int pname_len = strlen(ent->d_name);
         if (pname_len > 16) continue;  /* PID directory names are short */
         snprintf(path, sizeof(path), "/proc/%s/cmdline", ent->d_name);
@@ -80,7 +80,7 @@ pid_t player_pid(void) {
 pid_t player_pid_cached(void) {
     if (cached_pid > 0) {
         /* Check if the process is still alive */
-        char path[32];
+        char path[64];
         snprintf(path, sizeof(path), "/proc/%d", (int)cached_pid);
         if (access(path, F_OK) == 0) {
             return cached_pid;

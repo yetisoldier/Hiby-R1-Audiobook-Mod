@@ -142,6 +142,11 @@ void state_diag_log(daemon_runtime *rt, const daemon_config *cfg, time_t now) {
     rt->diag_position_reads = rt->diag_saves = 0;
 }
 
+const char *state_ipc_socket_path(const daemon_config *cfg) {
+    if (!cfg || cfg->ipc_socket_path[0] == '\0') return "";
+    return cfg->ipc_socket_path;
+}
+
 /* ── Logging helpers ──────────────────────────────────────────────── */
 
 int state_log_bucket(const daemon_config *cfg, uint32_t pos) {
@@ -734,10 +739,10 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
 
         /* Completed check */
         if (have_rec && rec.completed) {
-            if (strcmp(rt->restored_path, path) != 0)
+            if (strcmp(rt->restored_path, path) != 0) {
                 log_msg("completed start-over root=%s path=%s pos=%u", root, path, pos);
-            strncpy(rt->restored_path, path, sizeof(rt->restored_path) - 1);
-            rt->restored_path[sizeof(rt->restored_path) - 1] = '\0';
+            }
+            snprintf(rt->restored_path, sizeof(rt->restored_path), "%s", path);
             rt->completed_saved_path[0] = '\0';
             resume_reset_failures();
             state_clear_autostart(rt);
@@ -745,9 +750,7 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
             rt->deferred_overwrite_path[0] = '\0';
             rt->position_protected_until_ms = 5000;
             rt->last_paused_at = now_loop;
-            strncpy(rt->completed_start_over_path, path,
-                    sizeof(rt->completed_start_over_path) - 1);
-            rt->completed_start_over_path[sizeof(rt->completed_start_over_path) - 1] = '\0';
+            snprintf(rt->completed_start_over_path, sizeof(rt->completed_start_over_path), "%s", path);
         }
 
         /* Restore phase */

@@ -177,5 +177,6 @@ void state_book_root(const char *path, char *out_root, size_t out_len);
 bool state_same_book_root(const char *path, const char *root2);
 void state_diag_inc(daemon_runtime *rt, int *counter);
 void state_diag_log(daemon_runtime *rt, const daemon_config *cfg, time_t now);
+const char *state_ipc_socket_path(const daemon_config *cfg);
 
 #endif /* STATE_H */

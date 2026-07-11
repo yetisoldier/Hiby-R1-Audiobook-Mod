@@ -51,6 +51,7 @@ static const config_field FIELDS[] = {
     FIELD("AUDIOBOOK_HELPER",               "HELPER",                  CFG_STR, helper_path,             0, 0),
     FIELD("AUDIOBOOK_MEMSCAN_HELPER",       "MEMSCAN_HELPER",          CFG_STR, memscan_helper_path,     0, 0),
     FIELD("AUDIOBOOK_DIRECT_OPEN_HELPER",   "DIRECT_OPEN_HELPER",      CFG_STR, direct_open_helper_path, 0, 0),
+    FIELD("AUDIOBOOK_IPC_SOCKET",           "IPC_SOCKET",              CFG_STR, ipc_socket_path,        0, 0),
 
     /* Touch event files */
 
@@ -162,6 +163,7 @@ static void set_defaults(daemon_config *c) {
     snprintf(c->helper_path,           sizeof(c->helper_path),           "%s", "/usr/data/audiobooks/bin/r1_audiobook_resume_helper");
     snprintf(c->memscan_helper_path,   sizeof(c->memscan_helper_path),   "%s", "/usr/data/audiobooks/bin/r1_audiobook_memscan");
     snprintf(c->direct_open_helper_path,sizeof(c->direct_open_helper_path),"%s", "/usr/data/audiobooks/bin/r1_audiobook_direct_open");
+    snprintf(c->ipc_socket_path,       sizeof(c->ipc_socket_path),      "%s", "/usr/data/audiobooks/run/resume.sock");
 
     /* Touch event files */
     #define EV_DIR "/usr/data/audiobooks/input/"

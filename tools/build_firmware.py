@@ -418,6 +418,11 @@ def build(args: argparse.Namespace) -> None:
     log.info("Extracting rootfs from %s → %s", rootfs_path, root_tree)
     run([unsquashfs, "-d", str(root_tree), str(rootfs_path)])
 
+    # -- Build standalone audiobook app ------------------------------------
+    log.info("Building standalone audiobook app")
+    run(["sh", "app/build.sh"])
+    built_app = resolve_path_strict("build/r1_audiobook_app")
+
     # -- Patch hiby_player --------------------------------------------------
     player_patch_args: list[str | Path] = [str(player_path), "-o", str(patched_player)]
     if args.include_scanner_audiobook_skip:
@@ -474,6 +479,13 @@ def build(args: argparse.Namespace) -> None:
         log.info("Generating audiobook launcher icons")
         run_python("generate_audiobook_launcher_icons.py", [str(root_tree)])
 
+    # -- Install standalone app + launcher wrapper --------------------------
+    bin_dir = root_tree / "usr" / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(built_app, bin_dir / "r1_audiobook_app")
+    shutil.copy2(resolve_path_strict("tools/r1_audiobook_launch.sh"), bin_dir / "r1_audiobook_launch.sh")
+    (bin_dir / "r1_audiobook_launch.sh").chmod(0o755)
+
     # -- OTA info -----------------------------------------------------------
     ota_info_path = root_tree / "etc" / "ota_info"
     effective_ota_site = "/data/autoupdate/autoupdate"
@@ -523,6 +535,7 @@ def build(args: argparse.Namespace) -> None:
     boot_adb_marker = "enabled" if args.enable_boot_adb else "disabled"
     batd_logger_marker = "disabled" if args.disable_batd_logger else "enabled"
     launcher_icon_marker = "audiobook" if args.include_audiobook_launcher_icon else "stock-book"
+    audiobook_app_marker = "built"
     native_dsd_marker = "enabled" if args.unlock_native_dsd else "stock"
     sbc_xq_marker = "enabled" if args.enable_bluetooth_sbc_xq else "stock"
     usb_dac_marker = "enabled" if args.unlock_usb_dac_mode else "stock"
@@ -542,6 +555,7 @@ def build(args: argparse.Namespace) -> None:
         f"boot_adb={boot_adb_marker}\n"
         f"batd_logger={batd_logger_marker}\n"
         f"launcher_icon={launcher_icon_marker}\n"
+        f"audiobook_app={audiobook_app_marker}\n"
         f"native_dsd={native_dsd_marker}\n"
         f"bluetooth_sbc_xq={sbc_xq_marker}\n"
         f"usb_dac_mode={usb_dac_marker}\n"
@@ -593,6 +607,8 @@ def build(args: argparse.Namespace) -> None:
         ("etc/init.d/S91audiobook_resume.sh", "0755"),
         ("etc/init.d/S92audiobook_db_maint.sh", "0755"),
         ("etc/r1_audiobook_version", "0644"),
+        ("usr/bin/r1_audiobook_app", "0755"),
+        ("usr/bin/r1_audiobook_launch.sh", "0755"),
         ("usr/bin/r1_audiobook_resume_helper", "0755"),
         ("usr/bin/r1_audiobook_direct_open", "0755"),
         ("usr/bin/r1_audiobook_resume_daemon", "0755"),

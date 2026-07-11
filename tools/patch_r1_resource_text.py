@@ -28,6 +28,7 @@ REPLACEMENTS = {
     },
     "launcher.ini": {
         "book": "Audiobooks",
+        "command": "/usr/bin/r1_audiobook_launch.sh",
     },
 }
 

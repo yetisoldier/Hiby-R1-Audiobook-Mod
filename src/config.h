@@ -25,6 +25,7 @@ typedef struct {
     char helper_path[256];
     char memscan_helper_path[256];
     char direct_open_helper_path[256];
+    char ipc_socket_path[256];
 /* Timing (milliseconds or seconds, see field names) */
     uint32_t interval_seconds;
     uint32_t idle_interval_seconds;

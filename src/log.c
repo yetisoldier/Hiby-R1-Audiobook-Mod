@@ -24,6 +24,18 @@ static int  log_fd      = -1;
 static char log_path[512] = "";
 static uint32_t log_max  = 524288;  /* 512 KB default */
 
+static void write_all(int fd, const char *buf, size_t len) {
+    while (len > 0) {
+        ssize_t n = write(fd, buf, len);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        buf += (size_t)n;
+        len -= (size_t)n;
+    }
+}
+
 void log_init(const char *path, uint32_t max_bytes) {
     if (path && path[0]) {
         strncpy(log_path, path, sizeof(log_path) - 1);
@@ -90,9 +102,9 @@ void log_rotate_if_needed(void) {
     char full[300];
     int m = snprintf(full, sizeof(full), "%s %s", ts, marker + 0);
     if (m > 0 && (size_t)m < sizeof(full)) {
-        write(log_fd, full, m);
+        write_all(log_fd, full, (size_t)m);
     } else if (n > 0) {
-        write(log_fd, marker, n);
+        write_all(log_fd, marker, (size_t)n);
     }
 }
 
@@ -125,10 +137,10 @@ void log_msg(const char *fmt, ...) {
     log_rotate_if_needed();
 
     if (log_fd >= 0) {
-        write(log_fd, buf, total);
+        write_all(log_fd, buf, (size_t)total);
     } else {
         /* Fallback to stderr */
-        write(STDERR_FILENO, buf, total);
+        write_all(STDERR_FILENO, buf, (size_t)total);
     }
 }
 
@@ -152,5 +164,5 @@ void log_stderr(const char *fmt, ...) {
     if ((size_t)(prefix_len + msg_len) >= sizeof(buf)) msg_len = sizeof(buf) - prefix_len - 1;
 
     buf[prefix_len + msg_len] = '\n';
-    write(STDERR_FILENO, buf, prefix_len + msg_len + 1);
+    write_all(STDERR_FILENO, buf, (size_t)(prefix_len + msg_len + 1));
 }

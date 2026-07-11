@@ -1,0 +1,5 @@
+# R1 audiobook app font asset placeholder.
+# The runtime uses a compact built-in bitmap font, but this asset is kept so the
+# packaged tree matches the requested layout and can be replaced later without
+# changing the build.
+

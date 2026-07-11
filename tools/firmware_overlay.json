@@ -29,6 +29,18 @@
       "description": "Native MIPS direct-open helper for off-screen track selection"
     },
     {
+      "target": "usr/bin/r1_audiobook_app",
+      "source": "build/r1_audiobook_app",
+      "mode": "0755",
+      "description": "Standalone audiobook application"
+    },
+    {
+      "target": "usr/bin/r1_audiobook_launch.sh",
+      "source": "tools/r1_audiobook_launch.sh",
+      "mode": "0755",
+      "description": "Launcher wrapper for the Audiobooks tile"
+    },
+    {
       "target": "usr/bin/r1_audiobook_resume_daemon",
       "source": "build/r1_audiobook_resume_daemon",
       "mode": "0755",
@@ -386,6 +398,8 @@
     {"target": "etc/init.d/S91audiobook_resume.sh", "mode": "0755"},
     {"target": "etc/init.d/S92audiobook_db_maint.sh", "mode": "0755"},
     {"target": "etc/r1_audiobook_version", "mode": "0644"},
+    {"target": "usr/bin/r1_audiobook_app", "mode": "0755"},
+    {"target": "usr/bin/r1_audiobook_launch.sh", "mode": "0755"},
     {"target": "usr/bin/r1_audiobook_resume_helper", "mode": "0755"},
     {"target": "usr/bin/r1_audiobook_direct_open", "mode": "0755"},
     {"target": "usr/bin/r1_audiobook_resume_daemon", "mode": "0755"},

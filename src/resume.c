@@ -320,8 +320,7 @@ int save_position(const daemon_config *cfg, const char *path,
     char escaped[1024];
     char book_id[256] = "";
     if (template_rec && template_rec->book_id[0]) {
-        strncpy(book_id, template_rec->book_id, sizeof(book_id) - 1);
-        book_id[sizeof(book_id) - 1] = '\0';
+        snprintf(book_id, sizeof(book_id), "%s", template_rec->book_id);
     } else if (root[0]) {
         safe_id(root, book_id, sizeof(book_id));
     }
