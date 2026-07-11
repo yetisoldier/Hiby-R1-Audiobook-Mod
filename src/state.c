@@ -1067,6 +1067,7 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
 
     if (path[0] && path_preview_is_audiobook(path)) {
         /* ── Audiobook tracking ──────────────────────────── */
+        bool entered_from_idle = (rt->state == STATE_IDLE);
         rt->state = STATE_AUDIOBOOK_TRACKING;
         state_diag_inc(rt, &rt->diag_audiobook_loops);
         loop_sleep = cfg->interval_seconds > 0 ? cfg->interval_seconds : 1;
@@ -1074,6 +1075,16 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
         time_t now = time(NULL);
         if (cfg->book_title_context_seconds > 0)
             rt->book_title_context_until = now + (time_t)cfg->book_title_context_seconds;
+
+        /* When entering audiobook from non-audiobook (e.g. returning from music),
+         * activate autostart context so position restore can fire. */
+        if (entered_from_idle && !state_autostart_active(rt)) {
+            rt->book_title_autostart_until = now +
+                (time_t)(cfg->restore_retry_after_failure_seconds > 0 ?
+                         cfg->restore_retry_after_failure_seconds : 30);
+            log_msg("enter audiobook autostart activated until=%ld path=%s",
+                    (long)rt->book_title_autostart_until, path);
+        }
 
         state_diag_inc(rt, &rt->diag_position_reads);
         uint32_t pos = position_ms_memory(cfg);
