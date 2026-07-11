@@ -49,6 +49,79 @@ static int parse_disc_number(const char *name) {
     return value > 0 ? value : 1;
 }
 
+static const char *basename_ptr(const char *path) {
+    const char *base = strrchr(path ? path : "", '/');
+    return base ? base + 1 : (path ? path : "");
+}
+
+static int infer_track_number(const char *name) {
+    const char *p = basename_ptr(name);
+    while (*p && !isdigit((unsigned char)*p)) {
+        p++;
+    }
+    if (!*p) return 0;
+    return atoi(p);
+}
+
+static int natural_name_compare(const char *a, const char *b) {
+    size_t ia = 0;
+    size_t ib = 0;
+    while (a && b && a[ia] && b[ib]) {
+        unsigned char ca = (unsigned char)a[ia];
+        unsigned char cb = (unsigned char)b[ib];
+        if (isdigit(ca) && isdigit(cb)) {
+            size_t a0 = ia;
+            size_t b0 = ib;
+            while (a[a0] == '0') a0++;
+            while (b[b0] == '0') b0++;
+            size_t ae = a0;
+            size_t be = b0;
+            while (isdigit((unsigned char)a[ae])) ae++;
+            while (isdigit((unsigned char)b[be])) be++;
+            size_t alen = ae - a0;
+            size_t blen = be - b0;
+            if (alen != blen) return alen < blen ? -1 : 1;
+            for (size_t i = 0; i < alen; i++) {
+                if (a[a0 + i] != b[b0 + i]) {
+                    return (unsigned char)a[a0 + i] < (unsigned char)b[b0 + i] ? -1 : 1;
+                }
+            }
+            size_t araw = ae - ia;
+            size_t braw = be - ib;
+            if (araw != braw) return araw < braw ? -1 : 1;
+            ia = ae;
+            ib = be;
+            continue;
+        }
+        ca = (unsigned char)tolower(ca);
+        cb = (unsigned char)tolower(cb);
+        if (ca != cb) return ca < cb ? -1 : 1;
+        ia++;
+        ib++;
+    }
+    if (a && a[ia]) return 1;
+    if (b && b[ib]) return -1;
+    return 0;
+}
+
+static int compare_scan_track(const void *lhs, const void *rhs) {
+    const scan_track *a = lhs;
+    const scan_track *b = rhs;
+    const char *a_name = basename_ptr(a->row.path);
+    const char *b_name = basename_ptr(b->row.path);
+    if (a->row.disc_number != b->row.disc_number) {
+        return a->row.disc_number < b->row.disc_number ? -1 : 1;
+    }
+    if (a->row.track_number != b->row.track_number) {
+        return a->row.track_number < b->row.track_number ? -1 : 1;
+    }
+    int natural = natural_name_compare(a_name, b_name);
+    if (natural != 0) return natural;
+    int alpha = strcmp(a->row.sort_title, b->row.sort_title);
+    if (alpha != 0) return alpha < 0 ? -1 : 1;
+    return strcmp(a->row.path, b->row.path);
+}
+
 static void normalize_title(char *dst, size_t dst_len, const char *src) {
     ab_copy_str(dst, dst_len, src);
 }
@@ -80,17 +153,16 @@ static int ensure_track(scan_book *book) {
     return 0;
 }
 
-static int add_track(scan_book *book, const char *path, const struct stat *st, int disc, int ordinal) {
+static int add_track(scan_book *book, const char *path, const struct stat *st, int disc) {
     ensure_track(book);
     scan_track *t = &book->tracks[book->track_count++];
     memset(t, 0, sizeof(*t));
     t->row.book_id = 0;
-    t->row.ordinal = ordinal;
+    t->row.ordinal = 0;
     t->row.disc_number = disc;
-    t->row.track_number = ordinal;
+    t->row.track_number = infer_track_number(path);
     ab_copy_str(t->row.path, sizeof(t->row.path), path);
-    const char *base = strrchr(path, '/');
-    base = base ? base + 1 : path;
+    const char *base = basename_ptr(path);
     normalize_title(t->row.title, sizeof(t->row.title), base);
     derive_sort_title(t->row.sort_title, sizeof(t->row.sort_title), base);
     t->row.file_size = st ? (int64_t)st->st_size : 0;
@@ -103,7 +175,7 @@ static int collect_tracks(scan_book *book, const char *path, int disc) {
     DIR *dir = opendir(path);
     if (!dir) return -1;
     struct dirent *de;
-    int ordinal = 1;
+    int rc = 0;
     while ((de = readdir(dir)) != NULL) {
         if (de->d_name[0] == '.' && (de->d_name[1] == '\0' || (de->d_name[1] == '.' && de->d_name[2] == '\0'))) {
             continue;
@@ -114,16 +186,24 @@ static int collect_tracks(scan_book *book, const char *path, int disc) {
         if (stat(child, &st) != 0) continue;
         if (S_ISDIR(st.st_mode)) {
             if (is_disc_folder(de->d_name)) {
-                collect_tracks(book, child, parse_disc_number(de->d_name));
+                if (collect_tracks(book, child, parse_disc_number(de->d_name)) != 0) rc = -1;
             }
             continue;
         }
         if (ab_is_audio_file(de->d_name)) {
-            add_track(book, child, &st, disc > 0 ? disc : 1, ordinal++);
+            if (add_track(book, child, &st, disc > 0 ? disc : 1) != 0) rc = -1;
         }
     }
     closedir(dir);
-    return 0;
+    return rc;
+}
+
+static void finalize_track_order(scan_book *book) {
+    if (!book || book->track_count == 0) return;
+    qsort(book->tracks, book->track_count, sizeof(*book->tracks), compare_scan_track);
+    for (size_t i = 0; i < book->track_count; i++) {
+        book->tracks[i].row.ordinal = (int)(i + 1);
+    }
 }
 
 static int persist_book(audiobook_db *db, scan_book *book, library_refresh_report *report) {
@@ -193,6 +273,7 @@ static int scan_tree(audiobook_db *db, const char *path, library_refresh_report 
         book_key_from_path(book.row.book_key, sizeof(book.row.book_key), path);
 
         if (collect_tracks(&book, path, 1) == 0 && book.track_count > 0) {
+            finalize_track_order(&book);
             persist_book(db, &book, report);
         }
         free_scan_book(&book);

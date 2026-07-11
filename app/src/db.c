@@ -109,7 +109,8 @@ int db_upsert_track(audiobook_db *adb, const track_row *track, int64_t *out_trac
     const char *sql =
         "INSERT INTO tracks(book_id,ordinal,disc_number,track_number,path,title,sort_title,duration_ms,embedded_chapters,file_size,file_mtime,fingerprint)"
         " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)"
-        " ON CONFLICT(path) DO UPDATE SET book_id=excluded.book_id, ordinal=excluded.ordinal, disc_number=excluded.disc_number, track_number=excluded.track_number, title=excluded.title, sort_title=excluded.sort_title, duration_ms=excluded.duration_ms, embedded_chapters=excluded.embedded_chapters, file_size=excluded.file_size, file_mtime=excluded.file_mtime, fingerprint=excluded.fingerprint;";
+        " ON CONFLICT(path) DO UPDATE SET book_id=excluded.book_id, ordinal=excluded.ordinal, disc_number=excluded.disc_number, track_number=excluded.track_number, title=excluded.title, sort_title=excluded.sort_title, duration_ms=excluded.duration_ms, embedded_chapters=excluded.embedded_chapters, file_size=excluded.file_size, file_mtime=excluded.file_mtime, fingerprint=excluded.fingerprint"
+        " RETURNING track_id;";
     if (prepare(adb->db, &st, sql) != 0) return -1;
     sqlite3_bind_int64(st, 1, track->book_id);
     sqlite3_bind_int(st, 2, track->ordinal);
@@ -124,9 +125,14 @@ int db_upsert_track(audiobook_db *adb, const track_row *track, int64_t *out_trac
     sqlite3_bind_int64(st, 11, track->file_mtime);
     sqlite3_bind_text(st, 12, track->fingerprint, -1, SQLITE_TRANSIENT);
     int rc = sqlite3_step(st);
+    if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
+        sqlite3_finalize(st);
+        return -1;
+    }
+    if (out_track_id && rc == SQLITE_ROW) {
+        *out_track_id = sqlite3_column_int64(st, 0);
+    }
     sqlite3_finalize(st);
-    if (rc != SQLITE_DONE) return -1;
-    if (out_track_id) *out_track_id = sqlite3_last_insert_rowid(adb->db);
     return 0;
 }
 
@@ -158,6 +164,51 @@ int db_set_progress_txn(audiobook_db *adb, const progress_row *progress) {
     if (!adb || !adb->db || !progress) return -1;
     if (exec_sql(adb->db, "BEGIN IMMEDIATE;") != 0) return -1;
     if (db_set_progress(adb, progress) != 0) {
+        exec_sql(adb->db, "ROLLBACK;");
+        return -1;
+    }
+    if (exec_sql(adb->db, "COMMIT;") != 0) {
+        exec_sql(adb->db, "ROLLBACK;");
+        return -1;
+    }
+    return 0;
+}
+
+int db_set_book_completion_txn(audiobook_db *adb, int64_t book_id, int completed, int64_t completed_at, int64_t last_played_at) {
+    if (!adb || !adb->db) return -1;
+    if (exec_sql(adb->db, "BEGIN IMMEDIATE;") != 0) return -1;
+
+    sqlite3_stmt *progress = NULL;
+    sqlite3_stmt *book = NULL;
+    int ok = 0;
+
+    if (prepare(adb->db, &progress,
+                "UPDATE progress SET completed=?, completed_at=?, last_played_at=?, last_saved_at=?, protected_until_ms=0 WHERE book_id=?") != 0) {
+        goto done;
+    }
+    sqlite3_bind_int(progress, 1, completed ? 1 : 0);
+    sqlite3_bind_int64(progress, 2, completed_at);
+    sqlite3_bind_int64(progress, 3, last_played_at);
+    sqlite3_bind_int64(progress, 4, last_played_at);
+    sqlite3_bind_int64(progress, 5, book_id);
+    if (sqlite3_step(progress) != SQLITE_DONE) goto done;
+
+    if (prepare(adb->db, &book,
+                "UPDATE books SET completed=?, completed_at=?, last_played_at=? WHERE book_id=?") != 0) {
+        goto done;
+    }
+    sqlite3_bind_int(book, 1, completed ? 1 : 0);
+    sqlite3_bind_int64(book, 2, completed_at);
+    sqlite3_bind_int64(book, 3, last_played_at);
+    sqlite3_bind_int64(book, 4, book_id);
+    if (sqlite3_step(book) != SQLITE_DONE) goto done;
+
+    ok = 1;
+
+done:
+    if (progress) sqlite3_finalize(progress);
+    if (book) sqlite3_finalize(book);
+    if (!ok) {
         exec_sql(adb->db, "ROLLBACK;");
         return -1;
     }
@@ -252,17 +303,60 @@ int db_query_continue(audiobook_db *adb, book_list *out) {
         out) : -1;
 }
 
+int db_query_finished(audiobook_db *adb, book_list *out) {
+    return adb && adb->db ? load_books(adb->db,
+        "SELECT b.book_id,b.book_key,b.title,b.sort_title,COALESCE(a.display_name,''),COALESCE(b.narrator,''),COALESCE(s.display_name,''),COALESCE(b.series_number,0),b.root_path,COALESCE(b.cover_path,''),COALESCE(b.cover_cache_path,''),b.total_duration_ms,b.track_count,COALESCE(b.fingerprint,''),COALESCE(b.date_added,0),COALESCE(b.date_modified,0),COALESCE(b.last_played_at,0),b.completed FROM books b JOIN progress p ON p.book_id=b.book_id LEFT JOIN authors a ON a.author_id=b.author_id LEFT JOIN series s ON s.series_id=b.series_id WHERE b.completed=1 OR p.completed=1 ORDER BY COALESCE(b.completed_at,p.completed_at) DESC,b.sort_title COLLATE NOCASE",
+        out) : -1;
+}
+
 int db_query_chapters(audiobook_db *adb, int64_t book_id, track_list *out) {
     if (!adb || !adb->db || !out) return -1;
     memset(out, 0, sizeof(*out));
     sqlite3_stmt *st = NULL;
+    const char *chapter_sql =
+        "SELECT c.chapter_id,t.book_id,c.ordinal,0,c.ordinal,COALESCE(c.title,''),COALESCE(c.title,''),COALESCE(c.title,''),"
+        "COALESCE(c.end_ms - c.start_ms, 0),1,0,0,'' "
+        "FROM chapters c JOIN tracks t ON t.track_id=c.track_id WHERE t.book_id=? "
+        "ORDER BY t.disc_number,t.track_number,c.ordinal,c.title COLLATE NOCASE";
+    if (prepare(adb->db, &st, chapter_sql) != 0) return -1;
+    sqlite3_bind_int64(st, 1, book_id);
+    size_t cap = 16;
+    out->items = ab_xcalloc(cap, sizeof(*out->items));
+    bool found_chapters = false;
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        found_chapters = true;
+        if (out->count == cap) {
+            cap *= 2;
+            out->items = ab_xrealloc(out->items, cap * sizeof(*out->items));
+            memset(out->items + out->count, 0, (cap - out->count) * sizeof(*out->items));
+        }
+        track_row *t = &out->items[out->count++];
+        memset(t, 0, sizeof(*t));
+        t->track_id = sqlite3_column_int64(st, 0);
+        t->book_id = sqlite3_column_int64(st, 1);
+        t->ordinal = sqlite3_column_int(st, 2);
+        t->disc_number = sqlite3_column_int(st, 3);
+        t->track_number = sqlite3_column_int(st, 4);
+        snprintf(t->path, sizeof(t->path), "%s", sqlite3_column_text(st, 5) ? (const char *)sqlite3_column_text(st, 5) : "");
+        snprintf(t->title, sizeof(t->title), "%s", sqlite3_column_text(st, 6) ? (const char *)sqlite3_column_text(st, 6) : "");
+        snprintf(t->sort_title, sizeof(t->sort_title), "%s", sqlite3_column_text(st, 7) ? (const char *)sqlite3_column_text(st, 7) : "");
+        t->duration_ms = sqlite3_column_int64(st, 8);
+        t->embedded_chapters = sqlite3_column_int(st, 9);
+        t->file_size = sqlite3_column_int64(st, 10);
+        t->file_mtime = sqlite3_column_int64(st, 11);
+        snprintf(t->fingerprint, sizeof(t->fingerprint), "%s", sqlite3_column_text(st, 12) ? (const char *)sqlite3_column_text(st, 12) : "");
+    }
+    sqlite3_finalize(st);
+    if (found_chapters) return 0;
+    db_free_track_list(out);
+
     if (prepare(adb->db,
                 &st,
                 "SELECT track_id,book_id,ordinal,disc_number,track_number,path,title,sort_title,duration_ms,embedded_chapters,file_size,file_mtime,COALESCE(fingerprint,'') FROM tracks WHERE book_id=? ORDER BY disc_number,track_number,ordinal,sort_title COLLATE NOCASE") != 0) {
         return -1;
     }
     sqlite3_bind_int64(st, 1, book_id);
-    size_t cap = 16;
+    cap = 16;
     out->items = ab_xcalloc(cap, sizeof(*out->items));
     while (sqlite3_step(st) == SQLITE_ROW) {
         if (out->count == cap) {
@@ -405,4 +499,8 @@ void db_free_bookmark_list(bookmark_list *list) {
     free(list->items);
     list->items = NULL;
     list->count = 0;
+}
+
+int db_mark_book_completed(audiobook_db *adb, int64_t book_id, int64_t completed_at) {
+    return db_set_book_completion_txn(adb, book_id, 1, completed_at, completed_at);
 }

@@ -102,16 +102,20 @@ int resume_write_record_atomic(const char *dir, const progress_row *progress, co
              "  \"book_key\": \"%s\",\n"
              "  \"track_ordinal\": %d,\n"
              "  \"position_ms\": %lld,\n"
+             "  \"total_book_elapsed_ms\": %lld,\n"
              "  \"playback_speed\": %.2f,\n"
              "  \"completed\": %d,\n"
+             "  \"protected_until_ms\": %lld,\n"
              "  \"last_saved_at\": %lld\n"
              "}\n",
              (long long)progress->book_id,
              book->book_key,
              progress->track_ordinal,
              (long long)progress->position_ms,
+             (long long)progress->total_book_elapsed_ms,
              progress->playback_speed,
              progress->completed,
+             (long long)progress->protected_until_ms,
              (long long)progress->last_saved_at);
     return write_atomic_text(path, buf);
 }
@@ -137,18 +141,27 @@ int resume_read_record(const char *path, progress_row *progress) {
     buf[n] = '\0';
     const char *colon;
     const char *p;
+    p = strstr(buf, "\"book_id\"");
+    colon = p ? strchr(p, ':') : NULL;
+    if (colon) progress->book_id = parse_ll(skip_ws(colon + 1));
     p = strstr(buf, "\"track_ordinal\"");
     colon = p ? strchr(p, ':') : NULL;
     if (colon) progress->track_ordinal = (int)parse_ll(skip_ws(colon + 1));
     p = strstr(buf, "\"position_ms\"");
     colon = p ? strchr(p, ':') : NULL;
     if (colon) progress->position_ms = parse_ll(skip_ws(colon + 1));
+    p = strstr(buf, "\"total_book_elapsed_ms\"");
+    colon = p ? strchr(p, ':') : NULL;
+    if (colon) progress->total_book_elapsed_ms = parse_ll(skip_ws(colon + 1));
     p = strstr(buf, "\"playback_speed\"");
     colon = p ? strchr(p, ':') : NULL;
     if (colon) progress->playback_speed = (float)strtod(skip_ws(colon + 1), NULL);
     p = strstr(buf, "\"completed\"");
     colon = p ? strchr(p, ':') : NULL;
     if (colon) progress->completed = (int)parse_ll(skip_ws(colon + 1));
+    p = strstr(buf, "\"protected_until_ms\"");
+    colon = p ? strchr(p, ':') : NULL;
+    if (colon) progress->protected_until_ms = parse_ll(skip_ws(colon + 1));
     p = strstr(buf, "\"last_saved_at\"");
     colon = p ? strchr(p, ':') : NULL;
     if (colon) progress->last_saved_at = parse_ll(skip_ws(colon + 1));

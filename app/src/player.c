@@ -28,6 +28,27 @@ static uint64_t current_track_ms_locked(const audiobook_player *player) {
     return (player->decoder.current_frame * 1000u) / player->decoder.sample_rate;
 }
 
+static uint64_t track_duration_ms_locked(const playback_queue *queue, size_t index) {
+    if (!queue || !queue->tracks || index >= queue->track_count) return 0;
+    return queue->tracks[index].duration_ms > 0 ? (uint64_t)queue->tracks[index].duration_ms : 0u;
+}
+
+static uint64_t resume_seek_ms_locked(const playback_queue *queue, const progress_row *resume) {
+    if (!queue || !resume || resume->completed || resume->track_ordinal <= 0) return 0;
+    size_t index = (size_t)(resume->track_ordinal - 1);
+    if (index >= queue->track_count) return 0;
+
+    uint64_t seek_ms = resume->position_ms > 0 ? (uint64_t)resume->position_ms : 0u;
+    uint64_t duration_ms = track_duration_ms_locked(queue, index);
+    if (duration_ms > 0 && seek_ms > duration_ms) {
+        uint64_t absolute_ms = resume->total_book_elapsed_ms > 0 ? (uint64_t)resume->total_book_elapsed_ms : seek_ms;
+        uint64_t prefix_ms = track_prefix_ms(queue, index);
+        seek_ms = absolute_ms > prefix_ms ? absolute_ms - prefix_ms : 0u;
+    }
+    if (duration_ms > 0 && seek_ms > duration_ms) seek_ms = duration_ms;
+    return seek_ms;
+}
+
 static void refresh_snapshot_locked(audiobook_player *player) {
     const track_row *track = queue_current(&player->queue);
     player->track_ordinal = track ? track->ordinal : 0;
@@ -58,10 +79,8 @@ static int open_transport_locked(audiobook_player *player) {
     player->audio_open = true;
 
     uint64_t seek_ms = player->pending_seek_ms;
-    if (!player->pending_seek && player->position_ms > 0) {
-        uint64_t base = track_prefix_ms(&player->queue, player->queue.current_index);
-        seek_ms = player->position_ms > base ? player->position_ms - base : 0u;
-    }
+    uint64_t duration_ms = decoder_duration_ms(&player->decoder);
+    if (duration_ms > 0 && seek_ms > duration_ms) seek_ms = duration_ms;
     if (seek_ms > 0 || player->pending_seek) {
         (void)decoder_seek_ms(&player->decoder, seek_ms);
     }
@@ -239,7 +258,7 @@ int player_open_book(audiobook_player *player, const book_row *book, const track
         pthread_mutex_unlock(&player->lock);
         return -1;
     }
-    if (resume && resume->track_ordinal > 0) {
+    if (resume && resume->track_ordinal > 0 && !resume->completed) {
         size_t idx = (size_t)(resume->track_ordinal - 1);
         if (idx < player->queue.track_count) {
             player->queue.current_index = idx;
@@ -250,7 +269,7 @@ int player_open_book(audiobook_player *player, const book_row *book, const track
     player->total_duration_ms = total_duration_ms(&player->queue);
     player->speed = resume && resume->playback_speed > 0.0f ? resume->playback_speed : player->cfg.default_speed;
     player->pending_seek = true;
-    player->pending_seek_ms = resume && resume->position_ms > 0 ? (uint64_t)resume->position_ms : 0u;
+    player->pending_seek_ms = resume_seek_ms_locked(&player->queue, resume);
     player->eof_reached = false;
     player->state = PLAYER_PAUSED;
     refresh_snapshot_locked(player);

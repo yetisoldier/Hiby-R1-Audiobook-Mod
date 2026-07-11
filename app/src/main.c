@@ -12,6 +12,7 @@
 #include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -28,6 +29,78 @@ static void usage(const char *argv0) {
 static void ensure_dir(const char *path) {
     if (!path || !path[0]) return;
     mkdir(path, 0755);
+}
+
+static const book_row *active_book(const ui_context *ui) {
+    if (!ui || ui->selected_book < 0 || (size_t)ui->selected_book >= ui->books.count) return NULL;
+    return &ui->books.items[ui->selected_book];
+}
+
+static uint64_t track_prefix_ms(const track_list *tracks, int track_ordinal) {
+    if (!tracks || track_ordinal <= 1) return 0;
+    size_t limit = (size_t)(track_ordinal - 1);
+    if (limit > tracks->count) limit = tracks->count;
+    uint64_t total = 0;
+    for (size_t i = 0; i < limit; i++) {
+        total += tracks->items[i].duration_ms > 0 ? (uint64_t)tracks->items[i].duration_ms : 0u;
+    }
+    return total;
+}
+
+static uint64_t track_duration_ms(const track_list *tracks, int track_ordinal) {
+    if (!tracks || track_ordinal <= 0) return 0;
+    size_t index = (size_t)(track_ordinal - 1);
+    if (index >= tracks->count) return 0;
+    return tracks->items[index].duration_ms > 0 ? (uint64_t)tracks->items[index].duration_ms : 0u;
+}
+
+static uint64_t snapshot_local_position_ms(const player_snapshot *snap, const track_list *tracks) {
+    if (!snap) return 0;
+    uint64_t prefix = track_prefix_ms(tracks, snap->track_ordinal);
+    return snap->position_ms > prefix ? snap->position_ms - prefix : 0u;
+}
+
+static int save_snapshot_progress(audiobook_db *db, const audiobook_config *cfg, const book_row *book,
+                                  const track_list *tracks, const player_snapshot *snap, bool completed,
+                                  int64_t completed_at, bool force_write) {
+    if (!db || !cfg || !book || !snap || snap->book_id == 0) return -1;
+
+    progress_row existing;
+    memset(&existing, 0, sizeof(existing));
+    bool have_existing = db_get_progress(db, book->book_id, &existing) == 0;
+
+    uint64_t local_position = snapshot_local_position_ms(snap, tracks);
+    uint64_t duration_ms = track_duration_ms(tracks, snap->track_ordinal);
+    if (duration_ms > 0 && local_position > duration_ms) local_position = duration_ms;
+
+    if (!force_write && have_existing && existing.protected_until_ms > 0 &&
+        existing.track_ordinal == snap->track_ordinal &&
+        local_position < (uint64_t)existing.protected_until_ms) {
+        return 0;
+    }
+
+    progress_row prog;
+    memset(&prog, 0, sizeof(prog));
+    prog.book_id = book->book_id;
+    prog.track_id = snap->track_id;
+    prog.track_ordinal = snap->track_ordinal > 0 ? snap->track_ordinal : 1;
+    prog.position_ms = (int64_t)local_position;
+    prog.total_book_elapsed_ms = (int64_t)snap->position_ms;
+    prog.playback_speed = snap->speed;
+    prog.last_played_at = (int64_t)ab_now_ms();
+    prog.completed = completed ? 1 : 0;
+    prog.completed_at = completed ? (completed_at > 0 ? completed_at : (int64_t)time(NULL)) : 0;
+    prog.last_saved_at = prog.last_played_at;
+
+    if (!completed && have_existing && existing.track_ordinal == prog.track_ordinal && existing.protected_until_ms > 0) {
+        prog.protected_until_ms = local_position >= (uint64_t)existing.protected_until_ms ? 0 : existing.protected_until_ms;
+    } else if (!completed && have_existing) {
+        prog.protected_until_ms = existing.protected_until_ms;
+    }
+
+    if (db_set_progress_txn(db, &prog) != 0) return -1;
+    if (resume_write_record_atomic(cfg->app_root, &prog, book) != 0) return -1;
+    return 1;
 }
 
 int main(int argc, char **argv) {
@@ -123,6 +196,10 @@ int main(int argc, char **argv) {
             if (ipc_fd >= 0) ipc_send_event(ipc_fd, ev.type, ab_now_ms(), &ev);
         }
         if (snap.track_ordinal != prev_snap.track_ordinal && snap.track_ordinal > 0) {
+            const book_row *book = active_book(&ui);
+            if (book && prev_snap.book_id == snap.book_id && prev_snap.track_ordinal > 0) {
+                (void)save_snapshot_progress(&db, &cfg, book, &ui.tracks, &prev_snap, false, 0, false);
+            }
             audiobook_event ev = {0};
             ev.type = AB_EVT_TRACK_CHANGED;
             ev.book_id = (uint32_t)snap.book_id;
@@ -131,6 +208,10 @@ int main(int argc, char **argv) {
             if (ipc_fd >= 0) ipc_send_event(ipc_fd, ev.type, ab_now_ms(), &ev);
         }
         if (snap.state == PLAYER_PAUSED && prev_snap.state == PLAYER_PLAYING) {
+            const book_row *book = active_book(&ui);
+            if (book && snap.book_id == book->book_id) {
+                (void)save_snapshot_progress(&db, &cfg, book, &ui.tracks, &snap, false, 0, false);
+            }
             audiobook_event ev = {0};
             ev.type = AB_EVT_PAUSED;
             ev.book_id = (uint32_t)snap.book_id;
@@ -146,49 +227,52 @@ int main(int argc, char **argv) {
             ev.book_id = (uint32_t)snap.book_id;
             ev.track_ordinal = (uint32_t)snap.track_ordinal;
             ev.position_ms = (uint32_t)snap.position_ms;
+            const book_row *book = active_book(&ui);
+            if (book && snap.book_id == book->book_id && ui.tracks.count > 0 &&
+                (size_t)snap.track_ordinal == ui.tracks.count) {
+                int64_t completed_at = (int64_t)time(NULL);
+                if (save_snapshot_progress(&db, &cfg, book, &ui.tracks, &snap, true, completed_at, true) > 0) {
+                    (void)db_mark_book_completed(&db, book->book_id, completed_at);
+                    (void)ui_load_continue(&ui, &db);
+                    (void)ui_load_finished(&ui, &db);
+                }
+            }
             if (ipc_fd >= 0) ipc_send_event(ipc_fd, ev.type, ab_now_ms(), &ev);
         }
-        if (ab_now_ms() - last_tick > cfg.save_interval_ms && ui.selected_book >= 0 &&
-            (size_t)ui.selected_book < ui.books.count) {
-            progress_row prog;
-            memset(&prog, 0, sizeof(prog));
-            prog.book_id = snap.book_id ? snap.book_id : ui.books.items[ui.selected_book].book_id;
-            prog.track_id = snap.track_id;
-            prog.track_ordinal = snap.track_ordinal;
-            prog.position_ms = (int64_t)snap.position_ms;
-            prog.playback_speed = snap.speed;
-            prog.last_played_at = (int64_t)ab_now_ms();
-            db_set_progress_txn(&db, &prog);
-            resume_write_record_atomic(cfg.app_root, &prog, &ui.books.items[ui.selected_book]);
-            if (ipc_fd >= 0) {
-                audiobook_event ev = {0};
-                ev.type = AB_EVT_POSITION_TICK;
-                ev.book_id = (uint32_t)prog.book_id;
-                ev.track_id = (uint32_t)prog.track_id;
-                ev.track_ordinal = (uint32_t)prog.track_ordinal;
-                ev.position_ms = (uint32_t)prog.position_ms;
-                ev.duration_ms = (uint32_t)snap.duration_ms;
-                ev.playback_speed_x100 = (uint32_t)(prog.playback_speed * 100.0f);
-                ipc_send_event(ipc_fd, ev.type, ab_now_ms(), &ev);
+        if (ab_now_ms() - last_tick > cfg.save_interval_ms) {
+            const book_row *book = active_book(&ui);
+            if (book && snap.book_id == book->book_id) {
+                (void)save_snapshot_progress(&db, &cfg, book, &ui.tracks, &snap, false, 0, false);
+                if (ipc_fd >= 0) {
+                    audiobook_event ev = {0};
+                    ev.type = AB_EVT_POSITION_TICK;
+                    ev.book_id = (uint32_t)book->book_id;
+                    ev.track_id = (uint32_t)snap.track_id;
+                    ev.track_ordinal = (uint32_t)snap.track_ordinal;
+                    ev.position_ms = (uint32_t)snap.position_ms;
+                    ev.duration_ms = (uint32_t)snap.duration_ms;
+                    ev.playback_speed_x100 = (uint32_t)(snap.speed * 100.0f);
+                    ipc_send_event(ipc_fd, ev.type, ab_now_ms(), &ev);
+                }
+                last_tick = ab_now_ms();
             }
-            last_tick = ab_now_ms();
         }
         prev_snap = snap;
     }
 
-    if (ui.selected_book >= 0 && (size_t)ui.selected_book < ui.books.count) {
+    const book_row *book = active_book(&ui);
+    if (book) {
         audiobook_event ev = {.type = AB_EVT_APP_EXITING};
-        ev.book_id = (uint32_t)ui.books.items[ui.selected_book].book_id;
-        snprintf(ev.book_key, sizeof(ev.book_key), "%s", ui.books.items[ui.selected_book].book_key);
-        progress_row prog;
-        memset(&prog, 0, sizeof(prog));
-        prog.book_id = snap.book_id ? snap.book_id : ui.books.items[ui.selected_book].book_id;
-        prog.track_id = snap.track_id;
-        prog.track_ordinal = snap.track_ordinal > 0 ? snap.track_ordinal : 1;
-        prog.position_ms = (int64_t)snap.position_ms;
-        prog.playback_speed = snap.speed;
-        db_set_progress_txn(&db, &prog);
-        resume_write_record_atomic(cfg.app_root, &prog, &ui.books.items[ui.selected_book]);
+        ev.book_id = (uint32_t)book->book_id;
+        snprintf(ev.book_key, sizeof(ev.book_key), "%s", book->book_key);
+        if (snap.book_id == book->book_id) {
+            (void)save_snapshot_progress(&db, &cfg, book, &ui.tracks, &snap,
+                                         snap.eof_reached && ui.tracks.count > 0 &&
+                                         (size_t)snap.track_ordinal == ui.tracks.count,
+                                         (int64_t)time(NULL),
+                                         snap.eof_reached && ui.tracks.count > 0 &&
+                                         (size_t)snap.track_ordinal == ui.tracks.count);
+        }
         if (ipc_fd >= 0) ipc_send_event(ipc_fd, ev.type, ab_now_ms(), &ev);
     }
 

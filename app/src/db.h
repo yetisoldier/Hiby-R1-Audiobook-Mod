@@ -98,14 +98,17 @@ int db_upsert_book(audiobook_db *adb, const book_row *book, int64_t *out_book_id
 int db_upsert_track(audiobook_db *adb, const track_row *track, int64_t *out_track_id);
 int db_set_progress(audiobook_db *adb, const progress_row *progress);
 int db_set_progress_txn(audiobook_db *adb, const progress_row *progress);
+int db_set_book_completion_txn(audiobook_db *adb, int64_t book_id, int completed, int64_t completed_at, int64_t last_played_at);
 int db_get_progress(audiobook_db *adb, int64_t book_id, progress_row *progress);
 int db_query_titles(audiobook_db *adb, book_list *out);
 int db_query_continue(audiobook_db *adb, book_list *out);
+int db_query_finished(audiobook_db *adb, book_list *out);
 int db_query_chapters(audiobook_db *adb, int64_t book_id, track_list *out);
 int db_search(audiobook_db *adb, const char *needle, book_list *out);
 int db_list_bookmarks(audiobook_db *adb, int64_t book_id, bookmark_list *out);
 int db_add_bookmark(audiobook_db *adb, int64_t book_id, int64_t track_id, int64_t position_ms, const char *label);
 int db_delete_bookmark(audiobook_db *adb, int64_t bookmark_id);
+int db_mark_book_completed(audiobook_db *adb, int64_t book_id, int64_t completed_at);
 void db_free_book_list(book_list *list);
 void db_free_track_list(track_list *list);
 void db_free_bookmark_list(bookmark_list *list);
