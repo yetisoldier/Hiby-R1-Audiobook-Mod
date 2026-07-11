@@ -51,8 +51,7 @@ int decoder_open(audiobook_decoder *dec, const char *path) {
         return 0;
     }
 
-    if (ab_ends_with(path, ".mp3") || ab_ends_with(path, ".m4a") || ab_ends_with(path, ".m4b") ||
-        ab_ends_with(path, ".aac")) {
+    if (ab_ends_with(path, ".mp3")) {
         if (mp3dec_ex_open(&dec->u.mp3, path, MP3D_SEEK_TO_SAMPLE) != 0) return -1;
         dec->kind = DECODER_KIND_MP3;
         dec->sample_rate = (unsigned)(dec->u.mp3.info.hz > 0 ? dec->u.mp3.info.hz : 44100);
@@ -61,11 +60,8 @@ int decoder_open(audiobook_decoder *dec, const char *path) {
         return 0;
     }
 
-    dec->kind = DECODER_KIND_SILENCE;
-    dec->sample_rate = 44100;
-    dec->channels = 2;
-    dec->total_frames = 0;
-    return 0;
+    errno = ENOTSUP;
+    return -1;
 }
 
 void decoder_close(audiobook_decoder *dec) {

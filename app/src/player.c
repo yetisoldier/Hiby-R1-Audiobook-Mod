@@ -33,7 +33,7 @@ static uint64_t track_duration_ms_locked(const playback_queue *queue, size_t ind
     return queue->tracks[index].duration_ms > 0 ? (uint64_t)queue->tracks[index].duration_ms : 0u;
 }
 
-static uint64_t resume_seek_ms_locked(const playback_queue *queue, const progress_row *resume) {
+uint64_t player_resume_seek_ms(const playback_queue *queue, const progress_row *resume) {
     if (!queue || !resume || resume->completed || resume->track_ordinal <= 0) return 0;
     size_t index = (size_t)(resume->track_ordinal - 1);
     if (index >= queue->track_count) return 0;
@@ -268,8 +268,8 @@ int player_open_book(audiobook_player *player, const book_row *book, const track
     player->book_id = book->book_id;
     player->total_duration_ms = total_duration_ms(&player->queue);
     player->speed = resume && resume->playback_speed > 0.0f ? resume->playback_speed : player->cfg.default_speed;
-    player->pending_seek = true;
-    player->pending_seek_ms = resume_seek_ms_locked(&player->queue, resume);
+    player->pending_seek_ms = resume ? player_resume_seek_ms(&player->queue, resume) : 0u;
+    player->pending_seek = resume && !resume->completed && player->pending_seek_ms > 0;
     player->eof_reached = false;
     player->state = PLAYER_PAUSED;
     refresh_snapshot_locked(player);
@@ -363,6 +363,7 @@ int player_poll(audiobook_player *player, player_snapshot *out) {
     out->track_id = player->track_id;
     out->track_ordinal = player->track_ordinal;
     out->position_ms = player->position_ms;
+    out->track_position_ms = player->current_track_position_ms;
     out->duration_ms = player->duration_ms;
     out->speed = player->speed;
     out->eof_reached = player->eof_reached;

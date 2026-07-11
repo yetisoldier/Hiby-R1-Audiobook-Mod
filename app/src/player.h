@@ -23,6 +23,7 @@ typedef struct player_snapshot {
     int64_t track_id;
     int track_ordinal;
     uint64_t position_ms;
+    uint64_t track_position_ms;
     uint64_t duration_ms;
     float speed;
     bool eof_reached;
@@ -71,5 +72,6 @@ int player_set_speed(audiobook_player *player, float speed);
 int player_next_track(audiobook_player *player);
 int player_previous_track(audiobook_player *player);
 int player_poll(audiobook_player *player, player_snapshot *out);
+uint64_t player_resume_seek_ms(const playback_queue *queue, const progress_row *resume);
 
 #endif

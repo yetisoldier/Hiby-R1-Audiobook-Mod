@@ -79,6 +79,7 @@ def compile_helper(source: str, out: Path, extra: list[str]) -> None:
     cmd = [
         str(ZIG), "cc",
         "-std=c11", "-Wall", "-Wextra", "-O2",
+        "-D_POSIX_C_SOURCE=200809L", "-D_GNU_SOURCE",
         "-I", str(REPO / "app" / "src"),
         "-I", str(REPO / "app" / "assets"),
         str(src),
@@ -181,12 +182,12 @@ def test_ipc_protocol() -> None:
             conn, _ = server.accept()
             with conn:
                 data = conn.recv(4096)
-                assert len(data) >= struct.calcsize("<IHHIQ")
-                header = struct.unpack_from("<IHHIQ", data, 0)
+                assert len(data) >= struct.calcsize("<IHHI4xQ")
+                header = struct.unpack_from("<IHHI4xQ", data, 0)
                 assert header[0] == 0x50494241
                 assert header[1] == 1
                 assert header[2] == 1
-                reply = struct.pack("<IHHIQ", 0x50494241, 1, 2, 0, 99)
+                reply = struct.pack("<IHHI4xQ", 0x50494241, 1, 2, 0, 99)
                 conn.sendall(reply)
             code = proc.wait(timeout=10)
             assert code == 0, code

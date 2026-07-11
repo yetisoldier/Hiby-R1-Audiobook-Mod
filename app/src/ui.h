@@ -11,10 +11,13 @@
 
 typedef enum {
     UI_SCREEN_HOME = 0,
+    UI_SCREEN_CONTINUE,
     UI_SCREEN_TITLES,
     UI_SCREEN_NOW_PLAYING,
     UI_SCREEN_CHAPTERS,
     UI_SCREEN_FINISHED,
+    UI_SCREEN_SETTINGS,
+    UI_SCREEN_BOOKMARKS,
 } ui_screen_id;
 
 typedef struct ui_context {
@@ -26,16 +29,22 @@ typedef struct ui_context {
     book_list books;
     track_list tracks;
     cover_art cover;
+    book_list continue_books;
+    book_list finished_books;
+    bookmark_list bookmarks;
     int selected_book;
     int selected_track;
+    int scroll;
 } ui_context;
 
 int ui_init(ui_context *ui, const audiobook_config *cfg);
 void ui_shutdown(ui_context *ui);
 int ui_load_titles(ui_context *ui, audiobook_db *db);
+int ui_load_continue(ui_context *ui, audiobook_db *db);
+int ui_load_finished(ui_context *ui, audiobook_db *db);
+int ui_load_bookmarks(ui_context *ui, audiobook_db *db);
 int ui_load_book(ui_context *ui, audiobook_db *db, int index);
 int ui_render(ui_context *ui, const audiobook_player *player);
 int ui_handle_touch(ui_context *ui, const touch_event *ev, audiobook_player *player, audiobook_db *db, resume_state *resume);
 
 #endif
-
