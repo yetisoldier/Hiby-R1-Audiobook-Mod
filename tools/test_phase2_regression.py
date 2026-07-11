@@ -51,26 +51,30 @@ def main():
                         touch_refs.append(f"{f}:{i}: {stripped}")
     check("no touch injection in source", len(touch_refs) == 0, str(touch_refs[:3]))
     
-    # 3. Direct-open patch exists in patcher
-    print("[3] Direct-open patch in patcher")
+    # 3. Direct-open bypass removed; arm-window config added
+    print("[3] Arm-window runtime plumbing")
     sys.path.insert(0, os.path.join(repo, "tools"))
     try:
-        from patch_hiby_player import AUDIOBOOK_DIRECT_OPEN_PATCHES, AUDIOBOOK_DIRECT_OPEN_CAVE_OFFSET
-        check("AUDIOBOOK_DIRECT_OPEN_PATCHES defined", len(AUDIOBOOK_DIRECT_OPEN_PATCHES) == 2)
-        check("cave at 0x360F00", AUDIOBOOK_DIRECT_OPEN_CAVE_OFFSET == 0x360F00)
-        
-        # Check the entry point patch at 0x540A80
-        entry_patch = [p for p in AUDIOBOOK_DIRECT_OPEN_PATCHES if p[0] == 0x540A80]
-        check("entry point patch at 0x540A80", len(entry_patch) == 1)
-        check("entry patch is 8 bytes (j + nop)", len(entry_patch[0][2]) == 8)
-        
-        # Check the cave patch
-        cave_patch = [p for p in AUDIOBOOK_DIRECT_OPEN_PATCHES if p[0] == 0x360F00]
-        check("cave patch at 0x360F00", len(cave_patch) == 1)
-        check("cave patch > 200 bytes", len(cave_patch[0][2]) > 200)
-        
+        import patch_hiby_player as ph
+        check("direct-open patch removed", not hasattr(ph, "AUDIOBOOK_DIRECT_OPEN_PATCHES"))
+        check("direct-open cave removed", not hasattr(ph, "AUDIOBOOK_DIRECT_OPEN_CAVE_OFFSET"))
     except ImportError as e:
         check("patcher imports", False, str(e))
+
+    config_c = os.path.join(src_dir, "config.c")
+    with open(config_c) as f:
+        content = f.read()
+    check("arm window env added", "AUDIOBOOK_ARM_WINDOW_MS" in content)
+    check("arm poll env added", "AUDIOBOOK_ARM_POLL_MS" in content)
+    check("direct-open disabled by default", "book_title_direct_open_enabled               = 0" in content)
+
+    state_c = os.path.join(src_dir, "state.c")
+    with open(state_c) as f:
+        content = f.read()
+    check("monotonic arm clock used", "CLOCK_MONOTONIC" in content)
+    check("arm window deadline tracked", "book_title_arm_deadline_ms" in content)
+    check("arm window polling tracked", "book_title_arm_next_poll_ms" in content)
+    check("arm window burst present", "state_arm_window_burst" in content)
     
     # 4. State machine has new states
     print("[4] Event-driven state machine")

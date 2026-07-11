@@ -70,6 +70,9 @@ typedef struct {
     char     book_title_pre_restore_log_key[128];
     uint32_t last_book_title_seq;
     time_t   last_book_title_marker_poll_at;
+    uint64_t book_title_arm_deadline_ms;
+    uint64_t book_title_arm_next_poll_ms;
+    bool     book_title_arm_active;
 
     char     restore_failed_path[512];
     time_t   restore_failed_at;

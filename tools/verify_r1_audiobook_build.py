@@ -367,7 +367,9 @@ NEW_FILE_MODE_CHECKS = {
     "squashfs-root/etc/r1_audiobook_version": "-rw-r--r--",
     "squashfs-root/usr/bin/r1_audiobook_resume_helper": "-rwxr-xr-x",
     "squashfs-root/usr/bin/r1_audiobook_direct_open": "-rwxr-xr-x",
+    "squashfs-root/usr/bin/r1_audiobook_resume_daemon": "-rwxr-xr-x",
     "squashfs-root/usr/bin/r1_audiobook_resume_daemon.sh": "-rwxr-xr-x",
+    "squashfs-root/usr/bin/r1_audiobook_resume_daemon_shell.sh": "-rwxr-xr-x",
     "squashfs-root/usr/bin/r1_touch_next_event1.bin": "-rw-r--r--",
     "squashfs-root/usr/bin/r1_touch_first_track_event1.bin": "-rw-r--r--",
     "squashfs-root/usr/bin/r1_touch_first_track_down_event1.bin": "-rw-r--r--",
@@ -471,6 +473,23 @@ def require(condition: bool, message: str, failures: list[str]) -> None:
     else:
         print(f"FAIL {message}")
         failures.append(message)
+
+
+def assert_ascii_shell_wrapper(path: Path, label: str, failures: list[str]) -> None:
+    """Verify that *path* is ASCII shell text starting with #!/bin/sh."""
+    if not path.exists():
+        require(False, f"{label} exists", failures)
+        return
+
+    data = path.read_bytes()
+    require(not data.startswith(b"\x7fELF"), f"{label} is not ELF", failures)
+    require(b"\x00" not in data, f"{label} has no NUL bytes", failures)
+    try:
+        text = data.decode("ascii")
+    except UnicodeDecodeError:
+        require(False, f"{label} is ASCII text", failures)
+        return
+    require(text.startswith("#!/bin/sh"), f"{label} starts with #!/bin/sh", failures)
 
 
 def read_ini_value(path: Path, key: str) -> str | None:
@@ -1191,9 +1210,16 @@ def verify(
         else:
             require(False, "db refresh script exists", failures)
 
-    daemon = root / "usr/bin/r1_audiobook_resume_daemon.sh"
-    if daemon.exists():
-        daemon_text = daemon.read_text(encoding="ascii", errors="replace")
+    daemon_binary = root / "usr/bin/r1_audiobook_resume_daemon"
+    daemon_wrapper = root / "usr/bin/r1_audiobook_resume_daemon.sh"
+    daemon_shell = root / "usr/bin/r1_audiobook_resume_daemon_shell.sh"
+    require(daemon_binary.exists(), "compiled resume daemon binary present", failures)
+    if daemon_binary.exists():
+        require(os.access(daemon_binary, os.X_OK), "compiled resume daemon binary is executable", failures)
+    assert_ascii_shell_wrapper(daemon_wrapper, "resume daemon wrapper", failures)
+    assert_ascii_shell_wrapper(daemon_shell, "resume daemon shell fallback", failures)
+    if daemon_shell.exists():
+        daemon_text = daemon_shell.read_text(encoding="ascii", errors="replace")
         require("BOOK_TITLE_MARKER_ADDR=${AUDIOBOOK_BOOK_TITLE_MARKER_ADDR:-9322496}" in daemon_text, "daemon marker address is 0x8E4000", failures)
         require("NEW_TRACK_COMMIT_MS=${AUDIOBOOK_NEW_TRACK_COMMIT_MS:-15000}" in daemon_text, "daemon defaults to 15s new-track commit guard", failures)
         require("SAVE_BUCKET_MS=${AUDIOBOOK_SAVE_BUCKET_MS:-15000}" in daemon_text, "daemon defaults to 15s steady-state save cadence", failures)
@@ -1223,6 +1249,9 @@ def verify(
         require("pid_mem_first_catalog_path" in daemon_text, "daemon can identify selected track list from catalog paths", failures)
         require("MEMSCAN_HELPER=${AUDIOBOOK_MEMSCAN_HELPER:-$BASE_DIR/bin/r1_audiobook_memscan}" in daemon_text, "daemon defines memscan helper", failures)
         require("DIRECT_OPEN_HELPER=${AUDIOBOOK_DIRECT_OPEN_HELPER:-$BASE_DIR/bin/r1_audiobook_direct_open}" in daemon_text, "daemon defines direct-open helper", failures)
+        require("BOOK_TITLE_DIRECT_OPEN_ENABLED=${AUDIOBOOK_BOOK_TITLE_DIRECT_OPEN_ENABLED:-0}" in daemon_text, "daemon defaults direct-open off", failures)
+        require("ARM_WINDOW_MS=${AUDIOBOOK_ARM_WINDOW_MS:-1000}" in daemon_text, "daemon exposes arm window duration", failures)
+        require("ARM_POLL_MS=${AUDIOBOOK_ARM_POLL_MS:-200}" in daemon_text, "daemon exposes arm poll interval", failures)
         require("book_title_direct_open_row_override" in daemon_text, "daemon includes one-shot direct-open row override", failures)
         require("book-title direct-open-start" in daemon_text, "daemon uses direct-open during title-list pre-play start", failures)
         require("DIRECT_OPEN_ARM_DELAY_US=${AUDIOBOOK_DIRECT_OPEN_ARM_DELAY_US:-200000}" in daemon_text, "daemon defaults direct-open arm delay to 200 ms", failures)

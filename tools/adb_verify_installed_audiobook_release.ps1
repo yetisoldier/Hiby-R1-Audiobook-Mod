@@ -189,7 +189,7 @@ if ([string]::IsNullOrWhiteSpace($daemonText)) {
 Write-Host "OK   resume daemon is running"
 Assert-SingleTopLevelScriptProcess "[r]1_audiobook_resume_daemon" "resume daemon" "resume_daemon_root_pids.txt" "/usr/data/audiobooks/resume-daemon.pid"
 
-$runtimeDaemonScript = Invoke-AdbText "cat /usr/data/audiobooks/bin/r1_audiobook_resume_daemon.sh 2>/dev/null || cat /usr/bin/r1_audiobook_resume_daemon.sh 2>/dev/null"
+$runtimeDaemonScript = Invoke-AdbText "cat /usr/data/audiobooks/bin/r1_audiobook_resume_daemon_shell.sh 2>/dev/null || cat /usr/bin/r1_audiobook_resume_daemon_shell.sh 2>/dev/null"
 Set-Content -LiteralPath (Join-Path $verifyDir "runtime_resume_daemon.sh") -Value $runtimeDaemonScript
 Assert-Contains $runtimeDaemonScript 'LOG_MAX_BYTES=${AUDIOBOOK_RESUME_LOG_MAX_BYTES:-524288}' "runtime resume daemon"
 Assert-Contains $runtimeDaemonScript "rotate_log_if_needed" "runtime resume daemon"

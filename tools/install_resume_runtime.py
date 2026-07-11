@@ -151,7 +151,9 @@ def install_runtime(args: argparse.Namespace) -> None:
     helper_path = require_path(Path(args.helper_source))
     memscan_path = require_path(Path(args.memscan_helper_source))
     direct_open_path = require_path(Path(args.direct_open_helper_source))
-    daemon_path = require_path(Path(args.daemon_source))
+    daemon_binary_path = require_path(Path(args.daemon_source))
+    daemon_wrapper_path = require_path(Path(args.daemon_wrapper_source))
+    daemon_shell_path = require_path(Path(args.daemon_shell_source))
 
     catalog_path: Path | None = None
     if args.catalog_source:
@@ -250,7 +252,7 @@ def install_runtime(args: argparse.Namespace) -> None:
     track_restore_value = "1" if (args.restore_enabled and not args.disable_track_restore) else "0"
     direct_track_select_value = "0" if args.disable_book_title_direct_track_select else "1"
     direct_track_preplay_value = "0" if args.disable_book_title_direct_track_preplay else "1"
-    direct_open_value = "0" if args.disable_book_title_direct_open else "1"
+    direct_open_value = "0"
     book_title_memscan_value = "0" if args.disable_book_title_memscan else "1"
     book_title_direct_track_calibrate_value = "0" if args.disable_book_title_direct_track_calibrate else "1"
     book_title_direct_track_recovery_value = "0" if args.disable_book_title_direct_track_recovery else "1"
@@ -270,7 +272,9 @@ def install_runtime(args: argparse.Namespace) -> None:
     adb_run(adb, ["push", str(helper_path), f"{remote_base}/bin/r1_audiobook_resume_helper"])
     adb_run(adb, ["push", str(memscan_path), f"{remote_base}/bin/r1_audiobook_memscan"])
     adb_run(adb, ["push", str(direct_open_path), f"{remote_base}/bin/r1_audiobook_direct_open"])
-    adb_run(adb, ["push", str(daemon_path), f"{remote_base}/bin/r1_audiobook_resume_daemon.sh"])
+    adb_run(adb, ["push", str(daemon_binary_path), f"{remote_base}/bin/r1_audiobook_resume_daemon"])
+    adb_run(adb, ["push", str(daemon_wrapper_path), f"{remote_base}/bin/r1_audiobook_resume_daemon.sh"])
+    adb_run(adb, ["push", str(daemon_shell_path), f"{remote_base}/bin/r1_audiobook_resume_daemon_shell.sh"])
 
     # Push catalog if provided
     if catalog_path:
@@ -307,6 +311,8 @@ def install_runtime(args: argparse.Namespace) -> None:
         "AUDIOBOOK_DIRECT_OPEN_SCRATCH_ADDR='0x8e4400'",
         "AUDIOBOOK_DIRECT_OPEN_TIMEOUT_MS='6000'",
         "AUDIOBOOK_DIRECT_OPEN_ARM_DELAY_US='200000'",
+        "AUDIOBOOK_ARM_WINDOW_MS='1000'",
+        "AUDIOBOOK_ARM_POLL_MS='200'",
         f"AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_MAX_SWIPES='{args.book_title_direct_track_max_swipes}'",
         f"AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_VISIBLE_ROWS='{args.book_title_direct_track_visible_rows}'",
         f"AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_ROWS_PER_SWIPE='{args.book_title_direct_track_rows_per_swipe}'",
@@ -348,7 +354,9 @@ def install_runtime(args: argparse.Namespace) -> None:
         f"chmod 755 '{remote_base}/bin/r1_audiobook_resume_helper' "
         f"'{remote_base}/bin/r1_audiobook_memscan' "
         f"'{remote_base}/bin/r1_audiobook_direct_open' "
-        f"'{remote_base}/bin/r1_audiobook_resume_daemon.sh'; "
+        f"'{remote_base}/bin/r1_audiobook_resume_daemon' "
+        f"'{remote_base}/bin/r1_audiobook_resume_daemon.sh' "
+        f"'{remote_base}/bin/r1_audiobook_resume_daemon_shell.sh'; "
         f"old_pid=$(cat '{remote_base}/resume-daemon.pid' 2>/dev/null || true); "
         '[ -n "$old_pid" ] && kill "$old_pid" 2>/dev/null || true; '
         f"start-stop-daemon -K -p '{remote_base}/resume-daemon.ssd.pid' 2>/dev/null || true; "
@@ -396,8 +404,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--daemon-source",
+        default="build/r1_audiobook_resume_daemon",
+        help="Local path to the compiled resume daemon binary.",
+    )
+    parser.add_argument(
+        "--daemon-wrapper-source",
+        default="tools/r1_audiobook_resume_daemon_wrapper.sh",
+        help="Local path to the resume daemon wrapper script.",
+    )
+    parser.add_argument(
+        "--daemon-shell-source",
         default="tools/r1_audiobook_resume_daemon.sh",
-        help="Local path to the resume daemon shell script.",
+        help="Local path to the resume daemon shell fallback.",
     )
     parser.add_argument("--catalog-source", default="", help="Local path to a resume catalog TSV.")
     parser.add_argument("--restore-enabled", action="store_true", help="Enable bookmark restore on startup.")

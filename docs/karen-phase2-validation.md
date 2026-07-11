@@ -162,3 +162,114 @@ The code builds and the regression suite passes, but the daemon still needs:
 - and cleanup of the unsafe copy patterns.
 
 Until those are fixed, I would not flash this to hardware.
+
+## Re-validation After Fixes
+
+I re-read the current `src/state.c`, `src/state.h`, and `src/resume.c` directly and reran the build and regression checks. I did not rely on the earlier report.
+
+1. State machine states reachable: **FAIL**
+   - The new transitions are present for `STATE_IDLE -> STATE_BOOK_OPENED -> STATE_TRACK_LOADING -> STATE_TRACK_READY -> STATE_TRACKING`.
+   - However, `STATE_BOOK_COMPLETED` is still not practically reachable because the completion branch depends on `rt->last_position_ms >= pos`, and `last_position_ms` is never assigned anywhere in `src/`.
+   - Result:
+     - The transition chain is incomplete.
+     - `STATE_BOOK_COMPLETED` remains effectively dead in normal execution.
+
+2. Completion detection only on natural EOF: **FAIL**
+   - The new guard does require both `pos >= dur` and `rt->last_position_ms >= pos`.
+   - That is the right shape for avoiding near-end seeks, but the fix is not complete because `last_position_ms` is never updated in the source tree.
+   - Result:
+     - A seek near the end will not incorrectly complete the book.
+     - But neither will natural EOF, because the second half of the guard cannot become true.
+
+3. `strncpy` NUL termination: **FAIL**
+   - Several copies are now correctly terminated, and some copies into zero-initialized buffers are safe by construction.
+   - But three runtime string fields in `state.c` still lack an explicit terminating write after `strncpy(..., size - 1)`:
+     - `book_title_restore_wait_log_key`
+     - `book_title_pre_restore_log_key`
+     - `book_title_autostart_reset_key`
+   - Result:
+     - The fix reduced the problem, but it did not fully eliminate the unsafe pattern.
+
+4. New issues introduced by the fixes: **YES**
+   - `last_position_ms` is read by the completion logic but never written, which makes the new EOF gate non-functional.
+   - The string-copy audit still shows missing terminators on runtime fields in `state.c`.
+   - The `strncpy` updates in `resume.c` are mostly fine because the destination structs/buffers are zeroed first, but that does not compensate for the remaining `state.c` misses.
+
+5. Build and regression validation: **PASS**
+   - Compile command:
+     - `/home/yetisoldier/tools/zig/zig cc -target mipsel-linux-musleabi -Os -static -s -Wall -Wextra -o /tmp/karen_revalidate src/*.c`
+   - Result:
+     - compiled cleanly
+   - Regression command:
+     - `python3 tools/test_phase2_regression.py`
+   - Result:
+     - 19 PASS, 0 FAIL
+   - Binary size:
+     - `/tmp/karen_revalidate` = `141492` bytes
+     - Under the `150 KB` limit
+
+## Re-validation Verdict
+
+**ISSUES REMAIN**
+
+My independent assessment is that the fixes are not complete enough for release:
+- the state machine still has a dead completion path,
+- the EOF completion guard is not actually live,
+- and the string-copy cleanup is incomplete in `state.c`.
+
+## Final Re-validation
+
+1. `last_position_ms` tracking and EOF guard: **PASS**
+   - `pos_stopped` is computed before the assignment:
+     - [`src/state.c`](./src/state.c): 592-596
+   - `rt->last_position_ms` is assigned immediately after the comparison:
+     - [`src/state.c`](./src/state.c): 595-596
+   - The natural-EOF completion gate uses `pos_stopped`:
+     - [`src/state.c`](./src/state.c): 755-759
+   - Result:
+     - The guard now matches the intended logic: natural EOF is detected by observing that playback position stopped advancing.
+
+2. `strncpy` NUL termination audit: **FAIL**
+   - Verified terminated sites in `src/state.c`:
+     - `book_title_restore_wait_log_key`: [`src/state.c`](./src/state.c): 151-153
+     - `book_title_pre_restore_log_key`: [`src/state.c`](./src/state.c): 165-167
+     - `book_title_autostart_reset_key`: [`src/state.c`](./src/state.c): 620-622
+     - `last_path`, `restored_path`, `completed_saved_path`, `deferred_overwrite_path`, and the other bounded copies are also explicitly terminated in their immediate follow-up lines.
+   - Verified terminated sites in `src/resume.c`:
+     - `rec->book_id`, `rec->book_key`, `rec->root_hiby_path`, `rec->current_path`, `rec->chapter_title`, `rec->updated_at`: [`src/resume.c`](./src/resume.c): 219-240
+     - local `book_id`: [`src/resume.c`](./src/resume.c): 323-324
+     - `dir`: [`src/resume.c`](./src/resume.c): 410-411
+     - `failure_path`, `failure_kind`, `failure_key`: [`src/resume.c`](./src/resume.c): 565-582
+     - `failure_path` and `failure_kind` in the track-failure path: [`src/resume.c`](./src/resume.c): 592-598
+   - Remaining issue:
+     - `tmpl.book_key` and `tmpl.chapter_title` in the natural-EOF completion block still lack an immediate `dest[sizeof(dest) - 1] = 0;` after `strncpy`:
+       - [`src/state.c`](./src/state.c): 774-780
+   - Result:
+     - The termination audit is not fully clean yet. The completion-path template copies still need the explicit NUL write.
+
+3. Compile and regression: **PASS**
+   - Compile command:
+     - `/home/yetisoldier/tools/zig/zig cc -target mipsel-linux-musleabi -Os -static -s -Wall -Wextra -o /tmp/karen_final /home/yetisoldier/projects/hiby-r1-codex/src/*.c`
+   - Result:
+     - zero errors
+     - zero warnings
+   - Regression command:
+     - `python3 tools/test_phase2_regression.py`
+   - Result:
+     - 19 PASS, 0 FAIL
+   - Binary size:
+     - `/tmp/karen_final` = `141540` bytes
+     - under the `150 KB` limit
+
+4. Overall verdict: **ISSUES REMAIN**
+   - The `last_position_ms` EOF guard is now implemented correctly.
+   - The build, regression, and size checks all pass.
+   - The final blocker is the remaining missing NUL termination on `tmpl.book_key` and `tmpl.chapter_title` in `src/state.c`.
+
+## Karen Sign-Off
+
+PASS: `src/state.c` now has explicit NUL termination after both `strncpy` calls for `tmpl.book_key` and `tmpl.chapter_title`.
+PASS: `/home/yetisoldier/tools/zig/zig cc -target mipsel-linux-musleabi -Os -static -s -Wall -Wextra -o /tmp/karen_signoff src/*.c`
+PASS: `python3 tools/test_phase2_regression.py` = 19/19
+
+Final verdict: READY TO FLASH

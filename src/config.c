@@ -88,6 +88,8 @@ static const config_field FIELDS[] = {
     FIELD("AUDIOBOOK_DIRECT_OPEN_SCRATCH_ADDR",  "DIRECT_OPEN_SCRATCH_ADDR", CFG_U32, direct_open_scratch_addr, 4096, 0xFFFFFFFF),
     FIELD("AUDIOBOOK_DIRECT_OPEN_TIMEOUT_MS",    "DIRECT_OPEN_TIMEOUT_MS",   CFG_U32, direct_open_timeout_ms,    100, 30000),
     FIELD("AUDIOBOOK_DIRECT_OPEN_ARM_DELAY_US",  "DIRECT_OPEN_ARM_DELAY_US", CFG_U32, direct_open_arm_delay_us,  0, 5000000),
+    FIELD("AUDIOBOOK_ARM_WINDOW_MS",             "ARM_WINDOW_MS",            CFG_U32, book_title_arm_window_ms, 100, 30000),
+    FIELD("AUDIOBOOK_ARM_POLL_MS",               "ARM_POLL_MS",              CFG_U32, book_title_arm_poll_ms,   25, 5000),
 
     /* Book-title autostart */
     FIELD("AUDIOBOOK_BOOK_TITLE_AUTOSTART_ENABLED",               "BOOK_TITLE_AUTOSTART_ENABLED",               CFG_BOOL, book_title_autostart_enabled,               0, 1),
@@ -199,6 +201,8 @@ static void set_defaults(daemon_config *c) {
     c->direct_open_scratch_addr               = 0x8e4400;
     c->direct_open_timeout_ms                 = 6000;
     c->direct_open_arm_delay_us               = 200000;
+    c->book_title_arm_window_ms               = 1000;
+    c->book_title_arm_poll_ms                 = 200;
 
     /* Book-title autostart */
     c->book_title_autostart_enabled                 = 1;
@@ -208,7 +212,7 @@ static void set_defaults(daemon_config *c) {
     c->book_title_direct_track_preplay_enabled      = 1;
     c->book_title_direct_track_calibrate_enabled    = 1;
     c->book_title_direct_track_recovery_transport_enabled = 1;
-    c->book_title_direct_open_enabled               = 1;
+    c->book_title_direct_open_enabled               = 0;
     c->book_title_direct_track_return_delay_seconds = 1;
     c->book_title_direct_track_visible_rows         = 5;
     c->book_title_direct_track_recovery_max_steps   = 20;
@@ -411,7 +415,7 @@ void config_log_summary(const daemon_config *c) {
     log_msg("start interval=%us idle=%us marker_idle=%us marker_music=%us diag=%us "
             "min_save=%ums bucket=%ums restore_before=%ums restore_min=%ums rewind=%ums "
             "smart_rewind=%d short=%ums medium=%ums long=%ums "
-            "position_addr=0x%x duration_addr=0x%x marker_addr=0x%x "
+            "position_addr=0x%x duration_addr=0x%x marker_addr=0x%x arm=%ums/%ums "
             "autostart=%d restore=%d track_restore=%d "
             "shadow=%d source_only=%d",
             c->interval_seconds, c->idle_interval_seconds,
@@ -421,6 +425,7 @@ void config_log_summary(const daemon_config *c) {
             c->smart_rewind_enabled, c->rewind_short_ms,
             c->rewind_medium_ms, c->rewind_long_ms,
             c->player_position_addr, c->player_duration_addr, c->book_title_marker_addr,
+            c->book_title_arm_window_ms, c->book_title_arm_poll_ms,
             c->book_title_autostart_enabled, c->restore_enabled, c->track_restore_enabled,
             c->shadow_mode, c->source_only);
 }
@@ -446,6 +451,8 @@ void config_print_help(void) {
         "  AUDIOBOOK_REWIND_SHORT_MS       5-minute pause rewind (default: 5000)\n"
         "  AUDIOBOOK_REWIND_MEDIUM_MS      1-hour pause rewind (default: 10000)\n"
         "  AUDIOBOOK_REWIND_LONG_MS        24h+/reboot rewind (default: 20000)\n"
+        "  AUDIOBOOK_ARM_WINDOW_MS         Title-marker arm window (default: 1000)\n"
+        "  AUDIOBOOK_ARM_POLL_MS           Title-marker arm poll interval (default: 200)\n"
         "  AUDIOBOOK_TRACK_RESTORE_ENABLED Enable track restore (default: 1)\n"
         "  AUDIOBOOK_SHADOW_MODE           Shadow/log-only mode (default: 0)\n"
         "  AUDIOBOOK_RESUME_DAEMON_SOURCE_ONLY  Source-only/test mode (default: 0)\n"

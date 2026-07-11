@@ -124,7 +124,9 @@ clear_stock_audiobook_last_file
 cp -f /usr/bin/r1_audiobook_resume_helper "$BASE/bin/r1_audiobook_resume_helper"
 cp -f /usr/bin/r1_audiobook_memscan "$BASE/bin/r1_audiobook_memscan"
 cp -f /usr/bin/r1_audiobook_direct_open "$BASE/bin/r1_audiobook_direct_open"
+cp -f /usr/bin/r1_audiobook_resume_daemon "$BASE/bin/r1_audiobook_resume_daemon"
 cp -f /usr/bin/r1_audiobook_resume_daemon.sh "$BASE/bin/r1_audiobook_resume_daemon.sh"
+cp -f /usr/bin/r1_audiobook_resume_daemon_shell.sh "$BASE/bin/r1_audiobook_resume_daemon_shell.sh"
 cp -f /usr/bin/r1_touch_next_event1.bin "$BASE/input/touch_next_event1.bin"
 cp -f /usr/bin/r1_touch_first_track_event1.bin "$BASE/input/touch_first_track_event1.bin"
 cp -f /usr/bin/r1_touch_first_track_down_event1.bin "$BASE/input/touch_first_track_down_event1.bin"
@@ -153,7 +155,7 @@ if [ ! -s "$BASE/catalog.tsv" ]; then
   fi
 fi
 
-chmod 755 "$BASE/bin/r1_audiobook_resume_helper" "$BASE/bin/r1_audiobook_memscan" "$BASE/bin/r1_audiobook_direct_open" "$BASE/bin/r1_audiobook_resume_daemon.sh"
+chmod 755 "$BASE/bin/r1_audiobook_resume_helper" "$BASE/bin/r1_audiobook_memscan" "$BASE/bin/r1_audiobook_direct_open" "$BASE/bin/r1_audiobook_resume_daemon" "$BASE/bin/r1_audiobook_resume_daemon.sh" "$BASE/bin/r1_audiobook_resume_daemon_shell.sh"
 for file in "$BASE/input/"*.bin; do
   if [ -e "$file" ]; then
     chmod 644 "$file"
@@ -187,6 +189,8 @@ AUDIOBOOK_DIRECT_OPEN_PROBE_ADDR=0x760708
 AUDIOBOOK_DIRECT_OPEN_SCRATCH_ADDR=0x8e4400
 AUDIOBOOK_DIRECT_OPEN_TIMEOUT_MS=6000
 AUDIOBOOK_DIRECT_OPEN_ARM_DELAY_US=200000
+AUDIOBOOK_ARM_WINDOW_MS=1000
+AUDIOBOOK_ARM_POLL_MS=200
 AUDIOBOOK_BOOK_TITLE_AUTOSTART_REQUIRE_PATH=1
 AUDIOBOOK_INTERVAL_SECONDS=2
 AUDIOBOOK_IDLE_INTERVAL_SECONDS=5
@@ -220,6 +224,7 @@ export AUDIOBOOK_BOOK_TITLE_MEMSCAN_ENABLED
 export AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_CALIBRATE_ENABLED AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_RECOVERY_TRANSPORT_ENABLED AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_RECOVERY_MAX_STEPS
 export AUDIOBOOK_BOOK_TITLE_DIRECT_OPEN_ENABLED AUDIOBOOK_DIRECT_OPEN_PROBE_ADDR AUDIOBOOK_DIRECT_OPEN_SCRATCH_ADDR
 export AUDIOBOOK_DIRECT_OPEN_TIMEOUT_MS AUDIOBOOK_DIRECT_OPEN_ARM_DELAY_US
+export AUDIOBOOK_ARM_WINDOW_MS AUDIOBOOK_ARM_POLL_MS
 export AUDIOBOOK_BOOK_TITLE_AUTOSTART_REQUIRE_PATH
 export AUDIOBOOK_INTERVAL_SECONDS AUDIOBOOK_IDLE_INTERVAL_SECONDS AUDIOBOOK_BOOK_TITLE_MARKER_IDLE_POLL_SECONDS AUDIOBOOK_BOOK_TITLE_MARKER_MUSIC_POLL_SECONDS
 export AUDIOBOOK_DIAGNOSTICS_INTERVAL_SECONDS AUDIOBOOK_BOOK_TITLE_AUTOSTART_DELAY_SECONDS
@@ -231,7 +236,7 @@ export AUDIOBOOK_UI_SEEK_SCREEN_GUARD_ENABLED AUDIOBOOK_UI_SEEK_SCREEN_MIN_BAR_P
 export AUDIOBOOK_BACK_GUARD_ENABLED AUDIOBOOK_BACK_GUARD_WINDOW_SECONDS AUDIOBOOK_BACK_GUARD_AFTER_SCREEN_SECONDS
 export AUDIOBOOK_BACK_GUARD_IDLE_INTERVAL_SECONDS
 export AUDIOBOOK_BACK_GUARD_EXTRA_BACKS
-start-stop-daemon -S -b -m -p "$BASE/resume-daemon.ssd.pid" -x /bin/sh -- "$BASE/bin/r1_audiobook_resume_daemon.sh" >>"$BASE/resume-daemon.stdout.log" 2>&1
+start-stop-daemon -S -b -m -p "$BASE/resume-daemon.ssd.pid" -x "$BASE/bin/r1_audiobook_resume_daemon.sh" >>"$BASE/resume-daemon.stdout.log" 2>&1
 """
 
 DB_MAINT_BOOT_SCRIPT = r"""\
@@ -444,8 +449,6 @@ def build(args: argparse.Namespace) -> None:
         player_patch_args.append("--audiobook-explorer-marker")
     if args.include_select_dispatch_branch:
         player_patch_args.append("--select-dispatch-branch")
-    if args.include_audiobook_direct_open_patch:
-        player_patch_args.append("--audiobook-direct-open")
     if args.skip_existing_patches:
         player_patch_args.append("--skip-existing-patches")
 
@@ -592,7 +595,9 @@ def build(args: argparse.Namespace) -> None:
         ("etc/r1_audiobook_version", "0644"),
         ("usr/bin/r1_audiobook_resume_helper", "0755"),
         ("usr/bin/r1_audiobook_direct_open", "0755"),
+        ("usr/bin/r1_audiobook_resume_daemon", "0755"),
         ("usr/bin/r1_audiobook_resume_daemon.sh", "0755"),
+        ("usr/bin/r1_audiobook_resume_daemon_shell.sh", "0755"),
         ("usr/bin/r1_audiobook_db_maint", "0755"),
         ("usr/bin/r1_audiobook_db_watch.sh", "0755"),
         ("usr/bin/r1_audiobook_refresh.sh", "0755"),
@@ -676,6 +681,8 @@ def _install_resume_runtime(
     memscan_helper_path = resolve_path_strict(args.audiobook_memscan_helper)
     direct_open_helper_path = resolve_path_strict(args.audiobook_direct_open_helper)
     resume_daemon_path = resolve_path_strict(args.audiobook_resume_daemon)
+    resume_daemon_wrapper_path = resolve_path_strict(args.audiobook_resume_wrapper)
+    resume_daemon_shell_path = resolve_path_strict(args.audiobook_resume_shell)
 
     # -- Generate or resolve touch event streams ----------------------------
     if args.touch_next_event_source:
@@ -773,7 +780,9 @@ def _install_resume_runtime(
     shutil.copy2(resume_helper_path, bin_dir / "r1_audiobook_resume_helper")
     shutil.copy2(memscan_helper_path, bin_dir / "r1_audiobook_memscan")
     shutil.copy2(direct_open_helper_path, bin_dir / "r1_audiobook_direct_open")
-    shutil.copy2(resume_daemon_path, bin_dir / "r1_audiobook_resume_daemon.sh")
+    shutil.copy2(resume_daemon_path, bin_dir / "r1_audiobook_resume_daemon")
+    shutil.copy2(resume_daemon_wrapper_path, bin_dir / "r1_audiobook_resume_daemon.sh")
+    shutil.copy2(resume_daemon_shell_path, bin_dir / "r1_audiobook_resume_daemon_shell.sh")
     shutil.copy2(touch_next_event_path, bin_dir / "r1_touch_next_event1.bin")
     shutil.copy2(touch_first_track_event_path, bin_dir / "r1_touch_first_track_event1.bin")
     shutil.copy2(touch_first_track_down_event_path, bin_dir / "r1_touch_first_track_down_event1.bin")
@@ -803,7 +812,7 @@ def _install_resume_runtime(
     audiobook_book_title_memscan_enabled = "0" if conservative else "1"
     audiobook_direct_track_calibrate_enabled = "0" if conservative else "1"
     audiobook_direct_track_recovery_enabled = "0" if conservative else "1"
-    audiobook_direct_open_enabled = "0" if conservative else "1"
+    audiobook_direct_open_enabled = "0"
     audiobook_ui_seek_fallback_enabled = "0" if conservative else "1"
     audiobook_back_guard_enabled = "0" if (conservative or include_native_hub_launcher) else "1"
     audiobook_first_track_entry_restore_enabled = (
@@ -914,8 +923,6 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Add extended autostart marker for .m3u explorer callback")
     parser.add_argument("--include-select-dispatch-branch", action="store_true",
                         help="Add select dispatch branch to hiby_player")
-    parser.add_argument("--include-audiobook-direct-open-patch", action="store_true",
-                        help="Apply direct-open binary patch (title tap -> shared_media_open, no track list)")
     parser.add_argument("--skip-existing-patches", action="store_true",
                         help="Skip patches already applied (for re-patching an already-patched binary)")
     parser.add_argument("--include-audiobook-launcher-icon", action="store_true",
@@ -946,8 +953,14 @@ def build_parser() -> argparse.ArgumentParser:
                         default="work/native-direct-open/r1_audiobook_direct_open",
                         help="Path to r1_audiobook_direct_open binary")
     parser.add_argument("--audiobook-resume-daemon",
+                        default="build/r1_audiobook_resume_daemon",
+                        help="Path to compiled r1_audiobook_resume_daemon binary")
+    parser.add_argument("--audiobook-resume-wrapper",
+                        default="tools/r1_audiobook_resume_daemon_wrapper.sh",
+                        help="Path to r1_audiobook_resume_daemon.sh wrapper")
+    parser.add_argument("--audiobook-resume-shell",
                         default="tools/r1_audiobook_resume_daemon.sh",
-                        help="Path to r1_audiobook_resume_daemon.sh")
+                        help="Path to shell fallback r1_audiobook_resume_daemon script")
     parser.add_argument("--audiobook-resume-catalog", default="",
                         help="Path to audiobook resume catalog TSV (optional)")
 

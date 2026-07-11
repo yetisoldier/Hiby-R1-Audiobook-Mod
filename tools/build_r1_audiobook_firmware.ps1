@@ -63,7 +63,9 @@ param(
     [string]$AudiobookDirectOpenHelper = "work\native-direct-open\r1_audiobook_direct_open",
 
     [Parameter(Mandatory=$false)]
-    [string]$AudiobookResumeDaemon = "tools\r1_audiobook_resume_daemon.sh",
+    [string]$AudiobookResumeDaemon = "build\r1_audiobook_resume_daemon",
+    [string]$AudiobookResumeDaemonWrapper = "tools\r1_audiobook_resume_daemon_wrapper.sh",
+    [string]$AudiobookResumeDaemonShell = "tools\r1_audiobook_resume_daemon.sh",
 
     [Parameter(Mandatory=$false)]
     [string]$AudiobookResumeCatalog = "",
@@ -381,6 +383,8 @@ if ($IncludeAudiobookResumeRuntime) {
     $memscanHelperPath = Resolve-PathStrict $AudiobookMemscanHelper
     $directOpenHelperPath = Resolve-PathStrict $AudiobookDirectOpenHelper
     $resumeDaemonPath = Resolve-PathStrict $AudiobookResumeDaemon
+    $resumeDaemonWrapperPath = Resolve-PathStrict $AudiobookResumeDaemonWrapper
+    $resumeDaemonShellPath = Resolve-PathStrict $AudiobookResumeDaemonShell
     if ($TouchNextEventSource) {
         $touchNextEventPath = Resolve-PathStrict $TouchNextEventSource
     } else {
@@ -486,7 +490,9 @@ if ($IncludeAudiobookResumeRuntime) {
     Copy-Item -Force -LiteralPath $resumeHelperPath -Destination (Join-Path $rootTree "usr\bin\r1_audiobook_resume_helper")
     Copy-Item -Force -LiteralPath $memscanHelperPath -Destination (Join-Path $rootTree "usr\bin\r1_audiobook_memscan")
     Copy-Item -Force -LiteralPath $directOpenHelperPath -Destination (Join-Path $rootTree "usr\bin\r1_audiobook_direct_open")
-    Copy-Item -Force -LiteralPath $resumeDaemonPath -Destination (Join-Path $rootTree "usr\bin\r1_audiobook_resume_daemon.sh")
+    Copy-Item -Force -LiteralPath $resumeDaemonPath -Destination (Join-Path $rootTree "usr\bin\r1_audiobook_resume_daemon")
+    Copy-Item -Force -LiteralPath $resumeDaemonWrapperPath -Destination (Join-Path $rootTree "usr\bin\r1_audiobook_resume_daemon.sh")
+    Copy-Item -Force -LiteralPath $resumeDaemonShellPath -Destination (Join-Path $rootTree "usr\bin\r1_audiobook_resume_daemon_shell.sh")
     Copy-Item -Force -LiteralPath $touchNextEventPath -Destination (Join-Path $rootTree "usr\bin\r1_touch_next_event1.bin")
     Copy-Item -Force -LiteralPath $touchFirstTrackEventPath -Destination (Join-Path $rootTree "usr\bin\r1_touch_first_track_event1.bin")
     Copy-Item -Force -LiteralPath $touchFirstTrackDownEventPath -Destination (Join-Path $rootTree "usr\bin\r1_touch_first_track_down_event1.bin")
@@ -514,7 +520,7 @@ if ($IncludeAudiobookResumeRuntime) {
     $audiobookBookTitleMemscanEnabled = if ($UseConservativeResumeRuntime) { "0" } else { "1" }
     $audiobookDirectTrackCalibrateEnabled = if ($UseConservativeResumeRuntime) { "0" } else { "1" }
     $audiobookDirectTrackRecoveryEnabled = if ($UseConservativeResumeRuntime) { "0" } else { "1" }
-    $audiobookDirectOpenEnabled = if ($UseConservativeResumeRuntime) { "0" } else { "1" }
+    $audiobookDirectOpenEnabled = "0"
     $audiobookUiSeekFallbackEnabled = if ($UseConservativeResumeRuntime) { "0" } else { "1" }
     $audiobookBackGuardEnabled = if ($UseConservativeResumeRuntime -or $IncludeAudiobookNativeHubLauncher) { "0" } else { "1" }
     $audiobookFirstTrackEntryRestoreEnabled = if (!$UseConservativeResumeRuntime -and $IncludeAudiobookNativeHubViewRows) { "1" } else { "0" }
@@ -560,7 +566,9 @@ clear_stock_audiobook_last_file
 cp -f /usr/bin/r1_audiobook_resume_helper "$BASE/bin/r1_audiobook_resume_helper"
 cp -f /usr/bin/r1_audiobook_memscan "$BASE/bin/r1_audiobook_memscan"
 cp -f /usr/bin/r1_audiobook_direct_open "$BASE/bin/r1_audiobook_direct_open"
+cp -f /usr/bin/r1_audiobook_resume_daemon "$BASE/bin/r1_audiobook_resume_daemon"
 cp -f /usr/bin/r1_audiobook_resume_daemon.sh "$BASE/bin/r1_audiobook_resume_daemon.sh"
+cp -f /usr/bin/r1_audiobook_resume_daemon_shell.sh "$BASE/bin/r1_audiobook_resume_daemon_shell.sh"
 cp -f /usr/bin/r1_touch_next_event1.bin "$BASE/input/touch_next_event1.bin"
 cp -f /usr/bin/r1_touch_first_track_event1.bin "$BASE/input/touch_first_track_event1.bin"
 cp -f /usr/bin/r1_touch_first_track_down_event1.bin "$BASE/input/touch_first_track_down_event1.bin"
@@ -589,7 +597,7 @@ if [ ! -s "$BASE/catalog.tsv" ]; then
   fi
 fi
 
-chmod 755 "$BASE/bin/r1_audiobook_resume_helper" "$BASE/bin/r1_audiobook_memscan" "$BASE/bin/r1_audiobook_direct_open" "$BASE/bin/r1_audiobook_resume_daemon.sh"
+chmod 755 "$BASE/bin/r1_audiobook_resume_helper" "$BASE/bin/r1_audiobook_memscan" "$BASE/bin/r1_audiobook_direct_open" "$BASE/bin/r1_audiobook_resume_daemon" "$BASE/bin/r1_audiobook_resume_daemon.sh" "$BASE/bin/r1_audiobook_resume_daemon_shell.sh"
 for file in "$BASE/input/"*.bin; do
   if [ -e "$file" ]; then
     chmod 644 "$file"
@@ -667,7 +675,7 @@ export AUDIOBOOK_UI_SEEK_SCREEN_GUARD_ENABLED AUDIOBOOK_UI_SEEK_SCREEN_MIN_BAR_P
 export AUDIOBOOK_BACK_GUARD_ENABLED AUDIOBOOK_BACK_GUARD_WINDOW_SECONDS AUDIOBOOK_BACK_GUARD_AFTER_SCREEN_SECONDS
 export AUDIOBOOK_BACK_GUARD_IDLE_INTERVAL_SECONDS
 export AUDIOBOOK_BACK_GUARD_EXTRA_BACKS
-start-stop-daemon -S -b -m -p "$BASE/resume-daemon.ssd.pid" -x /bin/sh -- "$BASE/bin/r1_audiobook_resume_daemon.sh" >>"$BASE/resume-daemon.stdout.log" 2>&1
+start-stop-daemon -S -b -m -p "$BASE/resume-daemon.ssd.pid" -x "$BASE/bin/r1_audiobook_resume_daemon.sh" >>"$BASE/resume-daemon.stdout.log" 2>&1
 '@
     $resumeBootScriptText = $resumeBootScriptText -replace "__AUDIOBOOK_BACK_GUARD_ENABLED__", $audiobookBackGuardEnabled
     $resumeBootScriptText = $resumeBootScriptText -replace "__AUDIOBOOK_TRACK_RESTORE_FIRST_TRACK_ENTRY_ENABLED__", $audiobookFirstTrackEntryRestoreEnabled
@@ -809,7 +817,9 @@ $newFileModeOverrides += @(
     @{ Path = "etc\r1_audiobook_version"; Mode = "0644" },
     @{ Path = "usr\bin\r1_audiobook_resume_helper"; Mode = "0755" },
     @{ Path = "usr\bin\r1_audiobook_direct_open"; Mode = "0755" },
+    @{ Path = "usr\bin\r1_audiobook_resume_daemon"; Mode = "0755" },
     @{ Path = "usr\bin\r1_audiobook_resume_daemon.sh"; Mode = "0755" },
+    @{ Path = "usr\bin\r1_audiobook_resume_daemon_shell.sh"; Mode = "0755" },
     @{ Path = "usr\bin\r1_audiobook_db_maint"; Mode = "0755" },
     @{ Path = "usr\bin\r1_audiobook_db_watch.sh"; Mode = "0755" },
     @{ Path = "usr\bin\r1_audiobook_refresh.sh"; Mode = "0755" },

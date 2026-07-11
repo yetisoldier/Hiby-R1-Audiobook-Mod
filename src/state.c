@@ -38,6 +38,12 @@ void state_init(daemon_runtime *rt) {
     rt->last_paused_at = 0;
 }
 
+static uint64_t monotonic_ms_now(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000u);
+}
+
 /* ── Book root helper ─────────────────────────────────────────────── */
 
 void state_book_root(const char *path, char *out, size_t out_len) {
@@ -110,6 +116,9 @@ void state_clear_autostart(daemon_runtime *rt) {
     rt->book_title_autostart_reset_key[0] = '\0';
     rt->book_title_restore_wait_log_key[0] = '\0';
     rt->book_title_pre_restore_log_key[0] = '\0';
+    rt->book_title_arm_deadline_ms = 0;
+    rt->book_title_arm_next_poll_ms = 0;
+    rt->book_title_arm_active = false;
 }
 
 /* ── Diagnostics ──────────────────────────────────────────────────── */
@@ -214,12 +223,11 @@ int state_verify_selected_track(daemon_runtime *rt, const daemon_config *cfg,
 
 /* ── Direct open trigger ───────────────────────────────────────────── */
 
-int state_direct_open_trigger(daemon_runtime *rt, const daemon_config *cfg,
-                              catalog_db *cat, pid_t pid, int saved_idx,
-                              const char *saved_path, const char *path_before,
-                              const char *lbl) {
-    (void)rt;
-    if (!cfg->book_title_direct_open_enabled || pid <= 0 || saved_idx <= 0)
+static int state_direct_open_trigger_impl(daemon_runtime *rt, const daemon_config *cfg,
+                                          catalog_db *cat, pid_t pid, int saved_idx,
+                                          const char *saved_path, const char *path_before,
+                                          const char *lbl, bool require_enabled) {
+    if ((require_enabled && !cfg->book_title_direct_open_enabled) || pid <= 0 || saved_idx <= 0)
         return -1;
     if (cfg->direct_open_helper_path[0] == '\0') return -1;
 
@@ -236,6 +244,14 @@ int state_direct_open_trigger(daemon_runtime *rt, const daemon_config *cfg,
     if (rc != 0) { log_msg("%s helper fail status=%d", lbl, rc); return -1; }
 
     return state_verify_selected_track(rt, cfg, cat, saved_path, saved_idx, 1, lbl, path_before);
+}
+
+int state_direct_open_trigger(daemon_runtime *rt, const daemon_config *cfg,
+                              catalog_db *cat, pid_t pid, int saved_idx,
+                              const char *saved_path, const char *path_before,
+                              const char *lbl) {
+    return state_direct_open_trigger_impl(rt, cfg, cat, pid, saved_idx,
+                                          saved_path, path_before, lbl, true);
 }
 
 /* ── Direct track select ──────────────────────────────────────────── */
@@ -262,10 +278,11 @@ int state_direct_track_select(daemon_runtime *rt, const daemon_config *cfg,
 
 /* ── Direct start saved track ─────────────────────────────────────── */
 
-int state_direct_start_saved(daemon_runtime *rt, const daemon_config *cfg,
-                             catalog_db *cat, pid_t pid,
-                             uint32_t tl_ptr, uint32_t cs_ptr,
-                             int allow_memscan) {
+static int state_direct_start_saved_impl(daemon_runtime *rt, const daemon_config *cfg,
+                                         catalog_db *cat, pid_t pid,
+                                         uint32_t tl_ptr, uint32_t cs_ptr,
+                                         int allow_memscan,
+                                         bool allow_direct_open_without_flag) {
     if (!cfg->book_title_direct_track_select_enabled) return -1;
     if (!cfg->book_title_direct_track_preplay_enabled) return -1;
     if (!cfg->restore_enabled || pid <= 0) return -1;
@@ -336,14 +353,83 @@ int state_direct_start_saved(daemon_runtime *rt, const daemon_config *cfg,
                                            "bt ds probe", pbd);
     }
 
-    if (si > 1 && cfg->book_title_direct_open_enabled) {
-        int rc = state_direct_open_trigger(rt, cfg, cat, pid, si,
-                                           saved_path, pbd, "bt ds open");
+    if (si > 1 && (allow_direct_open_without_flag || cfg->book_title_direct_open_enabled)) {
+        int rc = state_direct_open_trigger_impl(rt, cfg, cat, pid, si,
+                                                saved_path, pbd, "bt ds open",
+                                                !allow_direct_open_without_flag);
         if (rc == 0) return 0;
         log_msg("bt ds open failed status=%d", rc);
     }
 
     log_msg("bt ds root=%s si=%d/%d pos=%u — no touch fallback", root, si, tc, saved_pos);
+    return -1;
+}
+
+int state_direct_start_saved(daemon_runtime *rt, const daemon_config *cfg,
+                             catalog_db *cat, pid_t pid,
+                             uint32_t tl_ptr, uint32_t cs_ptr,
+                             int allow_memscan) {
+    return state_direct_start_saved_impl(rt, cfg, cat, pid, tl_ptr, cs_ptr,
+                                         allow_memscan, false);
+}
+
+static int state_arm_start_saved(daemon_runtime *rt, const daemon_config *cfg,
+                                 catalog_db *cat, pid_t pid,
+                                 uint32_t tl_ptr, uint32_t cs_ptr,
+                                 int allow_memscan) {
+    return state_direct_start_saved_impl(rt, cfg, cat, pid, tl_ptr, cs_ptr,
+                                         allow_memscan, true);
+}
+
+static void state_arm_window_begin(daemon_runtime *rt, const daemon_config *cfg) {
+    if (!rt || !cfg) return;
+    uint64_t now_ms = monotonic_ms_now();
+    uint64_t window_ms = cfg->book_title_arm_window_ms > 0 ? cfg->book_title_arm_window_ms : 1000u;
+    uint64_t poll_ms = cfg->book_title_arm_poll_ms > 0 ? cfg->book_title_arm_poll_ms : 200u;
+    rt->book_title_arm_active = true;
+    rt->book_title_arm_deadline_ms = now_ms + window_ms;
+    rt->book_title_arm_next_poll_ms = now_ms;
+    (void)poll_ms;
+}
+
+static void state_arm_window_end(daemon_runtime *rt) {
+    if (!rt) return;
+    rt->book_title_arm_active = false;
+    rt->book_title_arm_deadline_ms = 0;
+    rt->book_title_arm_next_poll_ms = 0;
+}
+
+static int state_arm_window_burst(daemon_runtime *rt, const daemon_config *cfg,
+                                  catalog_db *cat, pid_t pid,
+                                  uint32_t tl_ptr, uint32_t cs_ptr,
+                                  int allow_memscan) {
+    if (!rt || !cfg || !cat) return -1;
+    if (!rt->book_title_arm_active || cfg->book_title_arm_window_ms == 0) return -1;
+
+    uint64_t poll_ms = cfg->book_title_arm_poll_ms > 0 ? cfg->book_title_arm_poll_ms : 200u;
+    if (poll_ms < 100u) poll_ms = 100u;
+
+    while (rt->book_title_arm_active) {
+        uint64_t now_ms = monotonic_ms_now();
+        if (now_ms == 0 || now_ms >= rt->book_title_arm_deadline_ms) break;
+        if (now_ms < rt->book_title_arm_next_poll_ms) {
+            uint64_t sleep_ms = rt->book_title_arm_next_poll_ms - now_ms;
+            if (sleep_ms > poll_ms) sleep_ms = poll_ms;
+            usleep((useconds_t)(sleep_ms * 1000u));
+            continue;
+        }
+
+        if (state_arm_start_saved(rt, cfg, cat, pid, tl_ptr, cs_ptr, allow_memscan) == 0) {
+            state_arm_window_end(rt);
+            return 0;
+        }
+
+        rt->book_title_arm_next_poll_ms = now_ms + poll_ms;
+        if (rt->book_title_arm_next_poll_ms >= rt->book_title_arm_deadline_ms) break;
+        usleep((useconds_t)(poll_ms * 1000u));
+    }
+
+    state_arm_window_end(rt);
     return -1;
 }
 
@@ -431,7 +517,8 @@ int state_maybe_autostart(daemon_runtime *rt, const daemon_config *cfg,
                     strcmp(reason, "relaxed") == 0);
     if (preplay) {
         int allow_ms = (strcmp(reason, "path") == 0 || strcmp(reason, "catalog") == 0) ? 0 : 1;
-        if (state_direct_start_saved(rt, cfg, cat, pid, tl_ptr, cs_ptr, allow_ms) == 0)
+        state_arm_window_begin(rt, cfg);
+        if (state_arm_window_burst(rt, cfg, cat, pid, tl_ptr, cs_ptr, allow_ms) == 0)
             return 0;
     } else {
         log_msg("bt ds skipped reason=%s tl=%u cs=%u", reason, tl_ptr, cs_ptr);

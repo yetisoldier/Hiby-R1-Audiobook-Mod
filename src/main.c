@@ -12,7 +12,6 @@
 #include "player.h"
 #include "catalog.h"
 #include "resume.h"
-#include "ui.h"
 #include "state.h"
 #include "shadow.h"
 
@@ -214,9 +213,6 @@ int main(int argc, char *argv[]) {
         log_msg("warning: catalog load failed, continuing with empty catalog");
     }
     refresh_catalog_album_patterns(&g_cat);
-
-    /* Initialize last marker seq */
-    g_rt.last_book_title_seq = book_title_marker_seq(&cfg);
 
     /* Main loop */
     while (!shutdown_requested) {

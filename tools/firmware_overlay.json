@@ -29,10 +29,22 @@
       "description": "Native MIPS direct-open helper for off-screen track selection"
     },
     {
+      "target": "usr/bin/r1_audiobook_resume_daemon",
+      "source": "build/r1_audiobook_resume_daemon",
+      "mode": "0755",
+      "description": "Compiled MIPS audiobook resume daemon"
+    },
+    {
       "target": "usr/bin/r1_audiobook_resume_daemon.sh",
+      "source": "tools/r1_audiobook_resume_daemon_wrapper.sh",
+      "mode": "0755",
+      "description": "Wrapper that prefers the compiled resume daemon binary"
+    },
+    {
+      "target": "usr/bin/r1_audiobook_resume_daemon_shell.sh",
       "source": "tools/r1_audiobook_resume_daemon.sh",
       "mode": "0755",
-      "description": "Resume daemon shell script"
+      "description": "Shell fallback resume daemon"
     },
     {
       "target": "usr/bin/r1_audiobook_db_maint",
@@ -376,7 +388,9 @@
     {"target": "etc/r1_audiobook_version", "mode": "0644"},
     {"target": "usr/bin/r1_audiobook_resume_helper", "mode": "0755"},
     {"target": "usr/bin/r1_audiobook_direct_open", "mode": "0755"},
+    {"target": "usr/bin/r1_audiobook_resume_daemon", "mode": "0755"},
     {"target": "usr/bin/r1_audiobook_resume_daemon.sh", "mode": "0755"},
+    {"target": "usr/bin/r1_audiobook_resume_daemon_shell.sh", "mode": "0755"},
     {"target": "usr/bin/r1_audiobook_db_maint", "mode": "0755"},
     {"target": "usr/bin/r1_audiobook_db_watch.sh", "mode": "0755"},
     {"target": "usr/bin/r1_audiobook_refresh.sh", "mode": "0755"},

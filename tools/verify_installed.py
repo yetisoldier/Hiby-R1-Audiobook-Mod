@@ -322,8 +322,8 @@ def main(argv: list[str] | None = None) -> int:
     # -- runtime resume daemon script --
     runtime_daemon_script = adb_shell(
         adb,
-        "cat /usr/data/audiobooks/bin/r1_audiobook_resume_daemon.sh 2>/dev/null "
-        "|| cat /usr/bin/r1_audiobook_resume_daemon.sh 2>/dev/null",
+        "cat /usr/data/audiobooks/bin/r1_audiobook_resume_daemon_shell.sh 2>/dev/null "
+        "|| cat /usr/bin/r1_audiobook_resume_daemon_shell.sh 2>/dev/null",
     )
     save_artifact(verify_dir, "runtime_resume_daemon.sh", runtime_daemon_script)
     assert_contains(

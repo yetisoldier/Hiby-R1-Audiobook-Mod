@@ -28,6 +28,8 @@ typedef struct {
     int      track_count;       /* -1 = null */
     char     chapter_title[256];
     uint32_t position_ms;
+    time_t   last_played_at;
+    time_t   completed_at;
     char     updated_at[32];    /* ISO 8601 UTC */
     bool     completed;
 } resume_record;
@@ -90,7 +92,8 @@ int save_position(const daemon_config *cfg, const char *path,
 
 /* Compute the restore target position (position - rewind, clamped).
  * Returns the target position in ms. */
-uint32_t restore_target_ms(const daemon_config *cfg, uint32_t saved_position_ms);
+uint32_t restore_target_ms(const daemon_config *cfg, uint32_t saved_position_ms,
+                           time_t last_played_at);
 
 /* Attempt to restore position for a path.
  * Returns 0 on success, -1 if no restore needed or failed. */

@@ -59,6 +59,8 @@ typedef struct {
     uint32_t direct_open_scratch_addr;
     uint32_t direct_open_timeout_ms;
     uint32_t direct_open_arm_delay_us;
+    uint32_t book_title_arm_window_ms;
+    uint32_t book_title_arm_poll_ms;
 
     /* Book-title autostart */
     uint8_t  book_title_autostart_enabled;

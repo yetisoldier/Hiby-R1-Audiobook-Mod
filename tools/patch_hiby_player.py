@@ -261,100 +261,6 @@ AUDIOBOOK_EXPLORER_MARKER_PATCHES = (
     AUDIOBOOK_EXPLORER_MARKER_HOOK,
 )
 
-AUDIOBOOK_DIRECT_OPEN_CAVE_OFFSET = 0x360F00
-AUDIOBOOK_DIRECT_OPEN_CAVE_ADDR = text_addr(AUDIOBOOK_DIRECT_OPEN_CAVE_OFFSET)
-AUDIOBOOK_DIRECT_OPEN_SCRATCH_ADDR = 0x008E4400
-AUDIOBOOK_DIRECT_OPEN_NEEDLE = b"Audiobooks\x00"
-
-
-def audiobook_direct_open_cave() -> bytes:
-    """
-    Redirect audiobook title taps straight into shared_media_open.
-
-    The wrapper still falls back to the stock path for everything that is not
-    under /Audiobooks, and it uses the shared scratch slot at 0x8E4400 for the
-    track index so the daemon can populate it later.
-    """
-
-    # The direct-open stub is 57 words long before the needle string.
-    needle_addr = AUDIOBOOK_DIRECT_OPEN_CAVE_ADDR + 57 * 4
-    needle_hi, needle_lo = load_addr_words(5, needle_addr)
-    scratch_hi, scratch_lo = load_addr_words(8, AUDIOBOOK_DIRECT_OPEN_SCRATCH_ADDR)
-    return pack_words(
-        ins_addiu(29, 29, -0x38),
-        ins_sw(31, 29, 0x34),
-        ins_sw(17, 29, 0x30),
-        ins_sw(16, 29, 0x2C),
-        ins_sw(18, 29, 0x28),
-        ins_jal(0x00456BE0),
-        ins_lw(4, 4, 0x00F8),
-        ins_beq(2, 0, 33),
-        ins_addiu(16, 2, 0),
-        ins_lw(4, 16, 0x0064),
-        ins_lw(2, 16, 0x3B6C),
-        ins_lw(25, 4, 0x002C),
-        ins_jalr(25),
-        ins_lw(5, 2, 0x01D0),
-        ins_beq(2, 0, 26),
-        ins_addiu(17, 2, 4),
-        ins_addiu(4, 17, 0),
-        ins_jal(0x0046E040),
-        ins_addiu(5, 0, 0),
-        ins_addiu(3, 0, -1),
-        ins_beq(2, 3, 28),
-        ins_lw(4, 18, 0x00D8),
-        ins_addiu(18, 4, 0),
-        needle_hi,
-        needle_lo,
-        ins_jal(0x00839F80),
-        ins_addiu(4, 17, 0),
-        ins_addiu(4, 18, 0),
-        ins_beq(2, 0, 10),
-        0,
-        scratch_hi,
-        scratch_lo,
-        ins_lw(6, 8, 0),
-        ins_addiu(7, 0, 0),
-        ins_addiu(5, 17, 0),
-        ins_jal(0x0049E200),
-        0,
-        ins_j(AUDIOBOOK_DIRECT_OPEN_CAVE_ADDR + 41 * 4),
-        0,
-        ins_j(0x00540AD0),
-        0,
-        ins_lw(31, 29, 0x34),
-        ins_lw(17, 29, 0x30),
-        ins_lw(16, 29, 0x2C),
-        ins_lw(18, 29, 0x28),
-        ins_addiu(2, 0, 1),
-        ins_addiu(29, 29, 0x38),
-        ins_jr(31),
-        0,
-        ins_lw(31, 29, 0x34),
-        ins_lw(17, 29, 0x30),
-        ins_lw(16, 29, 0x2C),
-        ins_lw(18, 29, 0x28),
-        ins_addiu(2, 0, -1),
-        ins_addiu(29, 29, 0x38),
-        ins_jr(31),
-        0,
-    ) + AUDIOBOOK_DIRECT_OPEN_NEEDLE
-
-
-AUDIOBOOK_DIRECT_OPEN_CODE = audiobook_direct_open_cave()
-AUDIOBOOK_DIRECT_OPEN_PATCHES = (
-    (
-        AUDIOBOOK_DIRECT_OPEN_CAVE_OFFSET,
-        b"\x00" * len(AUDIOBOOK_DIRECT_OPEN_CODE),
-        AUDIOBOOK_DIRECT_OPEN_CODE,
-    ),
-    (
-        0x540A80,
-        bytes.fromhex("27bdffc8afbf0034"),
-        pack_words(ins_j(AUDIOBOOK_DIRECT_OPEN_CAVE_ADDR), 0),
-    ),
-)
-
 AUDIOBOOK_NATIVE_HUB_TITLE_ROW_CAVE_OFFSET = 0x35DE60
 AUDIOBOOK_NATIVE_HUB_TITLE_ROW_CODE = bytes.fromhex(
     # move a0, s2
@@ -856,7 +762,6 @@ def apply_patches(
     audiobook_native_hub_launcher: bool,
     audiobook_native_hub_folder_rows: bool,
     audiobook_native_hub_view_rows: bool,
-    audiobook_direct_open: bool,
     audiobook_title_autostart_marker: bool,
     audiobook_explorer_marker: bool,
     select_dispatch: bool,
@@ -948,11 +853,6 @@ def apply_patches(
         for offset, expected, replacement in AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_PATCHES:
             patch_bytes(data, offset, expected, replacement, skip_existing=skip_existing)
         applied.append("audiobook-native-hub-view-rows")
-
-    if audiobook_direct_open:
-        for offset, expected, replacement in AUDIOBOOK_DIRECT_OPEN_PATCHES:
-            patch_bytes(data, offset, expected, replacement, skip_existing=skip_existing)
-        applied.append("audiobook-direct-open")
 
     if audiobook_title_autostart_marker:
         for offset, expected, replacement in AUDIOBOOK_TITLE_MARKER_PATCHES:
@@ -1061,16 +961,6 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--audiobook-direct-open",
-        action="store_true",
-        help=(
-            "Patch the native title-open wrapper at 0x540a80 to short-circuit "
-            "Audiobooks taps directly into shared_media_open. The saved track "
-            "index is read from 0x8E4400 when present and otherwise defaults "
-            "to track 0. Experimental and off by default."
-        ),
-    )
-    parser.add_argument(
         "--skip-existing-patches",
         action="store_true",
         help=(
@@ -1108,7 +998,6 @@ def main() -> None:
         audiobook_native_hub_launcher=args.audiobook_native_hub_launcher,
         audiobook_native_hub_folder_rows=args.audiobook_native_hub_folder_rows,
         audiobook_native_hub_view_rows=args.audiobook_native_hub_view_rows,
-        audiobook_direct_open=args.audiobook_direct_open,
         audiobook_title_autostart_marker=args.audiobook_title_autostart_marker,
         audiobook_explorer_marker=args.audiobook_explorer_marker,
         select_dispatch=args.select_dispatch_branch,
