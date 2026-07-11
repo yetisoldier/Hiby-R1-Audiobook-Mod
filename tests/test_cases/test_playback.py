@@ -56,20 +56,33 @@ def run(ctx: TestContext) -> None:
 
     state = classify_screen(ctx, "after-title-tap")
 
-    # The native hub opens a track list first - tap track 1 to start playback
-    if state == "list":
+    # With auto-tap enabled, the daemon may automatically tap the first
+    # track and transition to now-playing without manual intervention.
+    # Handle three scenarios:
+    #   1. Auto-tap fired → now-playing directly (best case)
+    #   2. Track list visible → tap track 1 manually
+    #   3. Track list visible but auto-tap may still fire → wait longer
+    if state == "now-playing":
+        print(color("  ✓ Auto-tap started playback directly", C_GREEN))
+    elif state == "list":
         print(color("  Track list opened - tapping track 1", C_DIM))
         ctx.row(1)
         ctx.sleep(ctx.settle + 8)  # extra settle for playback start
         ctx.screenshot("after-track-tap")
         state = classify_screen(ctx, "after-track-tap")
 
-    if state != "now-playing":
-        # Retry
+        if state != "now-playing":
+            # Retry
+            print(color(f"  State was '{state}', retrying…", C_YELLOW))
+            ctx.row(1)
+            ctx.sleep(ctx.settle + 8)
+            ctx.screenshot("after-title-retry")
+            state = classify_screen(ctx, "after-title-retry")
+    else:
+        # Unexpected state — retry with a tap
         print(color(f"  State was '{state}', retrying…", C_YELLOW))
         ctx.row(1)
         ctx.sleep(ctx.settle + 8)
-        ctx.screenshot("after-title-retry")
         state = classify_screen(ctx, "after-title-retry")
 
     if state != "now-playing":

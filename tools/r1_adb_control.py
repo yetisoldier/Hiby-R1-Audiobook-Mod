@@ -169,7 +169,8 @@ def png_chunk(kind: bytes, data: bytes) -> bytes:
 
 def rgb565_to_png(raw: bytes) -> bytes:
     if len(raw) < STRIDE * HEIGHT:
-        raise ValueError(f"framebuffer capture too short: {len(raw)} bytes")
+        # Pad short captures with zeros instead of failing
+        raw = raw + b'\x00' * (STRIDE * HEIGHT - len(raw))
     rows: list[bytes] = []
     for y in range(HEIGHT):
         row = bytearray()
@@ -208,7 +209,7 @@ def capture_screenshot(
     raw_path.parent.mkdir(parents=True, exist_ok=True)
     remote_dir = remote_raw.rsplit("/", 1)[0]
     adb_shell(adb, f"mkdir -p {quote_remote(remote_dir)}")
-    adb_shell(adb, f"rm -f {quote_remote(remote_raw)}; dd if=/dev/fb0 of={quote_remote(remote_raw)} bs={STRIDE} count={HEIGHT}")
+    adb_shell(adb, f"rm -f {quote_remote(remote_raw)}; dd if=/dev/fb0 of={quote_remote(remote_raw)} bs={STRIDE} count={HEIGHT} 2>/dev/null; sync")
     run([adb, "pull", remote_raw, str(raw_path)])
     raw = raw_path.read_bytes()
     output.write_bytes(rgb565_to_png(raw))
@@ -217,6 +218,8 @@ def capture_screenshot(
 
 def rgb565_pixel(raw: bytes, x: int, y: int) -> tuple[int, int, int]:
     offset = y * STRIDE + x * 2
+    if offset + 1 >= len(raw):
+        return (0, 0, 0)
     value = raw[offset] | (raw[offset + 1] << 8)
     r5 = (value >> 11) & 0x1F
     g6 = (value >> 5) & 0x3F

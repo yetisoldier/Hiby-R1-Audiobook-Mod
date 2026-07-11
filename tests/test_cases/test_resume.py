@@ -56,8 +56,10 @@ def run(ctx: TestContext) -> None:
     ctx.sleep(ctx.settle + 3)
     state = classify_screen(ctx, "after-title-tap")
 
-    # The native hub opens a track list first - tap track 1 to start playback
-    if state == "list":
+    # With auto-tap enabled, the daemon may start playback automatically
+    if state == "now-playing":
+        print(color("  ✓ Auto-tap started playback directly", C_GREEN))
+    elif state == "list":
         print(color("  Track list opened - tapping track 1", C_DIM))
         ctx.row(TITLE_ROW)
         ctx.sleep(ctx.settle + 8)
@@ -79,7 +81,7 @@ def run(ctx: TestContext) -> None:
 
     # Check daemon log for save activity
     log = ctx.shell(
-        "tail -n 40 /usr/data/audiobooks/resume-daemon.log 2>/dev/null || true"
+        "tail -n 40 /usr/data/audiobooks/resume-daemon-c.log 2>/dev/null || tail -n 40 /usr/data/audiobooks/resume-daemon.log 2>/dev/null || true"
     )
     has_save = bool(re.search(r"saves=[1-9]|after_position_response=", log))
     if has_save:
@@ -120,9 +122,15 @@ def run(ctx: TestContext) -> None:
     ctx.sleep(ctx.settle + 8)
     state = classify_screen(ctx, "resume-playback")
     if state != "now-playing":
-        ctx.row(TITLE_ROW)
-        ctx.sleep(ctx.settle + 8)
-        state = classify_screen(ctx, "resume-retry")
+        # Auto-tap may have already started playback, or need a manual tap
+        if state == "list":
+            ctx.row(TITLE_ROW)
+            ctx.sleep(ctx.settle + 8)
+            state = classify_screen(ctx, "resume-retry")
+        else:
+            ctx.row(TITLE_ROW)
+            ctx.sleep(ctx.settle + 8)
+            state = classify_screen(ctx, "resume-retry")
     if state != "now-playing":
         raise RuntimeError(f"Resume did not start playback (state={state})")
     print(color("  ✓ Re-selected title — playback resumed", C_GREEN))

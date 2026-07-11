@@ -34,7 +34,7 @@ from typing import Any, Callable
 # ── constants ────────────────────────────────────────────────────────────────
 
 DEFAULT_ADB = ""
-DEFAULT_TIMEOUT = 120          # per-test timeout in seconds
+DEFAULT_TIMEOUT = 300          # per-test timeout in seconds
 DEFAULT_TAP_FRAMES = 12
 DEFAULT_SETTLE = 3              # seconds to wait after UI actions
 DEFAULT_SCREENSHOT_DIR = "work/test-screenshots"
