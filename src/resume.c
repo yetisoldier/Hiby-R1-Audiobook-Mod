@@ -551,6 +551,7 @@ void note_seek_restore_failure(const char *path, uint32_t saved_pos,
 
     strncpy(failure_path, path, sizeof(failure_path) - 1);
     failure_path[sizeof(failure_path) - 1] = '\0';
+    failure_path[sizeof(failure_path) - 1] = '\0';
 
     strncpy(failure_kind, "seek", sizeof(failure_kind) - 1);
     failure_kind[sizeof(failure_kind) - 1] = '\0';
@@ -560,6 +561,7 @@ void note_seek_restore_failure(const char *path, uint32_t saved_pos,
 
     if (key) {
         strncpy(failure_key, key, sizeof(failure_key) - 1);
+        failure_key[sizeof(failure_key) - 1] = '\0';
         failure_key[sizeof(failure_key) - 1] = '\0';
     } else {
         failure_key[0] = '\0';
@@ -573,6 +575,7 @@ void note_track_restore_failure(const char *path) {
     if (!path) return;
 
     strncpy(failure_path, path, sizeof(failure_path) - 1);
+    failure_path[sizeof(failure_path) - 1] = '\0';
     failure_path[sizeof(failure_path) - 1] = '\0';
 
     strncpy(failure_kind, "track", sizeof(failure_kind) - 1);

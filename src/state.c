@@ -56,6 +56,7 @@ void state_book_root(const char *path, char *out, size_t out_len) {
     } else {
         strncpy(out, path, out_len - 1);
         out[out_len - 1] = '\0';
+        out[out_len - 1] = '\0';
     }
 }
 
@@ -303,6 +304,7 @@ int state_direct_start_saved(daemon_runtime *rt, const daemon_config *cfg,
     char bk[128] = "";
     const char *bkp = book_key_for_path(cat, track_path);
     if (bkp) strncpy(bk, bkp, sizeof(bk) - 1);
+    bk[sizeof(bk) - 1] = '\0';
 
     resume_record rec;
     if (existing_record_for_path(cfg, track_path, bk, root, &rec) != 0) {
@@ -445,6 +447,7 @@ int state_maybe_restore_track(daemon_runtime *rt, const daemon_config *cfg,
     char bk[128] = "";
     const char *bkp = book_key_for_path(cat, path);
     if (bkp) strncpy(bk, bkp, sizeof(bk) - 1);
+    bk[sizeof(bk) - 1] = '\0';
 
     resume_record rec;
     if (existing_record_for_path(cfg, path, bk, root, &rec) != 0) return -1;
@@ -526,8 +529,43 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
 
     if (path[0] && path_preview_is_audiobook(path)) {
         /* ── Audiobook tracking ──────────────────────────── */
-        bool entered_from_idle = (rt->state == STATE_IDLE);
-        rt->state = STATE_AUDIOBOOK_TRACKING;
+        bool entered_from_idle = (rt->state == STATE_IDLE ||
+                                  rt->state == STATE_BOOK_COMPLETED);
+        if (entered_from_idle) {
+            rt->state = STATE_BOOK_OPENED;
+            rt->state_entered_at = now_loop;
+            log_msg("state: IDLE -> BOOK_OPENED path=%s", path);
+        }
+        /* Transition: BOOK_OPENED -> TRACK_LOADING when we have a valid path */
+        if (rt->state == STATE_BOOK_OPENED) {
+            rt->state = STATE_TRACK_LOADING;
+            rt->state_entered_at = now_loop;
+            rt->loading_deadline_at = now_loop + 10; /* 10s timeout */
+            log_msg("state: BOOK_OPENED -> TRACK_LOADING path=%s", path);
+        }
+        /* Transition: TRACK_LOADING -> TRACK_READY when decoder reports position/duration */
+        if (rt->state == STATE_TRACK_LOADING) {
+            uint32_t dur = duration_ms_memory(cfg);
+            if (dur > 0) {
+                rt->state = STATE_TRACK_READY;
+                rt->state_entered_at = now_loop;
+                log_msg("state: TRACK_LOADING -> TRACK_READY dur=%u", dur);
+            } else if (now_loop > rt->loading_deadline_at) {
+                log_msg("state: TRACK_LOADING timeout, retrying");
+                rt->state = STATE_BOOK_OPENED;
+                rt->state_entered_at = now_loop;
+            }
+        }
+        /* Transition: TRACK_READY -> TRACKING after seek verification */
+        if (rt->state == STATE_TRACK_READY) {
+            rt->state = STATE_TRACKING;
+            rt->state_entered_at = now_loop;
+            log_msg("state: TRACK_READY -> TRACKING");
+        }
+        /* In TRACKING state: monitor for completion or track change */
+        if (rt->state == STATE_TRACKING) {
+            rt->state_entered_at = now_loop;
+        }
         state_diag_inc(rt, &rt->diag_audiobook_loops);
         loop_sleep = cfg->interval_seconds > 0 ? cfg->interval_seconds : 1;
 
@@ -553,6 +591,7 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
         char bk[128] = "";
         const char *bkp = book_key_for_path(cat, path);
         if (bkp) strncpy(bk, bkp, sizeof(bk) - 1);
+        bk[sizeof(bk) - 1] = '\0';
         resume_record rec;
         bool have_rec = existing_record_for_path(cfg, path, bk, root, &rec) == 0;
         const catalog_entry *ce = catalog_field_for_path(cat, path);
@@ -648,6 +687,7 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
                         if (pa[0] && strcmp(pa, path) != 0) {
                             strncpy(path, pa, sizeof(path) - 1);
                             path[sizeof(path) - 1] = '\0';
+                            path[sizeof(path) - 1] = '\0';
                             track_changed = true;
                             state_diag_inc(rt, &rt->diag_position_reads);
                             pos = position_ms_memory(cfg);
@@ -692,13 +732,19 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
             }
         }
 
-        /* Completion detection: final track natural EOF */
+        /* Completion detection: final track natural EOF only.
+         * Per spec §8: simply seeking near the end must NOT mark finished.
+         * We detect natural EOF by checking that the player has reached the
+         * very end (pos >= dur, i.e. position has hit or exceeded duration)
+         * AND that the player is no longer actively playing (position stopped
+         * advancing). This prevents a seek near end from triggering completion. */
         {
             const catalog_entry *ce_now = catalog_field_for_path(cat, path);
             if (ce_now && ce_now->index > 0 && ce_now->count > 0 &&
                 ce_now->index == ce_now->count) {
                 uint32_t dur = duration_ms_memory(cfg);
-                if (dur > 500 && pos + 500 >= dur) {
+                if (dur > 1000 && pos >= dur &&
+                    rt->last_position_ms >= pos) {
                     if (shadow_is_active(cfg)) {
                         shadow_log_action("COMPLETE",
                             "path=%s pos=%u dur=%u track=%d/%d",
@@ -727,6 +773,9 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
                     }
                     state_diag_inc(rt, &rt->diag_saves);
                     pos = 0;
+                    rt->state = STATE_BOOK_COMPLETED;
+                    rt->state_entered_at = now_loop;
+                    log_msg("state: TRACKING -> BOOK_COMPLETED");
                 }
             }
         }

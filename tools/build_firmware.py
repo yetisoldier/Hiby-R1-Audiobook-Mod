@@ -444,6 +444,8 @@ def build(args: argparse.Namespace) -> None:
         player_patch_args.append("--audiobook-explorer-marker")
     if args.include_select_dispatch_branch:
         player_patch_args.append("--select-dispatch-branch")
+    if args.include_audiobook_direct_open_patch:
+        player_patch_args.append("--audiobook-direct-open")
 
     log.info("Patching hiby_player")
     run_python("patch_hiby_player.py", player_patch_args)
@@ -910,6 +912,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Add extended autostart marker for .m3u explorer callback")
     parser.add_argument("--include-select-dispatch-branch", action="store_true",
                         help="Add select dispatch branch to hiby_player")
+    parser.add_argument("--include-audiobook-direct-open-patch", action="store_true",
+                        help="Apply direct-open binary patch (title tap -> shared_media_open, no track list)")
     parser.add_argument("--include-audiobook-launcher-icon", action="store_true",
                         help="Generate audiobook launcher icons")
     parser.add_argument("--enable-boot-adb", action="store_true",
