@@ -232,10 +232,10 @@ AUDIOBOOK_EXPLORER_MARKER_CODE = bytes.fromhex(
     # sw ra, 28(sp)
     # sw s0, 24(sp)
     # lui s0, 0x008E
-    # addiu s0, s0, 0x4000
-    # lw t0, 0(s0)
+    # addiu s0, s0, 0x4000   → s0 = 0x8E4000 (marker address)
+    # lw t0, 0(s0)           ← FIXED: was lw t0, 0(t0)
     # addiu t0, t0, 1
-    # sw t0, 0(s0)
+    # sw t0, 0(s0)           ← FIXED: was sw t0, 0(t0)
     # lw s0, 24(sp)
     # lw ra, 28(sp)
     # addiu sp, sp, 32
@@ -244,7 +244,7 @@ AUDIOBOOK_EXPLORER_MARKER_CODE = bytes.fromhex(
     # j 0x4efe08
     # nop
     "e0ffbd271c00bfaf1800b0af8e00103c00401026"
-    "0000088d01000825000008ad1800b08f1c00bf8f"
+    "0000088e01000825000008ae1800b08f1c00bf8f"
     "2000bd27c0ffbd273800b7af82bf130800000000"
     "0000"
 )
