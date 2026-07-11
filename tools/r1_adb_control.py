@@ -203,17 +203,45 @@ def capture_screenshot(
     *,
     raw_output: Path | None = None,
     remote_raw: str = f"{DEFAULT_REMOTE_DIR}/fb0.raw",
+    retries: int = 3,
 ) -> tuple[Path, Path]:
+    """Capture a framebuffer screenshot with retry logic.
+
+    The R1's USB ADB connection can occasionally hiccup, causing dd or pull
+    to fail transiently.  Retry up to ``retries`` times with a short backoff.
+    """
+    import time as _time
     output.parent.mkdir(parents=True, exist_ok=True)
     raw_path = raw_output or output.with_suffix(".raw")
     raw_path.parent.mkdir(parents=True, exist_ok=True)
     remote_dir = remote_raw.rsplit("/", 1)[0]
     adb_shell(adb, f"mkdir -p {quote_remote(remote_dir)}")
-    adb_shell(adb, f"rm -f {quote_remote(remote_raw)}; dd if=/dev/fb0 of={quote_remote(remote_raw)} bs={STRIDE} count={HEIGHT} 2>/dev/null; sync")
-    run([adb, "pull", remote_raw, str(raw_path)])
-    raw = raw_path.read_bytes()
-    output.write_bytes(rgb565_to_png(raw))
-    return output, raw_path
+
+    last_err: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            adb_shell(
+                adb,
+                f"rm -f {quote_remote(remote_raw)}; "
+                f"dd if=/dev/fb0 of={quote_remote(remote_raw)} "
+                f"bs={STRIDE} count={HEIGHT} 2>/dev/null; sync",
+            )
+            run([adb, "pull", remote_raw, str(raw_path)])
+            raw = raw_path.read_bytes()
+            if len(raw) < STRIDE * HEIGHT // 4:
+                raise RuntimeError(
+                    f"framebuffer too small: {len(raw)} bytes "
+                    f"(expected {STRIDE * HEIGHT})"
+                )
+            output.write_bytes(rgb565_to_png(raw))
+            return output, raw_path
+        except (RuntimeError, subprocess.CalledProcessError) as exc:
+            last_err = exc
+            if attempt < retries:
+                _time.sleep(0.5 * attempt)
+                continue
+            raise
+    raise RuntimeError(f"capture_screenshot failed after {retries} attempts: {last_err}")
 
 
 def rgb565_pixel(raw: bytes, x: int, y: int) -> tuple[int, int, int]:

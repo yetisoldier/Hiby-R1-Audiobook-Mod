@@ -209,25 +209,44 @@ class TestContext:
         time.sleep(seconds)
 
 
-def invoke_control(ctx: TestContext, control_args: list[str]) -> str:
-    """Run r1_adb_control.py with given args and return stdout."""
+def invoke_control(ctx: TestContext, control_args: list[str], retries: int = 2) -> str:
+    """Run r1_adb_control.py with given args and return stdout.
+
+    Retries on timeout or non-zero exit (transient USB ADB hiccups).
+    """
     cmd = [sys.executable, str(ctx.control_script)] + control_args
-    if ctx.verbose:
-        print(color(f"  $ {' '.join(cmd)}", C_DIM))
-    proc = subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=120,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"r1_adb_control.py failed: {' '.join(control_args)}\n{proc.stdout}"
-        )
-    return proc.stdout
+    last_exc: Exception | None = None
+    for attempt in range(1, retries + 1):
+        if ctx.verbose:
+            print(color(f"  $ {' '.join(cmd)}", C_DIM))
+        try:
+            proc = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired as exc:
+            last_exc = RuntimeError(
+                f"r1_adb_control.py timed out (30s): {' '.join(control_args)}"
+            )
+            if attempt < retries:
+                time.sleep(1)
+                continue
+            raise last_exc
+        if proc.returncode != 0:
+            last_exc = RuntimeError(
+                f"r1_adb_control.py failed: {' '.join(control_args)}\n{proc.stdout}"
+            )
+            if attempt < retries:
+                time.sleep(1)
+                continue
+            raise last_exc
+        return proc.stdout
+    raise last_exc or RuntimeError("invoke_control: unreachable")
 
 
 def invoke_script(ctx: TestContext, script: Path, script_args: list[str]) -> str:
@@ -242,7 +261,7 @@ def invoke_script(ctx: TestContext, script: Path, script_args: list[str]) -> str
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=120,
+        timeout=30,
     )
     return proc.stdout
 
