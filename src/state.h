@@ -77,6 +77,7 @@ typedef struct {
     /* Auto-tap (Phase 2: track-once-per-playlist) */
     char     autotap_last_path[512];   /* path we already auto-tapped for (prevent double-tap) */
     time_t   autotap_fired_at;         /* when we last fired an auto-tap (for rate-limit/debug) */
+    time_t   autotap_fast_poll_until;  /* timestamp when fast-poll mode expires (Approach A) */
 
     /* Diagnostics */
     time_t   diag_last_log_at;

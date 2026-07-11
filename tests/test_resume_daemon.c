@@ -2080,6 +2080,62 @@ static void test_defer_save_diff_path_old_enough_no_defer(void) {
     CHECK(!defer);
 }
 
+/* ── Auto-tap framebuffer config tests (Approach A) ─────────────── */
+
+static void test_autotap_fb_config_defaults(void) {
+    daemon_config cfg;
+    config_load(&cfg, NULL);
+    CHECK_INT_EQ((int)cfg.autotap_fb_poll_ms, 200);
+    CHECK_INT_EQ((int)cfg.autotap_fb_timeout_ms, 5000);
+    config_free(&cfg);
+}
+
+static void test_autotap_fb_config_env_override(void) {
+    daemon_config cfg;
+    setenv("AUDIOBOOK_AUTOTAP_FB_POLL_MS", "100", 1);
+    setenv("AUDIOBOOK_AUTOTAP_FB_TIMEOUT_MS", "3000", 1);
+    config_load(&cfg, NULL);
+    CHECK_INT_EQ((int)cfg.autotap_fb_poll_ms, 100);
+    CHECK_INT_EQ((int)cfg.autotap_fb_timeout_ms, 3000);
+    config_free(&cfg);
+    unsetenv("AUDIOBOOK_AUTOTAP_FB_POLL_MS");
+    unsetenv("AUDIOBOOK_AUTOTAP_FB_TIMEOUT_MS");
+}
+
+static void test_autotap_fb_config_file_override(void) {
+    daemon_config cfg;
+    make_test_config(&cfg);
+
+    char conf_path[512];
+    snprintf(conf_path, sizeof(conf_path), "%s/resume-daemon.conf", tmpdir);
+    FILE *fp = fopen(conf_path, "w");
+    CHECK(fp != NULL);
+    fprintf(fp, "AUTOTAP_FB_POLL_MS=150\n");
+    fprintf(fp, "AUTOTAP_FB_TIMEOUT_MS=8000\n");
+    fclose(fp);
+
+    config_load(&cfg, conf_path);
+    CHECK_INT_EQ((int)cfg.autotap_fb_poll_ms, 150);
+    CHECK_INT_EQ((int)cfg.autotap_fb_timeout_ms, 8000);
+    config_free(&cfg);
+}
+
+static void test_autotap_fb_config_clamp(void) {
+    daemon_config cfg;
+    setenv("AUDIOBOOK_AUTOTAP_FB_POLL_MS", "1", 1);
+    config_load(&cfg, NULL);
+    /* Should be clamped to min_val=10 */
+    CHECK(cfg.autotap_fb_poll_ms >= 10);
+    config_free(&cfg);
+    unsetenv("AUDIOBOOK_AUTOTAP_FB_POLL_MS");
+}
+
+static void test_autotap_fb_state_init_clears(void) {
+    daemon_runtime rt;
+    state_init(&rt);
+    CHECK_INT_EQ((int)rt.autotap_fast_poll_until, 0);
+}
+
 /* ── Main ─────────────────────────────────────────────────────────── */
 
 int main(int argc, char *argv[]) {
@@ -2250,6 +2306,13 @@ int main(int argc, char *argv[]) {
     RUN_TEST(test_autotap_config_clamp);
     RUN_TEST(test_autotap_state_init_clears);
     RUN_TEST(test_autotap_diag_counters_increment);
+
+    /* Auto-tap framebuffer config tests (Approach A) */
+    RUN_TEST(test_autotap_fb_config_defaults);
+    RUN_TEST(test_autotap_fb_config_env_override);
+    RUN_TEST(test_autotap_fb_config_file_override);
+    RUN_TEST(test_autotap_fb_config_clamp);
+    RUN_TEST(test_autotap_fb_state_init_clears);
 
     /* Save/Restore decision logic tests (Phase 3) */
     RUN_TEST(test_save_decision_shadow_off_writes);

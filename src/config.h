@@ -161,6 +161,10 @@ typedef struct {
     uint32_t autotap_max_wait_ms;        /* default: 3000 — max wait for screen render before giving up */
     uint8_t  autotap_require_views_path; /* default: 1 — only auto-tap from _views/ paths */
 
+    /* Auto-tap framebuffer polling (Approach A: framebuffer-based detection) */
+    uint32_t autotap_fb_poll_ms;         /* default: 200 — fb poll interval during fast-poll mode */
+    uint32_t autotap_fb_timeout_ms;      /* default: 5000 — max time to wait for track list screen */
+
     /* Shadow mode (migration) */
     uint8_t  shadow_mode;       /* 0=act, 1=log-only */
 

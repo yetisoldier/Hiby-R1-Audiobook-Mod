@@ -857,23 +857,29 @@ int state_maybe_restore_track(daemon_runtime *rt, const daemon_config *cfg,
     return -1;
 }
 
-/* ── Auto-tap first track (Phase 2) ───────────────────────────── */
+/* ── Auto-tap first track (Approach A: framebuffer-based) ────── */
 
 /*
- * auto_tap_first_track — detect .m3u playlist open under _views/ and
- * automatically tap the first track so playback starts without manual
- * selection.
+ * auto_tap_first_track_fb — framebuffer-based auto-tap.
  *
- * Detection: the path contains "_views/" (or "_views\\") and ".m3u".
+ * When a new audiobook path is detected, enter a fast-poll mode that
+ * reads /dev/fb0 every autotap_fb_poll_ms and checks if the track-list
+ * screen is visible via audiobook_track_list_visible().  When the track
+ * list is visible, immediately inject touch_first_track() (tap row 1).
+ * Exit fast-poll mode after tapping or after autotap_fb_timeout_ms.
+ *
+ * This replaces the broken path-based detection that checked for .m3u
+ * in the path slot, which was unreliable because the stock player resolves
+ * the .m3u to a concrete track file before the daemon can see it.
+ *
  * Guard: only fires once per unique path (rt->autotap_last_path).
- * Delay: sleeps autotap_delay_ms before tapping (configurable).
- * Touch: reuses touch_first_track() from ui.c (same pre-recorded event).
+ * Shadow mode: logs "WOULD AUTO-TAP" instead of actually tapping.
  *
  * Returns true if a tap was sent, false if skipped.
  */
-static bool auto_tap_first_track(daemon_runtime *rt,
-                                 const daemon_config *cfg,
-                                 const char *path)
+static bool auto_tap_first_track_fb(daemon_runtime *rt,
+                                    const daemon_config *cfg,
+                                    const char *path)
 {
     if (!rt || !cfg || !path || !path[0])
         return false;
@@ -890,90 +896,64 @@ static bool auto_tap_first_track(daemon_runtime *rt,
         return false;
     }
 
-    /* Must contain _views/ (or _views\) and .m3u */
-    bool has_views = false;
-    bool has_m3u   = false;
-
-    /* Check for _views/ or _views\ in the path (case-insensitive).
-     * hiby paths use backslashes: a:\Audiobooks\_views\Titles\Book.m3u
-     * But forward slashes may also appear depending on source. */
-    {
-        const char *p = path;
-        for (; *p; p++) {
-            if (strncasecmp(p, "_views", 6) == 0) {
-                char sep = p[6];
-                if (sep == '\\' || sep == '/') {
-                    has_views = true;
-                    break;
-                }
-            }
-        }
-    }
-
-    /* Check for .m3u extension (case-insensitive) */
-    {
-        size_t plen = strlen(path);
-        if (plen >= 4) {
-            const char *ext = path + plen - 4;
-            if (strncasecmp(ext, ".m3u", 4) == 0)
-                has_m3u = true;
-        }
-        /* Also match .m3u anywhere in path (some paths may have suffixes) */
-        if (!has_m3u) {
-            const char *p = path;
-            for (; *p; p++) {
-                if (strncasecmp(p, ".m3u", 4) == 0) {
-                    has_m3u = true;
-                    break;
-                }
-            }
-        }
-    }
-
-    if (cfg->autotap_require_views_path && !has_views) {
-        state_diag_inc(rt, &rt->diag_autotap_skipped);
-        return false;
-    }
-    if (!has_m3u) {
-        state_diag_inc(rt, &rt->diag_autotap_skipped);
-        return false;
-    }
-
-    /* Only auto-tap once per unique playlist path */
+    /* Only auto-tap once per unique path (prevent double-tap) */
     if (strcmp(rt->autotap_last_path, path) == 0) {
         state_diag_inc(rt, &rt->diag_autotap_skipped);
         return false;
     }
 
-    /* Wait for the track list to render on screen */
-    if (cfg->autotap_delay_ms > 0) {
-        log_msg("auto-tap wait delay=%ums path=%s", cfg->autotap_delay_ms, path);
-        usleep(cfg->autotap_delay_ms * 1000);
+    /* Enter fast-poll mode */
+    uint32_t poll_ms = cfg->autotap_fb_poll_ms > 0 ? cfg->autotap_fb_poll_ms : 200;
+    uint32_t timeout_ms = cfg->autotap_fb_timeout_ms > 0 ? cfg->autotap_fb_timeout_ms : 5000;
+    time_t deadline = time(NULL) + (time_t)((timeout_ms + 999) / 1000);
+    rt->autotap_fast_poll_until = deadline;
+
+    log_msg("auto-tap fast-poll start path=%s poll=%ums timeout=%ums",
+            path, poll_ms, timeout_ms);
+
+    while (time(NULL) <= deadline) {
+        /* Open framebuffer and check for track-list screen */
+        int fb = open("/dev/fb0", O_RDONLY);
+        if (fb < 0) {
+            /* Can't read framebuffer — wait and retry */
+            usleep(poll_ms * 1000);
+            continue;
+        }
+
+        bool track_list_visible = audiobook_track_list_visible(fb, cfg);
+        close(fb);
+
+        if (track_list_visible) {
+            /* Track list is on screen — tap the first track */
+            if (shadow_is_active(cfg)) {
+                shadow_log_action("AUTO-TAP", "WOULD AUTO-TAP row=1 path=%s", path);
+            } else {
+                int rc = touch_first_track(cfg);
+                if (rc != 0) {
+                    log_msg("auto-tap touch failed rc=%d path=%s", rc, path);
+                    /* Still mark as tapped to avoid retry loop */
+                } else {
+                    log_msg("auto-tap fired row=1 path=%s", path);
+                }
+            }
+
+            /* Mark this path as tapped (prevent double-tap) */
+            strncpy(rt->autotap_last_path, path,
+                    sizeof(rt->autotap_last_path) - 1);
+            rt->autotap_last_path[sizeof(rt->autotap_last_path) - 1] = '\0';
+            rt->autotap_fired_at = time(NULL);
+            rt->autotap_fast_poll_until = 0;
+            state_diag_inc(rt, &rt->diag_autotap_fired);
+            return true;
+        }
+
+        /* Not visible yet — wait and poll again */
+        usleep(poll_ms * 1000);
     }
 
-    /* Send the touch event to tap row 1 (first track) */
-    if (shadow_is_active(cfg)) {
-        shadow_log_action("AUTO-TAP", "WOULD AUTO-TAP row=1 path=%s", path);
-        strncpy(rt->autotap_last_path, path,
-                sizeof(rt->autotap_last_path) - 1);
-        rt->autotap_last_path[sizeof(rt->autotap_last_path) - 1] = '\0';
-        rt->autotap_fired_at = time(NULL);
-        state_diag_inc(rt, &rt->diag_autotap_fired);
-        return true;
-    }
-
-    int rc = touch_first_track(cfg);
-    if (rc == 0) {
-        log_msg("auto-tap fired row=1 path=%s", path);
-        strncpy(rt->autotap_last_path, path,
-                sizeof(rt->autotap_last_path) - 1);
-        rt->autotap_last_path[sizeof(rt->autotap_last_path) - 1] = '\0';
-        rt->autotap_fired_at = time(NULL);
-        state_diag_inc(rt, &rt->diag_autotap_fired);
-        return true;
-    }
-
-    log_msg("auto-tap failed touch rc=%d path=%s", rc, path);
+    /* Timeout — track list never appeared */
+    log_msg("auto-tap fast-poll timeout path=%s", path);
+    rt->autotap_fast_poll_until = 0;
     state_diag_inc(rt, &rt->diag_autotap_skipped);
     return false;
 }
@@ -1079,8 +1059,8 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
             rt->last_saved_bucket = -1;
             rt->deferred_overwrite_path[0] = '\0';
 
-            /* Phase 2: Auto-tap first track when .m3u playlist opens */
-            auto_tap_first_track(rt, cfg, path);
+            /* Phase 2: Auto-tap first track via framebuffer detection (Approach A) */
+            auto_tap_first_track_fb(rt, cfg, path);
         }
 
         char root[512]; state_book_root(path, root, sizeof(root));

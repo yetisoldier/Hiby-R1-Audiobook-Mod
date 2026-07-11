@@ -196,6 +196,10 @@ static const config_field FIELDS[] = {
     FIELD("AUDIOBOOK_AUTOTAP_MAX_WAIT_MS",        "AUTOTAP_MAX_WAIT_MS",        CFG_U32,  autotap_max_wait_ms,        0, 30000),
     FIELD("AUDIOBOOK_AUTOTAP_REQUIRE_VIEWS_PATH", "AUTOTAP_REQUIRE_VIEWS_PATH", CFG_BOOL, autotap_require_views_path, 0, 1),
 
+    /* Auto-tap framebuffer polling (Approach A) */
+    FIELD("AUDIOBOOK_AUTOTAP_FB_POLL_MS",         "AUTOTAP_FB_POLL_MS",         CFG_U32,  autotap_fb_poll_ms,         10, 5000),
+    FIELD("AUDIOBOOK_AUTOTAP_FB_TIMEOUT_MS",      "AUTOTAP_FB_TIMEOUT_MS",      CFG_U32,  autotap_fb_timeout_ms,      100, 30000),
+
     /* Shadow mode */
     FIELD("AUDIOBOOK_SHADOW_MODE",           "SHADOW_MODE",           CFG_BOOL, shadow_mode, 0, 1),
 
@@ -368,6 +372,10 @@ static void set_defaults(daemon_config *c) {
     c->autotap_delay_ms            = 500;
     c->autotap_max_wait_ms         = 3000;
     c->autotap_require_views_path  = 1;
+
+    /* Auto-tap framebuffer polling (Approach A) */
+    c->autotap_fb_poll_ms          = 200;
+    c->autotap_fb_timeout_ms       = 5000;
 
     /* Shadow mode */
     c->shadow_mode                      = 0;
