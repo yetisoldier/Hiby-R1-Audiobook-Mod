@@ -2,6 +2,9 @@
  * state.c — state machine, daemon runtime state, diagnostics
  *
  * Spec section 2.4, 3, 16.  Wires all modules together.
+ *
+ * Touch injection and framebuffer classification were removed.
+ * Track selection now uses only the direct-open helper.
  */
 
 #include "state.h"
@@ -31,6 +34,8 @@ void state_init(daemon_runtime *rt) {
     memset(rt, 0, sizeof(*rt));
     rt->state = STATE_IDLE;
     rt->last_saved_bucket = -1;
+    rt->position_protected_until_ms = 0;
+    rt->last_paused_at = 0;
 }
 
 /* ── Book root helper ─────────────────────────────────────────────── */
@@ -88,13 +93,11 @@ bool state_should_poll_marker(const daemon_runtime *rt,
     if (path_preview_is_audiobook(pp)) return true;
     if (path_preview_is_music(pp)) {
         if (rt->last_book_title_marker_poll_at == 0) return true;
-        return (now - rt->last_book_title_marker_poll_at) >=
-               (time_t)cfg->book_title_marker_music_poll_seconds;
+        return (now - rt->last_book_title_marker_poll_at) >= 15;
     }
     if (state_context_active(rt, now)) return true;
     if (rt->last_book_title_marker_poll_at == 0) return true;
-    return (now - rt->last_book_title_marker_poll_at) >=
-           (time_t)cfg->book_title_marker_idle_poll_seconds;
+    return (now - rt->last_book_title_marker_poll_at) >= 5;
 }
 
 /* ── Clear autostart ──────────────────────────────────────────────── */
@@ -118,17 +121,15 @@ void state_diag_log(daemon_runtime *rt, const daemon_config *cfg, time_t now) {
     if (!rt || !cfg || cfg->diagnostics_interval_seconds == 0) return;
     if (rt->diag_last_log_at == 0) { rt->diag_last_log_at = now; return; }
     if ((now - rt->diag_last_log_at) < (time_t)cfg->diagnostics_interval_seconds) return;
-    log_msg("stats loops=%d ab=%d nab=%d pp=%d mp=%d ms=%d pr=%d sv=%d at_fired=%d at_skipped=%d",
+    log_msg("stats loops=%d ab=%d nab=%d pp=%d mp=%d ms=%d pr=%d sv=%d",
             rt->diag_loops, rt->diag_audiobook_loops,
             rt->diag_non_audiobook_loops, rt->diag_path_previews,
             rt->diag_marker_polls, rt->diag_marker_skips,
-            rt->diag_position_reads, rt->diag_saves,
-            rt->diag_autotap_fired, rt->diag_autotap_skipped);
+            rt->diag_position_reads, rt->diag_saves);
     rt->diag_last_log_at = now;
     rt->diag_loops = rt->diag_audiobook_loops = rt->diag_non_audiobook_loops = 0;
     rt->diag_path_previews = rt->diag_marker_polls = rt->diag_marker_skips = 0;
     rt->diag_position_reads = rt->diag_saves = 0;
-    rt->diag_autotap_fired = rt->diag_autotap_skipped = 0;
 }
 
 /* ── Logging helpers ──────────────────────────────────────────────── */
@@ -164,51 +165,6 @@ void state_log_pre_restore_skip(daemon_runtime *rt, const daemon_config *cfg,
     }
 }
 
-/* ── Direct track geometry ────────────────────────────────────────── */
-
-int state_direct_geometry(const daemon_config *cfg, int si,
-                          int *out_sw, int *out_row) {
-    if (si <= 0) return -1;
-    int vr = cfg->book_title_direct_track_visible_rows;
-    if (vr <= 0) vr = 5; if (vr > 5) vr = 5;
-    int rps = cfg->book_title_direct_track_rows_per_swipe;
-    if (rps <= 0) rps = 4;
-    int ms = cfg->book_title_direct_track_max_swipes;
-    if (ms == 0) ms = 20;
-
-    int sw = 0;
-    if (si > vr) sw = (si - vr + rps - 1) / rps;
-    if (sw > ms) return -1;
-
-    int row = si - (sw * rps);
-    while (row < 1 && sw > 0) { sw--; row = si - (sw * rps); }
-    while (row > vr) { sw++; row = si - (sw * rps); }
-    if (row < 1 || row > 5) return -1;
-    *out_sw = sw; *out_row = row;
-    return 0;
-}
-
-/* ── Tap track list index ─────────────────────────────────────────── */
-
-int state_tap_track_index(daemon_runtime *rt, const daemon_config *cfg,
-                          int si, const char *lbl) {
-    int sw, row;
-    if (state_direct_geometry(cfg, si, &sw, &row) != 0) {
-        log_msg("%s too many swipes si=%d", lbl, si);
-        return -1;
-    }
-    for (int i = 0; i < sw; i++) {
-        if (touch_track_swipe_up(cfg) != 0) return -1;
-        sleep(cfg->book_title_direct_track_swipe_settle_seconds > 0 ?
-              cfg->book_title_direct_track_swipe_settle_seconds : 1);
-        log_msg("%s swipe=%d/%d", lbl, i + 1, sw);
-    }
-    if (touch_track_row(row, cfg) != 0) return -1;
-    log_msg("%s tapped idx=%d sw=%d row=%d", lbl, si, sw, row);
-    (void)rt;
-    return 0;
-}
-
 /* ── Poll path helper ─────────────────────────────────────────────── */
 
 static void poll_path(char *buf, size_t len, const daemon_config *cfg) {
@@ -222,6 +178,8 @@ int state_verify_selected_track(daemon_runtime *rt, const daemon_config *cfg,
                                 const char *saved_path, int saved_idx,
                                 int sel_row, const char *lbl,
                                 const char *path_before) {
+    (void)rt;
+    (void)sel_row;
     char sr[512]; state_book_root(saved_path, sr, sizeof(sr));
     int ticks = state_settle_ticks(cfg);
     int min_ticks = (path_before && strcmp(path_before, saved_path) == 0) ? ticks : 0;
@@ -232,7 +190,7 @@ int state_verify_selected_track(daemon_runtime *rt, const daemon_config *cfg,
         seen++;
         char pn[512]; poll_path(pn, sizeof(pn), cfg);
         if (strcmp(pn, saved_path) == 0 && seen >= min_ticks) {
-            log_msg("%s reached path=%s saved=%d row=%d", lbl, pn, saved_idx, sel_row);
+            log_msg("%s reached path=%s saved=%d", lbl, pn, saved_idx);
             return 0;
         }
         if (pn[0] && path_before && strcmp(pn, path_before) != 0) {
@@ -240,43 +198,8 @@ int state_verify_selected_track(daemon_runtime *rt, const daemon_config *cfg,
             if (strcmp(sroot, sr) == 0) {
                 const catalog_entry *e = catalog_field_for_path(cat, pn);
                 int si = e ? e->index : -1;
-                log_msg("%s sel path=%s idx=%d saved=%d row=%d", lbl, pn, si, saved_idx, sel_row);
-                if (si < 0 || saved_idx < 0) return 2;
-
-                int delta = saved_idx - si;
-                int rr = sel_row + delta;
-                if (rr >= 1 && rr <= 5) {
-                    log_msg("%s retry si=%d saved=%d row=%d", lbl, si, saved_idx, rr);
-                    if (touch_back_to_track_list(cfg) != 0) return 2;
-                    sleep(cfg->book_title_direct_track_return_delay_seconds > 0 ?
-                          cfg->book_title_direct_track_return_delay_seconds : 1);
-                    char pbr[512]; poll_path(pbr, sizeof(pbr), cfg);
-                    if (touch_track_row(rr, cfg) != 0) return 2;
-                    int rt2 = state_settle_ticks(cfg);
-                    while (rt2 > 0) {
-                        usleep(cfg->track_switch_poll_us > 0 ? cfg->track_switch_poll_us : 100000);
-                        char pr[512]; poll_path(pr, sizeof(pr), cfg);
-                        if (strcmp(pr, saved_path) == 0) {
-                            log_msg("%s retry reached saved=%d row=%d", lbl, saved_idx, rr);
-                            return 0;
-                        }
-                        if (pr[0] && strcmp(pr, pbr) != 0) {
-                            char rroot[512]; state_book_root(pr, rroot, sizeof(rroot));
-                            if (strcmp(rroot, sr) == 0) {
-                                const catalog_entry *re = catalog_field_for_path(cat, pr);
-                                log_msg("%s retry sel path=%s idx=%d saved=%d",
-                                        lbl, pr, re ? re->index : -1, saved_idx);
-                                break;
-                            }
-                        }
-                        rt2--;
-                    }
-                }
-                if (cfg->book_title_direct_track_recovery_transport_enabled)
-                    if (state_near_miss_transport(rt, cfg, cat, saved_path,
-                                                  saved_idx, "bt-direct-miss") == 0)
-                        return 0;
-                return 2;
+                log_msg("%s sel path=%s idx=%d saved=%d", lbl, pn, si, saved_idx);
+                return (si == saved_idx) ? 0 : 2;
             }
         }
         ticks--;
@@ -308,7 +231,6 @@ int state_direct_open_trigger(daemon_runtime *rt, const daemon_config *cfg,
                                  cfg->direct_open_helper_path,
                                  (int)cfg->helper_timeout_seconds);
     if (rc != 0) { log_msg("%s helper fail status=%d", lbl, rc); return -1; }
-    if (touch_track_row(1, cfg) != 0) { log_msg("%s tap trigger fail", lbl); return -1; }
 
     return state_verify_selected_track(rt, cfg, cat, saved_path, saved_idx, 1, lbl, path_before);
 }
@@ -318,200 +240,21 @@ int state_direct_open_trigger(daemon_runtime *rt, const daemon_config *cfg,
 int state_direct_track_select(daemon_runtime *rt, const daemon_config *cfg,
                                catalog_db *cat, int ci, int si,
                                const char *saved_path) {
+    (void)ci;
     if (!cfg->book_title_direct_track_select_enabled) return -1;
     if (!state_autostart_active(rt)) return -1;
-    if (ci != 1 || si <= 1) return -1;
+    if (si <= 1) return -1;
 
-    /* Try direct-open first */
-    if (cfg->book_title_direct_open_enabled) {
-        pid_t pid = player_pid_cached();
-        if (pid > 0) {
-            if (touch_back_to_track_list(cfg) != 0) return -1;
-            sleep(cfg->book_title_direct_track_return_delay_seconds > 0 ?
-                  cfg->book_title_direct_track_return_delay_seconds : 1);
-            char pb[512]; poll_path(pb, sizeof(pb), cfg);
-            if (state_direct_open_trigger(rt, cfg, cat, pid, si,
-                                           saved_path, pb, "direct-open") == 0)
-                return 0;
-        }
-    }
+    /* Direct-open is the only mechanism — no touch fallback */
+    if (!cfg->book_title_direct_open_enabled) return -1;
 
-    int sw, row;
-    if (state_direct_geometry(cfg, si, &sw, &row) != 0) {
-        log_msg("dts too many swipes si=%d", si);
-        return -1;
-    }
-    log_msg("dts start si=%d sw=%d row=%d", si, sw, row);
-    if (touch_back_to_track_list(cfg) != 0) return -1;
-    sleep(cfg->book_title_direct_track_return_delay_seconds > 0 ?
-          cfg->book_title_direct_track_return_delay_seconds : 1);
+    pid_t pid = player_pid_cached();
+    if (pid <= 0) return -1;
+
     char pb[512]; poll_path(pb, sizeof(pb), cfg);
-    if (state_tap_track_index(rt, cfg, si, "dts") != 0) return -1;
-
-    int ticks = state_settle_ticks(cfg);
-    while (ticks > 0) {
-        usleep(cfg->track_switch_poll_us > 0 ? cfg->track_switch_poll_us : 100000);
-        char pn[512]; poll_path(pn, sizeof(pn), cfg);
-        if (strcmp(pn, saved_path) == 0) { log_msg("dts reached si=%d", si); return 0; }
-        if (pn[0] && strcmp(pn, pb) != 0) {
-            char sroot[512], saved_root[512];
-            state_book_root(pn, sroot, sizeof(sroot));
-            state_book_root(saved_path, saved_root, sizeof(saved_root));
-            if (strcmp(sroot, saved_root) == 0) {
-                const catalog_entry *e = catalog_field_for_path(cat, pn);
-                int seli = e ? e->index : -1;
-                log_msg("dts nearby path=%s idx=%d saved=%d", pn, seli, si);
-                if (seli < 0) return 2;
-                int delta = si - seli;
-                int rr = row + delta;
-                if (rr >= 1 && rr <= 5) {
-                    log_msg("dts retry sel=%d saved=%d row=%d", seli, si, rr);
-                    if (touch_back_to_track_list(cfg) != 0) return 2;
-                    sleep(cfg->book_title_direct_track_return_delay_seconds > 0 ?
-                          cfg->book_title_direct_track_return_delay_seconds : 1);
-                    char pbr[512]; poll_path(pbr, sizeof(pbr), cfg);
-                    if (touch_track_row(rr, cfg) != 0) return 2;
-                    int rt2 = state_settle_ticks(cfg);
-                    while (rt2 > 0) {
-                        usleep(cfg->track_switch_poll_us > 0 ? cfg->track_switch_poll_us : 100000);
-                        char pr[512]; poll_path(pr, sizeof(pr), cfg);
-                        if (strcmp(pr, saved_path) == 0) {
-                            log_msg("dts retry reached si=%d row=%d", si, rr);
-                            return 0;
-                        }
-                        if (pr[0] && strcmp(pr, pbr) != 0) {
-                            char rroot[512]; state_book_root(pr, rroot, sizeof(rroot));
-                            if (strcmp(rroot, saved_root) == 0) return 2;
-                        }
-                        rt2--;
-                    }
-                }
-                return 2;
-            }
-        }
-        ticks--;
-    }
-    char pn[512]; poll_path(pn, sizeof(pn), cfg);
-    log_msg("dts not reached final=%s", pn);
-    return strcmp(pn, saved_path) == 0 ? 0 : -1;
-}
-
-/* ── Visible track select ─────────────────────────────────────────── */
-
-int state_visible_track_select(daemon_runtime *rt, const daemon_config *cfg,
-                               catalog_db *cat, int ci, int si,
-                               const char *saved_path) {
-    (void)cat;
-    if (!cfg->book_title_direct_track_select_enabled) return -1;
-    if (!state_autostart_active(rt)) return -1;
-    if (ci == si) return 0;
-
-    int vr = cfg->book_title_direct_track_visible_rows;
-    if (vr <= 0) vr = 5; if (vr > 5) vr = 5;
-    int delta = si - ci, row;
-    if (delta >= 0 && delta < vr) row = delta + 1;
-    else if (delta < 0 && (-delta) < vr) row = vr + delta;
-    else return -1;
-    if (row < 1 || row > 5) return -1;
-
-    log_msg("vts start ci=%d si=%d row=%d", ci, si, row);
-    if (touch_back_to_track_list(cfg) != 0) return 2;
-    sleep(cfg->book_title_direct_track_return_delay_seconds > 0 ?
-          cfg->book_title_direct_track_return_delay_seconds : 1);
-    char pb[512]; poll_path(pb, sizeof(pb), cfg);
-    if (touch_track_row(row, cfg) != 0) return 2;
-
-    int ticks = state_settle_ticks(cfg);
-    while (ticks > 0) {
-        usleep(cfg->track_switch_poll_us > 0 ? cfg->track_switch_poll_us : 100000);
-        char pn[512]; poll_path(pn, sizeof(pn), cfg);
-        if (strcmp(pn, saved_path) == 0) { log_msg("vts reached si=%d", si); return 0; }
-        if (pn[0] && strcmp(pn, pb) != 0) {
-            char sroot[512], saved_root[512];
-            state_book_root(pn, sroot, sizeof(sroot));
-            state_book_root(saved_path, saved_root, sizeof(saved_root));
-            if (strcmp(sroot, saved_root) == 0) {
-                const catalog_entry *e = catalog_field_for_path(cat, pn);
-                log_msg("vts nearby path=%s idx=%d saved=%d",
-                        pn, e ? e->index : -1, si);
-                return 2;
-            }
-        }
-        ticks--;
-    }
-    log_msg("vts not reached saved=%s", saved_path);
-    return 2;
-}
-
-/* ── Near-miss transport ──────────────────────────────────────────── */
-
-int state_near_miss_transport(daemon_runtime *rt, const daemon_config *cfg,
-                              catalog_db *cat, const char *saved_path,
-                              int saved_idx, const char *reason) {
-    (void)rt;
-    if (!cfg->track_restore_near_miss_transport_enabled) return -1;
-
-    int mode = play_mode_value(cfg);
-    if (mode != cfg->play_mode_target) {
-        log_msg("nmt skipped mode=%d target=%d reason=%s", mode, cfg->play_mode_target, reason);
-        return -1;
-    }
-
-    char path[512]; poll_path(path, sizeof(path), cfg);
-    if (strcmp(path, saved_path) == 0) return 0;
-
-    const catalog_entry *e = catalog_field_for_path(cat, path);
-    int ci = e ? e->index : -1;
-    if (ci < 0 || saved_idx < 0) return -1;
-
-    int max_steps = cfg->track_restore_near_miss_max_steps;
-    if (strcmp(reason, "bt-direct-miss") == 0) {
-        if (!cfg->book_title_direct_track_recovery_transport_enabled) return -1;
-        max_steps = cfg->book_title_direct_track_recovery_max_steps;
-    }
-    if (max_steps <= 0) return -1;
-
-    int dir, steps;
-    if (saved_idx > ci) { dir = 1; steps = saved_idx - ci; }
-    else if (saved_idx < ci) { dir = -1; steps = ci - saved_idx; }
-    else return 0;
-
-    if (steps > max_steps) {
-        log_msg("nmt too many ci=%d si=%d max=%d", ci, saved_idx, max_steps);
-        return -1;
-    }
-
-    log_msg("nmt start reason=%s ci=%d si=%d dir=%s steps=%d", reason, ci,
-            saved_idx, dir == 1 ? "next" : "prev", steps);
-
-    for (int c = 0; c < steps; c++) {
-        char pb[512]; poll_path(pb, sizeof(pb), cfg);
-        int ei = (dir == 1) ? ci + c + 1 : ci - c - 1;
-        if (dir == 1) { if (track_next(cfg) != 0) return -1; }
-        else { if (track_prev(cfg) != 0) return -1; }
-
-        int ticks = state_settle_ticks(cfg);
-        while (ticks > 0) {
-            usleep(cfg->track_switch_poll_us > 0 ? cfg->track_switch_poll_us : 100000);
-            char pn[512]; poll_path(pn, sizeof(pn), cfg);
-            if (strcmp(pn, saved_path) == 0) break;
-            const catalog_entry *en = catalog_field_for_path(cat, pn);
-            int in = en ? en->index : -1;
-            if (in == ei) break;
-            if (pn[0] && strcmp(pn, pb) != 0 && in > 0) break;
-            ticks--;
-        }
-        char pn[512]; poll_path(pn, sizeof(pn), cfg);
-        const catalog_entry *en = catalog_field_for_path(cat, pn);
-        log_msg("nmt %s step=%d/%d idx=%d", dir == 1 ? "next" : "prev",
-                c + 1, steps, en ? en->index : -1);
-        if (strcmp(pn, saved_path) == 0) return 0;
-    }
-
-    char pn[512]; poll_path(pn, sizeof(pn), cfg);
-    if (strcmp(pn, saved_path) == 0) return 0;
-    log_msg("nmt failed final=%s", pn);
-    return -1;
+    log_msg("dts start si=%d helper=%s", si, cfg->direct_open_helper_path);
+    return state_direct_open_trigger(rt, cfg, cat, pid, si,
+                                     saved_path, pb, "dts");
 }
 
 /* ── Direct start saved track ─────────────────────────────────────── */
@@ -584,7 +327,6 @@ int state_direct_start_saved(daemon_runtime *rt, const daemon_config *cfg,
     if (cfg->book_title_direct_track_calibrate_enabled &&
         strcmp(pbd, saved_path) == 0) {
         log_msg("bt ds probe si=%d/%d pos=%u", si, tc, saved_pos);
-        if (touch_track_row(1, cfg) != 0) return -1;
         return state_verify_selected_track(rt, cfg, cat, saved_path, si, 1,
                                            "bt ds probe", pbd);
     }
@@ -593,22 +335,11 @@ int state_direct_start_saved(daemon_runtime *rt, const daemon_config *cfg,
         int rc = state_direct_open_trigger(rt, cfg, cat, pid, si,
                                            saved_path, pbd, "bt ds open");
         if (rc == 0) return 0;
-        log_msg("bt ds open fallback status=%d", rc);
-        if (touch_back_to_track_list(cfg) != 0) return -1;
-        sleep(cfg->book_title_direct_track_return_delay_seconds > 0 ?
-              cfg->book_title_direct_track_return_delay_seconds : 1);
-        poll_path(pbd, sizeof(pbd), cfg);
+        log_msg("bt ds open failed status=%d", rc);
     }
 
-    int sw, row;
-    if (state_direct_geometry(cfg, si, &sw, &row) != 0) {
-        log_msg("bt ds too many swipes si=%d", si);
-        return -1;
-    }
-    log_msg("bt ds root=%s si=%d/%d pos=%u sw=%d row=%d", root, si, tc, saved_pos, sw, row);
-    if (state_tap_track_index(rt, cfg, si, "bt ds") != 0) return -1;
-    return state_verify_selected_track(rt, cfg, cat, saved_path, si, row,
-                                       "bt ds", pbd);
+    log_msg("bt ds root=%s si=%d/%d pos=%u — no touch fallback", root, si, tc, saved_pos);
+    return -1;
 }
 
 /* ── Maybe autostart ──────────────────────────────────────────────── */
@@ -670,8 +401,6 @@ int state_maybe_autostart(daemon_runtime *rt, const daemon_config *cfg,
         strcmp(reason, "catalog") == 0) {
         if (cfg->book_title_context_seconds > 0)
             rt->book_title_context_until = now + (time_t)cfg->book_title_context_seconds;
-        if (cfg->back_guard_enabled)
-            rt->audiobook_back_guard_until = now + (time_t)cfg->back_guard_window_seconds;
     }
 
     log_msg("bt autostart seq=%u reason=%s ap=%u tl=%u cs=%u sm=%u ss=%u ctx=%d ctx_until=%ld",
@@ -703,24 +432,7 @@ int state_maybe_autostart(daemon_runtime *rt, const daemon_config *cfg,
         log_msg("bt ds skipped reason=%s tl=%u cs=%u", reason, tl_ptr, cs_ptr);
     }
 
-    if (strcmp(reason, "launcher") == 0) {
-        int fb = open("/dev/fb0", O_RDONLY);
-        if (fb >= 0) {
-            bool tl = audiobook_title_list_visible(fb, cfg);
-            bool tr = audiobook_track_list_visible(fb, cfg);
-            close(fb);
-            const char *scr = tl ? "title-list" : (tr ? "track-list" : "unknown");
-            log_msg("bt touch-first skipped reason=launcher screen=%s", scr);
-            if (tr) {
-                log_msg("bt launcher back-to-title-list");
-                touch_back_to_track_list(cfg);
-            }
-            return 0;
-        }
-        return 0;
-    }
-
-    return touch_first_track(cfg) == 0 ? 0 : -1;
+    return 0;
 }
 
 /* ── Maybe restore track ──────────────────────────────────────────── */
@@ -764,248 +476,14 @@ int state_maybe_restore_track(daemon_runtime *rt, const daemon_config *cfg,
         log_msg("tr first-entry ci=%d si=%d pos=%u", ci, si, pos);
     }
 
-    int dir, steps;
-    if (si > ci) { dir = 1; steps = si - ci; }
-    else if (si < ci) { dir = -1; steps = ci - si; }
-    else return -1;
+    if (ci == si) return -1;
 
-    if (steps > cfg->track_restore_max_steps) {
-        log_msg("tr too many ci=%d si=%d max=%d", ci, si, cfg->track_restore_max_steps);
-        return -1;
-    }
-
+    /* Try direct-open track selection (no touch fallback) */
     int ds = state_direct_track_select(rt, cfg, cat, ci, si, sp);
     if (ds == 0) return 0;
-    if (ds == 2) {
-        char pa[512]; poll_path(pa, sizeof(pa), cfg);
-        if (strcmp(pa, sp) == 0) return 0;
-        if (state_same_book_root(pa, root)) {
-            const catalog_entry *ae = catalog_field_for_path(cat, pa);
-            int ai = ae ? ae->index : -1;
-            if (ai > 0) {
-                log_msg("tr near-miss visible ci=%d si=%d", ai, si);
-                int vs = state_visible_track_select(rt, cfg, cat, ai, si, sp);
-                if (vs == 0) return 0;
-                if (vs == 2) {
-                    if (state_near_miss_transport(rt, cfg, cat, sp, si, "direct-near-miss") == 0)
-                        return 0;
-                    return -1;
-                }
-            }
-        }
-        return -1;
-    }
 
-    int vs = state_visible_track_select(rt, cfg, cat, ci, si, sp);
-    if (vs == 0) return 0;
-    if (vs == 2) {
-        if (state_near_miss_transport(rt, cfg, cat, sp, si, "visible-near-miss") == 0)
-            return 0;
-        return -1;
-    }
-
-    /* Key fallback */
-    if (!cfg->track_restore_key_fallback_enabled) {
-        log_msg("tr key fallback disabled ci=%d si=%d", ci, si);
-        return -1;
-    }
-
-    char pa[512]; poll_path(pa, sizeof(pa), cfg);
-    if (pa[0] && strcmp(pa, path) != 0) {
-        if (!state_same_book_root(pa, root)) return -1;
-        path = pa;
-        const catalog_entry *ne = catalog_field_for_path(cat, path);
-        ci = ne ? ne->index : -1;
-        if (ci < 0) return -1;
-        if (si > ci) { dir = 1; steps = si - ci; }
-        else if (si < ci) { dir = -1; steps = ci - si; }
-        else return 0;
-        if (steps > cfg->track_restore_max_steps) return -1;
-        log_msg("tr fallback ci=%d si=%d steps=%d", ci, si, steps);
-    }
-
-    log_msg("tr key start ci=%d si=%d dir=%s steps=%d", ci, si,
-            dir == 1 ? "next" : "prev", steps);
-
-    for (int c = 0; c < steps; c++) {
-        char pb[512]; poll_path(pb, sizeof(pb), cfg);
-        int ei = (dir == 1) ? ci + c + 1 : ci - c - 1;
-        if (dir == 1) { if (track_next(cfg) != 0) return -1; }
-        else { if (track_prev(cfg) != 0) return -1; }
-
-        int ticks = state_settle_ticks(cfg);
-        while (ticks > 0) {
-            usleep(cfg->track_switch_poll_us > 0 ? cfg->track_switch_poll_us : 100000);
-            char pn[512]; poll_path(pn, sizeof(pn), cfg);
-            if (strcmp(pn, sp) == 0) break;
-            const catalog_entry *en = catalog_field_for_path(cat, pn);
-            int in = en ? en->index : -1;
-            if (in == ei) break;
-            if (pn[0] && strcmp(pn, pb) != 0 && in > 0) break;
-            ticks--;
-        }
-        char pn[512]; poll_path(pn, sizeof(pn), cfg);
-        const catalog_entry *en = catalog_field_for_path(cat, pn);
-        log_msg("tr %s step=%d/%d idx=%d", dir == 1 ? "next" : "prev",
-                c + 1, steps, en ? en->index : -1);
-        if (strcmp(pn, sp) == 0) return 0;
-    }
-
-    char pn[512]; poll_path(pn, sizeof(pn), cfg);
-    if (strcmp(pn, sp) == 0) return 0;
-    log_msg("tr failed final=%s", pn);
+    log_msg("tr direct-open failed ci=%d si=%d ds=%d — no touch fallback", ci, si, ds);
     return -1;
-}
-
-/* ── Auto-tap first track (Approach A: framebuffer-based) ────── */
-
-/*
- * auto_tap_first_track_fb — framebuffer-based auto-tap.
- *
- * When a new audiobook path is detected, enter a fast-poll mode that
- * reads /dev/fb0 every autotap_fb_poll_ms and checks if the track-list
- * screen is visible via audiobook_track_list_visible().  When the track
- * list is visible, immediately inject touch_first_track() (tap row 1).
- * Exit fast-poll mode after tapping or after autotap_fb_timeout_ms.
- *
- * This replaces the broken path-based detection that checked for .m3u
- * in the path slot, which was unreliable because the stock player resolves
- * the .m3u to a concrete track file before the daemon can see it.
- *
- * Guard: only fires once per unique path (rt->autotap_last_path).
- * Shadow mode: logs "WOULD AUTO-TAP" instead of actually tapping.
- *
- * Returns true if a tap was sent, false if skipped.
- */
-static bool auto_tap_first_track_fb(daemon_runtime *rt,
-                                    const daemon_config *cfg,
-                                    const char *path,
-                                    const char *book_key,
-                                    const char *book_root)
-{
-    if (!rt || !cfg || !path || !path[0])
-        return false;
-
-    /* Master switch */
-    if (!cfg->autotap_enabled) {
-        state_diag_inc(rt, &rt->diag_autotap_skipped);
-        return false;
-    }
-
-    /* Must be an audiobook path */
-    if (!path_preview_is_audiobook(path)) {
-        state_diag_inc(rt, &rt->diag_autotap_skipped);
-        return false;
-    }
-
-    /* Only auto-tap once per unique path (prevent double-tap) */
-    if (strcmp(rt->autotap_last_path, path) == 0) {
-        state_diag_inc(rt, &rt->diag_autotap_skipped);
-        return false;
-    }
-
-    /* Look up saved resume record for this book to find the saved track */
-    int saved_track_index = -1;
-    resume_record rec;
-    if (existing_record_for_path(cfg, path, book_key, book_root, &rec) == 0) {
-        saved_track_index = rec.track_index;
-        log_msg("auto-tap saved track=%d path=%s", saved_track_index, path);
-    }
-
-    /* Enter fast-poll mode */
-    uint32_t poll_ms = cfg->autotap_fb_poll_ms > 0 ? cfg->autotap_fb_poll_ms : 200;
-    uint32_t timeout_ms = cfg->autotap_fb_timeout_ms > 0 ? cfg->autotap_fb_timeout_ms : 5000;
-    time_t deadline = time(NULL) + (time_t)((timeout_ms + 999) / 1000);
-    rt->autotap_fast_poll_until = deadline;
-
-    log_msg("auto-tap fast-poll start path=%s poll=%ums timeout=%ums saved_track=%d",
-            path, poll_ms, timeout_ms, saved_track_index);
-
-    while (time(NULL) <= deadline) {
-        /* Open framebuffer and check for track-list screen */
-        int fb = open("/dev/fb0", O_RDONLY);
-        if (fb < 0) {
-            /* Can't read framebuffer — wait and retry */
-            usleep(poll_ms * 1000);
-            continue;
-        }
-
-        bool track_list_visible = audiobook_track_list_visible(fb, cfg);
-        close(fb);
-
-        if (track_list_visible) {
-            /* Track list is on screen — tap the appropriate track */
-            if (shadow_is_active(cfg)) {
-                if (saved_track_index > 1) {
-                    shadow_log_action("AUTO-TAP",
-                            "WOULD AUTO-TAP track=%d path=%s", saved_track_index, path);
-                } else {
-                    shadow_log_action("AUTO-TAP", "WOULD AUTO-TAP row=1 path=%s", path);
-                }
-            } else {
-                int rc;
-                if (saved_track_index > 1) {
-                    /* Tap the saved track (swipe + tap) */
-                    rc = state_tap_track_index(rt, cfg, saved_track_index, "auto-tap");
-                    if (rc != 0) {
-                        log_msg("auto-tap track-index failed si=%d rc=%d path=%s",
-                                saved_track_index, rc, path);
-                        /* Fall back to row 1 */
-                        rc = touch_first_track(cfg);
-                    } else {
-                        log_msg("auto-tap fired track=%d path=%s", saved_track_index, path);
-                    }
-                } else {
-                    rc = touch_first_track(cfg);
-                    if (rc != 0) {
-                        log_msg("auto-tap touch failed rc=%d path=%s", rc, path);
-                    } else {
-                        log_msg("auto-tap fired row=1 path=%s", path);
-                    }
-                }
-            }
-
-            /* Activate autostart context so restore logic fires */
-            rt->book_title_autostart_until = time(NULL) +
-                (time_t)(cfg->restore_retry_after_failure_seconds > 0 ?
-                         cfg->restore_retry_after_failure_seconds : 30);
-            log_msg("auto-tap autostart activated until=%ld path=%s",
-                    (long)rt->book_title_autostart_until, path);
-
-            /* Mark this path as tapped (prevent double-tap) */
-            strncpy(rt->autotap_last_path, path,
-                    sizeof(rt->autotap_last_path) - 1);
-            rt->autotap_last_path[sizeof(rt->autotap_last_path) - 1] = '\0';
-            rt->autotap_fired_at = time(NULL);
-            rt->autotap_fast_poll_until = 0;
-            state_diag_inc(rt, &rt->diag_autotap_fired);
-
-            /* Follow-up: wait briefly then tap to enter Now Playing */
-            if (!shadow_is_active(cfg)) {
-                sleep(1);
-                int fb2 = open("/dev/fb0", O_RDONLY);
-                if (fb2 >= 0) {
-                    bool still_list = audiobook_track_list_visible(fb2, cfg);
-                    close(fb2);
-                    if (still_list) {
-                        touch_first_track(cfg);
-                        log_msg("auto-tap follow-up now-playing tap path=%s", path);
-                    }
-                }
-            }
-
-            return true;
-        }
-
-        /* Not visible yet — wait and poll again */
-        usleep(poll_ms * 1000);
-    }
-
-    /* Timeout — track list never appeared */
-    log_msg("auto-tap fast-poll timeout path=%s", path);
-    rt->autotap_fast_poll_until = 0;
-    state_diag_inc(rt, &rt->diag_autotap_skipped);
-    return false;
 }
 
 /* ── Main poll cycle ──────────────────────────────────────────────── */
@@ -1023,19 +501,6 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
     if (current_path_slot_preview(cfg, pp, sizeof(pp)) != 0) pp[0] = '\0';
     state_diag_inc(rt, &rt->diag_path_previews);
 
-    /* Back guard */
-    if (cfg->back_guard_enabled) {
-        back_guard_state bg = {
-            rt->audiobook_back_guard_until,
-            rt->audiobook_back_guard_seen_at,
-            rt->audiobook_back_guard_last_fire_at
-        };
-        maybe_audiobook_back_guard(now_loop, pp, &bg, cfg);
-        rt->audiobook_back_guard_until = bg.audiobook_back_guard_until;
-        rt->audiobook_back_guard_seen_at = bg.audiobook_back_guard_seen_at;
-        rt->audiobook_back_guard_last_fire_at = bg.audiobook_back_guard_last_fire_at;
-    }
-
     /* Marker poll */
     if (state_should_poll_marker(rt, cfg, pp, now_loop)) {
         state_diag_inc(rt, &rt->diag_marker_polls);
@@ -1052,12 +517,6 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
     } else {
         state_diag_inc(rt, &rt->diag_marker_skips);
     }
-
-    /* Back guard idle interval */
-    if (cfg->back_guard_enabled && !path_preview_is_music(pp) &&
-        !path_preview_is_audiobook(pp) &&
-        cfg->back_guard_idle_interval_seconds < loop_sleep)
-        loop_sleep = cfg->back_guard_idle_interval_seconds;
 
     /* Path classification */
     char path[512] = "";
@@ -1090,6 +549,14 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
         uint32_t pos = position_ms_memory(cfg);
         bool auto_restore = state_autostart_active(rt);
 
+        char root[512]; state_book_root(path, root, sizeof(root));
+        char bk[128] = "";
+        const char *bkp = book_key_for_path(cat, path);
+        if (bkp) strncpy(bk, bkp, sizeof(bk) - 1);
+        resume_record rec;
+        bool have_rec = existing_record_for_path(cfg, path, bk, root, &rec) == 0;
+        const catalog_entry *ce = catalog_field_for_path(cat, path);
+
         /* Autostart reset */
         if (auto_restore) {
             char rk[32]; snprintf(rk, sizeof(rk), "%u", rt->book_title_autostart_seq);
@@ -1108,34 +575,28 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
 
         /* Path change */
         if (strcmp(path, rt->last_path) != 0) {
-            char root_pc[512]; state_book_root(path, root_pc, sizeof(root_pc));
-            const catalog_entry *e = catalog_field_for_path(cat, path);
             log_msg("audiobook path=%s pos=%u track=%d/%d", path, pos,
-                    e ? e->index : -1, e ? e->count : -1);
-            /* Play-mode enforcement: use shadow wrapper */
-            if (cfg->play_mode_enforce_enabled)
-                shadow_wrap_play_mode(cfg);
+                    ce ? ce->index : -1, ce ? ce->count : -1);
+            /* Play-mode enforcement removed — binary patch handles mode */
             rt->restored_path[0] = '\0';
             resume_reset_failures();
             rt->last_saved_bucket = -1;
             rt->deferred_overwrite_path[0] = '\0';
-
-            /* Phase 2: Auto-tap first track via framebuffer detection (Approach A) */
-            char at_root[512]; state_book_root(path, at_root, sizeof(at_root));
-            char at_bk[128] = "";
-            const char *at_bkp = book_key_for_path(cat, path);
-            if (at_bkp) strncpy(at_bk, at_bkp, sizeof(at_bk) - 1);
-            auto_tap_first_track_fb(rt, cfg, path, at_bk, at_root);
+            rt->last_paused_at = now_loop;
+            rt->position_protected_until_ms = 0;
+            if (have_rec && rec.completed) {
+                rt->position_protected_until_ms = 5000;
+            } else if (ce && ce->index == 1) {
+                uint32_t protect_ms = (have_rec && rec.position_ms > 0)
+                                      ? rec.position_ms : 10000;
+                if (protect_ms > 10000) protect_ms = 10000;
+                if (protect_ms == 0) protect_ms = 10000;
+                rt->position_protected_until_ms = protect_ms;
+            }
         }
 
-        char root[512]; state_book_root(path, root, sizeof(root));
-        char bk[128] = "";
-        const char *bkp = book_key_for_path(cat, path);
-        if (bkp) strncpy(bk, bkp, sizeof(bk) - 1);
-
         /* Completed check */
-        resume_record rec;
-        if (existing_record_for_path(cfg, path, bk, root, &rec) == 0 && rec.completed) {
+        if (have_rec && rec.completed) {
             if (strcmp(rt->restored_path, path) != 0)
                 log_msg("completed start-over root=%s path=%s pos=%u", root, path, pos);
             strncpy(rt->restored_path, path, sizeof(rt->restored_path) - 1);
@@ -1145,6 +606,8 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
             state_clear_autostart(rt);
             rt->last_saved_bucket = -1;
             rt->deferred_overwrite_path[0] = '\0';
+            rt->position_protected_until_ms = 5000;
+            rt->last_paused_at = now_loop;
             strncpy(rt->completed_start_over_path, path,
                     sizeof(rt->completed_start_over_path) - 1);
             rt->completed_start_over_path[sizeof(rt->completed_start_over_path) - 1] = '\0';
@@ -1229,25 +692,20 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
             }
         }
 
-        /* Completion detection: check if we're near the end of the last track */
-        if (cfg->completed_end_threshold_ms > 0) {
-            const catalog_entry *ce = catalog_field_for_path(cat, path);
-            if (ce && ce->index > 0 && ce->count > 0 &&
-                ce->index == ce->count) {
-                /* On the last track — check if position is near the end */
+        /* Completion detection: final track natural EOF */
+        {
+            const catalog_entry *ce_now = catalog_field_for_path(cat, path);
+            if (ce_now && ce_now->index > 0 && ce_now->count > 0 &&
+                ce_now->index == ce_now->count) {
                 uint32_t dur = duration_ms_memory(cfg);
-                if (dur > 0 &&
-                    (pos >= dur ? (pos - dur) : (dur - pos)) <=
-                    cfg->completed_end_threshold_ms) {
-                    /* Position is within threshold of the end (above or below) */
+                if (dur > 500 && pos + 500 >= dur) {
                     if (shadow_is_active(cfg)) {
                         shadow_log_action("COMPLETE",
                             "path=%s pos=%u dur=%u track=%d/%d",
-                            path, pos, dur, ce->index, ce->count);
+                            path, pos, dur, ce_now->index, ce_now->count);
                     } else {
                         log_msg("completed detected path=%s pos=%u dur=%u track=%d/%d",
-                                path, pos, dur, ce->index, ce->count);
-                        /* Mark the book as completed in the resume record */
+                                path, pos, dur, ce_now->index, ce_now->count);
                         resume_record tmpl;
                         memset(&tmpl, 0, sizeof(tmpl));
                         tmpl.schema_version = 3;
@@ -1257,49 +715,17 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
                                 sizeof(tmpl.book_id));
                         if (bkp) strncpy(tmpl.book_key, bkp,
                                          sizeof(tmpl.book_key) - 1);
-                        tmpl.media_id = ce->media_id;
-                        tmpl.track_index = ce->index;
-                        tmpl.track_count = ce->count;
-                        strncpy(tmpl.chapter_title, ce->title,
+                        tmpl.media_id = ce_now->media_id;
+                        tmpl.track_index = ce_now->index;
+                        tmpl.track_count = ce_now->count;
+                        strncpy(tmpl.chapter_title, ce_now->title,
                                 sizeof(tmpl.chapter_title) - 1);
+                        tmpl.last_played_at = now_loop;
+                        tmpl.completed_at = now_loop;
                         tmpl.completed = true;
-                        /* Save with completed=true by writing record directly */
                         save_position(cfg, path, pos, &tmpl);
-                        /* Now patch the completed field — save_position writes
-                         * completed=false, so we need to fix it in-place */
-                        char rec_path[512];
-                        record_for_path(cfg, path, bk, root,
-                                        rec_path, sizeof(rec_path));
-                        int rfd = open(rec_path, O_RDONLY);
-                        if (rfd >= 0) {
-                            char rbuf[4096];
-                            size_t rtot = 0;
-                            while (rtot < sizeof(rbuf) - 1) {
-                                ssize_t rn = read(rfd, rbuf + rtot,
-                                                  sizeof(rbuf) - 1 - rtot);
-                                if (rn > 0) { rtot += (size_t)rn; continue; }
-                                if (rn == 0) break;
-                                if (errno == EINTR) continue;
-                                break;
-                            }
-                            close(rfd);
-                            rbuf[rtot] = '\0';
-                            /* Replace "completed": false with true */
-                            char *cp = strstr(rbuf, "\"completed\": false");
-                            if (cp) {
-                                cp[13] = 't'; cp[14] = 'r'; cp[15] = 'u';
-                                cp[16] = 'e';
-                                int wfd = open(rec_path,
-                                              O_WRONLY | O_TRUNC, 0644);
-                                if (wfd >= 0) {
-                                    write(wfd, rbuf, rtot);
-                                    close(wfd);
-                                }
-                            }
-                        }
                     }
                     state_diag_inc(rt, &rt->diag_saves);
-                    /* Don't save again in the save phase */
                     pos = 0;
                 }
             }
@@ -1307,48 +733,60 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
 
         /* Save phase */
         if (pos >= cfg->min_save_ms) {
-            int bucket = (int)(pos / cfg->save_bucket_ms);
+            if (rt->position_protected_until_ms > 0 &&
+                pos <= rt->position_protected_until_ms) {
+                /* Keep the old bookmark protected until playback advances. */
+            } else {
+                if (rt->position_protected_until_ms > 0 &&
+                    pos > rt->position_protected_until_ms) {
+                    rt->position_protected_until_ms = 0;
+                }
 
-            if (auto_restore && rt->restored_path[0] &&
-                strcmp(rt->restored_path, path) != 0 &&
-                pos <= cfg->restore_only_before_ms) {
-                state_log_pre_restore_skip(rt, cfg, path, pos);
-            } else if (should_skip_failed_restore_save(cfg, path, pos)) {
-                /* skip */
-            } else if (rt->completed_start_over_path[0] &&
-                       strcmp(rt->completed_start_over_path, path) == 0) {
-                shadow_wrap_save(cfg, path, pos, NULL);
-                state_diag_inc(rt, &rt->diag_saves);
-                rt->last_saved_bucket = bucket;
-                rt->completed_start_over_path[0] = '\0';
-                rt->deferred_overwrite_path[0] = '\0';
-            } else if (should_defer_new_track_save(cfg, path, rt->last_path,
-                                                    0, now)) {
-                if (strcmp(rt->deferred_overwrite_path, path) != 0) {
-                    log_msg("defer save path=%s pos=%u", path, pos);
-                    strncpy(rt->deferred_overwrite_path, path,
-                            sizeof(rt->deferred_overwrite_path) - 1);
-                    rt->deferred_overwrite_path[sizeof(rt->deferred_overwrite_path) - 1] = '\0';
+                int bucket = (int)(pos / cfg->save_bucket_ms);
+
+                if (auto_restore && rt->restored_path[0] &&
+                    strcmp(rt->restored_path, path) != 0 &&
+                    pos <= cfg->restore_only_before_ms) {
+                    state_log_pre_restore_skip(rt, cfg, path, pos);
+                } else if (should_skip_failed_restore_save(cfg, path, pos)) {
+                    /* skip */
+                } else if (rt->completed_start_over_path[0] &&
+                           strcmp(rt->completed_start_over_path, path) == 0) {
+                    shadow_wrap_save(cfg, path, pos, NULL);
+                    state_diag_inc(rt, &rt->diag_saves);
+                    rt->last_saved_bucket = bucket;
+
+                    rt->completed_start_over_path[0] = '\0';
+                    rt->deferred_overwrite_path[0] = '\0';
+                } else if (should_defer_new_track_save(cfg, path, rt->last_path,
+                                                        0, now)) {
+                    if (strcmp(rt->deferred_overwrite_path, path) != 0) {
+                        log_msg("defer save path=%s pos=%u", path, pos);
+                        strncpy(rt->deferred_overwrite_path, path,
+                                sizeof(rt->deferred_overwrite_path) - 1);
+                        rt->deferred_overwrite_path[sizeof(rt->deferred_overwrite_path) - 1] = '\0';
+                    }
+                } else if (bucket != rt->last_saved_bucket ||
+                           strcmp(path, rt->last_path) != 0) {
+                    resume_record tmpl;
+                    memset(&tmpl, 0, sizeof(tmpl));
+                    tmpl.schema_version = 3;
+                    state_book_root(path, tmpl.root_hiby_path, sizeof(tmpl.root_hiby_path));
+                    safe_id(tmpl.root_hiby_path, tmpl.book_id, sizeof(tmpl.book_id));
+                    if (bkp) strncpy(tmpl.book_key, bkp, sizeof(tmpl.book_key) - 1);
+                    const catalog_entry *ce_now = catalog_field_for_path(cat, path);
+                    if (ce_now) {
+                        tmpl.media_id = ce_now->media_id;
+                        tmpl.track_index = ce_now->index;
+                        tmpl.track_count = ce_now->count;
+                        strncpy(tmpl.chapter_title, ce_now->title, sizeof(tmpl.chapter_title) - 1);
+                    }
+                    tmpl.last_played_at = now_loop;
+                    shadow_wrap_save(cfg, path, pos, &tmpl);
+                    state_diag_inc(rt, &rt->diag_saves);
+                    rt->last_saved_bucket = bucket;
+                    rt->deferred_overwrite_path[0] = '\0';
                 }
-            } else if (bucket != rt->last_saved_bucket ||
-                       strcmp(path, rt->last_path) != 0) {
-                resume_record tmpl;
-                memset(&tmpl, 0, sizeof(tmpl));
-                tmpl.schema_version = 3;
-                state_book_root(path, tmpl.root_hiby_path, sizeof(tmpl.root_hiby_path));
-                safe_id(tmpl.root_hiby_path, tmpl.book_id, sizeof(tmpl.book_id));
-                if (bkp) strncpy(tmpl.book_key, bkp, sizeof(tmpl.book_key) - 1);
-                const catalog_entry *ce = catalog_field_for_path(cat, path);
-                if (ce) {
-                    tmpl.media_id = ce->media_id;
-                    tmpl.track_index = ce->index;
-                    tmpl.track_count = ce->count;
-                    strncpy(tmpl.chapter_title, ce->title, sizeof(tmpl.chapter_title) - 1);
-                }
-                shadow_wrap_save(cfg, path, pos, &tmpl);
-                state_diag_inc(rt, &rt->diag_saves);
-                rt->last_saved_bucket = bucket;
-                rt->deferred_overwrite_path[0] = '\0';
             }
         }
 
@@ -1366,8 +804,9 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
         rt->last_saved_bucket = -1;
         rt->deferred_overwrite_path[0] = '\0';
         rt->completed_start_over_path[0] = '\0';
+        rt->position_protected_until_ms = 0;
+        rt->last_paused_at = now_loop;
         rt->last_path[0] = '\0';
-        rt->autotap_last_path[0] = '\0';  /* clear auto-tap state on exit */
     }
 
     return loop_sleep;

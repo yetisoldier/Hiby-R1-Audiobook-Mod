@@ -75,7 +75,7 @@ int shadow_wrap_restore(const daemon_config *cfg, const char *path,
     }
 
     /* Log what the restore target would be */
-    uint32_t target = restore_target_ms(cfg, current_position_ms);
+    uint32_t target = restore_target_ms(cfg, current_position_ms, 0);
     shadow_log_action("RESTORE",
         "path=%s current_pos=%u target_pos=%u book_key=%s root=%s",
         path ? path : "(null)",
@@ -114,15 +114,6 @@ int shadow_wrap_ui_detail(const daemon_config *cfg, const char *label,
 /* ── Play mode wrapper ───────────────────────────────────────────── */
 
 int shadow_wrap_play_mode(const daemon_config *cfg) {
-    if (!shadow_is_active(cfg)) {
-        return ensure_audiobook_play_mode(cfg);
-    }
-
-    shadow_log_action("PLAY_MODE",
-        "target=%d touch=(%u,%u) max_taps=%d",
-        (int)cfg->play_mode_target,
-        (unsigned)cfg->play_mode_touch_x,
-        (unsigned)cfg->play_mode_touch_y,
-        (int)cfg->play_mode_max_taps);
+    (void)cfg;
     return 0;
 }
