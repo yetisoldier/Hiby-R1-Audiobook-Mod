@@ -827,9 +827,17 @@ def digest(path: Path, algorithm: str) -> str:
     return h.hexdigest()
 
 
-def patch_bytes(data: bytearray, offset: int, expected: bytes, replacement: bytes) -> None:
+def patch_bytes(data: bytearray, offset: int, expected: bytes, replacement: bytes, skip_existing: bool = False) -> None:
     found = bytes(data[offset : offset + len(expected)])
     if found != expected:
+        if skip_existing:
+            if found == replacement:
+                return  # Already patched with our patch, skip
+            # Bytes don't match original or replacement — possibly patched by a different version
+            # Skip with warning rather than failing
+            import sys as _sys
+            print(f"WARNING: skip_existing: offset 0x{offset:x} has unexpected bytes (found {found.hex()}, expected {expected.hex()}) — skipping", file=_sys.stderr)
+            return
         raise SystemExit(
             f"Refusing to patch offset 0x{offset:x}: expected {expected.hex()}, found {found.hex()}"
         )
@@ -852,10 +860,11 @@ def apply_patches(
     audiobook_title_autostart_marker: bool,
     audiobook_explorer_marker: bool,
     select_dispatch: bool,
+    skip_existing: bool = False,
 ) -> None:
     md5 = digest(input_path, "md5")
     sha256 = digest(input_path, "sha256")
-    if md5 != STOCK_MD5 or sha256 != STOCK_SHA256:
+    if not skip_existing and (md5 != STOCK_MD5 or sha256 != STOCK_SHA256):
         raise SystemExit(
             "Input does not match stock HiBy R1 firmware 1.6 hiby_player.\n"
             f"  expected md5    {STOCK_MD5}\n"
@@ -900,20 +909,20 @@ def apply_patches(
         )
 
     if scan_skip:
-        patch_bytes(data, SCAN_SKIP_OFFSET, SCAN_SKIP_ORIGINAL, SCAN_SKIP_PATCHED)
+        patch_bytes(data, SCAN_SKIP_OFFSET, SCAN_SKIP_ORIGINAL, SCAN_SKIP_PATCHED, skip_existing=skip_existing)
         applied.append("scan-skip-audiobooks")
 
     if book_audio_shim:
         for offset, expected, replacement in BOOK_AUDIO_SHIM_PATCHES:
-            patch_bytes(data, offset, expected, replacement)
+            patch_bytes(data, offset, expected, replacement, skip_existing=skip_existing)
         applied.append("book-audio-shim")
 
     if audiobook_launcher_genre:
         for offset, expected, replacement in AUDIOBOOK_LAUNCHER_PATCHES:
-            patch_bytes(data, offset, expected, replacement)
+            patch_bytes(data, offset, expected, replacement, skip_existing=skip_existing)
         if audiobook_private_direct_route:
             for offset, expected, replacement in AUDIOBOOK_PRIVATE_DIRECT_ROUTE_PATCHES:
-                patch_bytes(data, offset, expected, replacement)
+                patch_bytes(data, offset, expected, replacement, skip_existing=skip_existing)
         applied.append("audiobook-launcher-genre")
         if audiobook_private_direct_route:
             applied.append("audiobook-private-direct-route")
@@ -922,41 +931,41 @@ def apply_patches(
 
     if audiobook_native_hub_title_row:
         for offset, expected, replacement in AUDIOBOOK_NATIVE_HUB_TITLE_ROW_PATCHES:
-            patch_bytes(data, offset, expected, replacement)
+            patch_bytes(data, offset, expected, replacement, skip_existing=skip_existing)
         applied.append("audiobook-native-hub-title-row")
 
     if audiobook_native_hub_launcher:
         for offset, expected, replacement in AUDIOBOOK_NATIVE_HUB_LAUNCHER_PATCHES:
-            patch_bytes(data, offset, expected, replacement)
+            patch_bytes(data, offset, expected, replacement, skip_existing=skip_existing)
         applied.append("audiobook-native-hub-launcher")
 
     if audiobook_native_hub_folder_rows:
         for offset, expected, replacement in AUDIOBOOK_NATIVE_HUB_FOLDER_ROWS_PATCHES:
-            patch_bytes(data, offset, expected, replacement)
+            patch_bytes(data, offset, expected, replacement, skip_existing=skip_existing)
         applied.append("audiobook-native-hub-folder-rows")
 
     if audiobook_native_hub_view_rows:
         for offset, expected, replacement in AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_PATCHES:
-            patch_bytes(data, offset, expected, replacement)
+            patch_bytes(data, offset, expected, replacement, skip_existing=skip_existing)
         applied.append("audiobook-native-hub-view-rows")
 
     if audiobook_direct_open:
         for offset, expected, replacement in AUDIOBOOK_DIRECT_OPEN_PATCHES:
-            patch_bytes(data, offset, expected, replacement)
+            patch_bytes(data, offset, expected, replacement, skip_existing=skip_existing)
         applied.append("audiobook-direct-open")
 
     if audiobook_title_autostart_marker:
         for offset, expected, replacement in AUDIOBOOK_TITLE_MARKER_PATCHES:
-            patch_bytes(data, offset, expected, replacement)
+            patch_bytes(data, offset, expected, replacement, skip_existing=skip_existing)
         applied.append("audiobook-title-autostart-marker")
 
     if audiobook_explorer_marker:
         for offset, expected, replacement in AUDIOBOOK_EXPLORER_MARKER_PATCHES:
-            patch_bytes(data, offset, expected, replacement)
+            patch_bytes(data, offset, expected, replacement, skip_existing=skip_existing)
         applied.append("audiobook-explorer-marker")
 
     if select_dispatch:
-        patch_bytes(data, *SELECT_DISPATCH_PATCH)
+        patch_bytes(data, *SELECT_DISPATCH_PATCH, skip_existing=skip_existing)
         applied.append("select-dispatch-branch")
 
     output_path.write_bytes(data)
@@ -1062,6 +1071,14 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--skip-existing-patches",
+        action="store_true",
+        help=(
+            "Skip patches that are already applied (for re-patching an already-patched binary). "
+            "Also relaxes the stock MD5/SHA256 check."
+        ),
+    )
+    parser.add_argument(
         "--audiobook-title-autostart-marker",
         action="store_true",
         help=(
@@ -1095,6 +1112,7 @@ def main() -> None:
         audiobook_title_autostart_marker=args.audiobook_title_autostart_marker,
         audiobook_explorer_marker=args.audiobook_explorer_marker,
         select_dispatch=args.select_dispatch_branch,
+        skip_existing=args.skip_existing_patches,
     )
 
 

@@ -446,6 +446,8 @@ def build(args: argparse.Namespace) -> None:
         player_patch_args.append("--select-dispatch-branch")
     if args.include_audiobook_direct_open_patch:
         player_patch_args.append("--audiobook-direct-open")
+    if args.skip_existing_patches:
+        player_patch_args.append("--skip-existing-patches")
 
     log.info("Patching hiby_player")
     run_python("patch_hiby_player.py", player_patch_args)
@@ -914,6 +916,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Add select dispatch branch to hiby_player")
     parser.add_argument("--include-audiobook-direct-open-patch", action="store_true",
                         help="Apply direct-open binary patch (title tap -> shared_media_open, no track list)")
+    parser.add_argument("--skip-existing-patches", action="store_true",
+                        help="Skip patches already applied (for re-patching an already-patched binary)")
     parser.add_argument("--include-audiobook-launcher-icon", action="store_true",
                         help="Generate audiobook launcher icons")
     parser.add_argument("--enable-boot-adb", action="store_true",
