@@ -879,7 +879,9 @@ int state_maybe_restore_track(daemon_runtime *rt, const daemon_config *cfg,
  */
 static bool auto_tap_first_track_fb(daemon_runtime *rt,
                                     const daemon_config *cfg,
-                                    const char *path)
+                                    const char *path,
+                                    const char *book_key,
+                                    const char *book_root)
 {
     if (!rt || !cfg || !path || !path[0])
         return false;
@@ -903,12 +905,9 @@ static bool auto_tap_first_track_fb(daemon_runtime *rt,
     }
 
     /* Look up saved resume record for this book to find the saved track */
-    char book_root[512];
-    state_book_root(path, book_root, sizeof(book_root));
-
     int saved_track_index = -1;
     resume_record rec;
-    if (existing_record_for_path(cfg, path, NULL, book_root, &rec) == 0) {
+    if (existing_record_for_path(cfg, path, book_key, book_root, &rec) == 0) {
         saved_track_index = rec.track_index;
         log_msg("auto-tap saved track=%d path=%s", saved_track_index, path);
     }
@@ -1111,7 +1110,11 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
             rt->deferred_overwrite_path[0] = '\0';
 
             /* Phase 2: Auto-tap first track via framebuffer detection (Approach A) */
-            auto_tap_first_track_fb(rt, cfg, path);
+            char at_root[512]; state_book_root(path, at_root, sizeof(at_root));
+            char at_bk[128] = "";
+            const char *at_bkp = book_key_for_path(cat, path);
+            if (at_bkp) strncpy(at_bk, at_bkp, sizeof(at_bk) - 1);
+            auto_tap_first_track_fb(rt, cfg, path, at_bk, at_root);
         }
 
         char root[512]; state_book_root(path, root, sizeof(root));
