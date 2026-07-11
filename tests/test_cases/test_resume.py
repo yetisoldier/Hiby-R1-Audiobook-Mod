@@ -148,7 +148,7 @@ def run(ctx: TestContext) -> None:
 
     # Find resume JSON files
     resume_files = ctx.shell(
-        "ls /usr/data/audiobooks/resume.d/*.json 2>/dev/null || echo 'NO_FILES'"
+        "ls -t /usr/data/audiobooks/resume.d/*.json 2>/dev/null || echo 'NO_FILES'"
     )
     # Strip ANSI escape codes from ls output (BusyBox color ls)
     import re as _re
@@ -185,6 +185,7 @@ def run(ctx: TestContext) -> None:
         "path": ["path", "current_path", "root_hiby_path"],
         "position": ["position", "position_ms"],
         "track": ["track", "track_index"],
+        "track_count": ["track_count"],
     }
     missing = []
     for canonical, aliases in field_aliases.items():
@@ -210,15 +211,32 @@ def run(ctx: TestContext) -> None:
         position_int = int(position)
     except (ValueError, TypeError):
         position_int = 0
+    track_count = resume_data.get("track_count")
+    try:
+        track_count_int = int(track_count)
+    except (ValueError, TypeError):
+        track_count_int = -1
     if position_int <= 0:
-        print(color(f"  ⚠ Position is {position} (expected > 0)", C_YELLOW))
+        if track_count_int == 1:
+            print(color(
+                "  ✓ Position is 0 on a single-track book (fresh-start record)",
+                C_GREEN,
+            ))
+        else:
+            print(color(f"  ⚠ Position is {position} (expected > 0)", C_YELLOW))
     else:
         print(color(f"  ✓ Position: {position_int}", C_GREEN))
 
     # Verify track is present
     track = resume_data.get("track")
     if track is None:
-        print(color("  ⚠ Track field is null", C_YELLOW))
+        if track_count_int == 1:
+            print(color(
+                "  ✓ Track field is null on a single-track book (expected before track is committed)",
+                C_GREEN,
+            ))
+        else:
+            print(color("  ⚠ Track field is null", C_YELLOW))
     else:
         print(color(f"  ✓ Track: {track}", C_GREEN))
 

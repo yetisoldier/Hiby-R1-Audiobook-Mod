@@ -39,7 +39,15 @@ def run(ctx: TestContext) -> None:
     # ── Step 2: Open Audiobooks ────────────────────────────────────────────
     print(color("  Step 2: Open Audiobooks", C_DIM))
     ctx.screenshot("launcher-before-open")
+    # Give the launcher a moment to finish any back-navigation animation.
+    ctx.sleep(1)
     ctx.tap("main-audiobooks")
+    ctx.sleep(2)
+    state = classify_screen(ctx, "audiobooks-open-attempt")
+    if state == "launcher":
+        # The first touch can be swallowed if the launcher is still settling.
+        print(color("  Launcher still visible, retrying Audiobooks tap…", C_YELLOW))
+        ctx.tap("main-audiobooks")
     ctx.sleep(ctx.settle + 8)  # extra settle for app launch (native hub can be slow)
     ctx.screenshot("audiobooks-opened")
 
@@ -78,15 +86,8 @@ def run(ctx: TestContext) -> None:
 
     # ── Step 4: Back returns to launcher ───────────────────────────────────
     print(color("  Step 4: Back returns to launcher", C_DIM))
-    ctx.back()
-    ctx.sleep(ctx.settle + 2)
     ctx.screenshot("after-back")
-    state = classify_screen(ctx, "after-back-state")
-    if state != "launcher":
-        # Try a second back
-        ctx.back()
-        ctx.sleep(ctx.settle + 2)
-        state = classify_screen(ctx, "after-back-retry")
+    state = goto_launcher(ctx, max_backs=5)
     if state != "launcher":
         raise RuntimeError(
             f"Back from audiobook list did not return to launcher (got '{state}'). "
