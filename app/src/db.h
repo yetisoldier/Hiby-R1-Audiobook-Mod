@@ -12,6 +12,8 @@ typedef struct audiobook_db {
     sqlite3 *db;
 } audiobook_db;
 
+typedef struct m4b_chapter m4b_chapter;
+
 typedef struct book_row {
     int64_t book_id;
     char book_key[128];
@@ -98,7 +100,8 @@ int db_upsert_book(audiobook_db *adb, const book_row *book, int64_t *out_book_id
 int db_upsert_track(audiobook_db *adb, const track_row *track, int64_t *out_track_id);
 int db_set_progress(audiobook_db *adb, const progress_row *progress);
 int db_set_progress_txn(audiobook_db *adb, const progress_row *progress);
-int db_set_book_completion_txn(audiobook_db *adb, int64_t book_id, int completed, int64_t completed_at, int64_t last_played_at);
+int db_set_book_completion_txn(audiobook_db *adb, const progress_row *progress);
+int db_replace_track_chapters(audiobook_db *adb, int64_t track_id, const m4b_chapter *chapters, size_t count);
 int db_get_progress(audiobook_db *adb, int64_t book_id, progress_row *progress);
 int db_query_titles(audiobook_db *adb, book_list *out);
 int db_query_continue(audiobook_db *adb, book_list *out);

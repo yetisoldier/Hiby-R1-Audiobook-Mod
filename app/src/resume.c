@@ -68,10 +68,15 @@ int resume_on_event(resume_state *r, const audiobook_event *ev, progress_row *ou
     if (ev->type == AB_EVT_BOOK_OPENED) {
         r->started = false;
         r->completed = false;
+        r->started_at_ms = ab_now_ms();
+        if (r->progress.protected_until_ms < (int64_t)r->started_at_ms) {
+            r->progress.protected_until_ms = (int64_t)r->started_at_ms + 10000;
+        }
     } else if (ev->type == AB_EVT_BOOK_COMPLETED || ev->type == AB_EVT_EOF_REACHED) {
         r->completed = true;
         r->progress.completed = 1;
         r->progress.completed_at = (int64_t)ab_now_ms();
+        r->progress.protected_until_ms = 0;
     }
     if (ev->type == AB_EVT_PLAYBACK_STARTED || ev->type == AB_EVT_RESUMED) {
         r->started = true;
@@ -81,6 +86,7 @@ int resume_on_event(resume_state *r, const audiobook_event *ev, progress_row *ou
         ev->type == AB_EVT_TRACK_CHANGED || ev->type == AB_EVT_RESUMED) {
         r->progress.track_ordinal = (int)ev->track_ordinal;
         r->progress.position_ms = (int64_t)ev->position_ms;
+        r->progress.total_book_elapsed_ms = (int64_t)ev->position_ms;
         r->progress.playback_speed = (float)ev->playback_speed_x100 / 100.0f;
         r->progress.last_played_at = (int64_t)ab_now_ms();
         r->progress.last_saved_at = r->progress.last_played_at;
@@ -105,6 +111,7 @@ int resume_write_record_atomic(const char *dir, const progress_row *progress, co
              "  \"total_book_elapsed_ms\": %lld,\n"
              "  \"playback_speed\": %.2f,\n"
              "  \"completed\": %d,\n"
+             "  \"completed_at\": %lld,\n"
              "  \"protected_until_ms\": %lld,\n"
              "  \"last_saved_at\": %lld\n"
              "}\n",
@@ -115,6 +122,7 @@ int resume_write_record_atomic(const char *dir, const progress_row *progress, co
              (long long)progress->total_book_elapsed_ms,
              progress->playback_speed,
              progress->completed,
+             (long long)progress->completed_at,
              (long long)progress->protected_until_ms,
              (long long)progress->last_saved_at);
     return write_atomic_text(path, buf);
@@ -159,6 +167,9 @@ int resume_read_record(const char *path, progress_row *progress) {
     p = strstr(buf, "\"completed\"");
     colon = p ? strchr(p, ':') : NULL;
     if (colon) progress->completed = (int)parse_ll(skip_ws(colon + 1));
+    p = strstr(buf, "\"completed_at\"");
+    colon = p ? strchr(p, ':') : NULL;
+    if (colon) progress->completed_at = parse_ll(skip_ws(colon + 1));
     p = strstr(buf, "\"protected_until_ms\"");
     colon = p ? strchr(p, ':') : NULL;
     if (colon) progress->protected_until_ms = parse_ll(skip_ws(colon + 1));

@@ -1,5 +1,6 @@
 #include "scanner.h"
 #include "common.h"
+#include "m4b_decoder.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -217,6 +218,19 @@ static int persist_book(audiobook_db *db, scan_book *book, library_refresh_repor
         for (size_t i = 0; i < book->track_count; i++) {
             book->tracks[i].row.book_id = book->row.book_id;
             if (db_upsert_track(db, &book->tracks[i].row, &book->tracks[i].row.track_id) == 0) {
+                if (ab_ends_with(book->tracks[i].row.path, ".m4b") || ab_ends_with(book->tracks[i].row.path, ".m4a")) {
+                    m4b_decoder_state decoder;
+                    if (m4b_decoder_open(&decoder, book->tracks[i].row.path) == 0) {
+                        size_t chapter_count = m4b_decoder_chapter_count(&decoder);
+                        const m4b_chapter *chapters = m4b_decoder_chapters(&decoder);
+                        if (chapter_count > 0 && chapters) {
+                            (void)db_replace_track_chapters(db, book->tracks[i].row.track_id, chapters, chapter_count);
+                            book->tracks[i].row.embedded_chapters = (int)chapter_count;
+                            (void)db_upsert_track(db, &book->tracks[i].row, &book->tracks[i].row.track_id);
+                        }
+                        m4b_decoder_close(&decoder);
+                    }
+                }
                 if (report) report->tracks_found++;
             }
         }

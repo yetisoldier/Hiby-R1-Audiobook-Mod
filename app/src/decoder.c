@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "dr_flac.h"
+#include "m4b_decoder.h"
 #include "dr_wav.h"
 #include "minimp3_ex.h"
 
@@ -51,6 +52,15 @@ int decoder_open(audiobook_decoder *dec, const char *path) {
         return 0;
     }
 
+    if (ab_ends_with(path, ".m4b") || ab_ends_with(path, ".m4a") || ab_ends_with(path, ".aac")) {
+        if (m4b_decoder_open(&dec->u.m4b, path) != 0) return -1;
+        dec->kind = DECODER_KIND_M4B;
+        dec->sample_rate = dec->u.m4b.sample_rate;
+        dec->channels = dec->u.m4b.channels > 0 ? dec->u.m4b.channels : 2u;
+        dec->total_frames = dec->u.m4b.total_frames;
+        return 0;
+    }
+
     if (ab_ends_with(path, ".mp3")) {
         if (mp3dec_ex_open(&dec->u.mp3, path, MP3D_SEEK_TO_SAMPLE) != 0) return -1;
         dec->kind = DECODER_KIND_MP3;
@@ -76,6 +86,9 @@ void decoder_close(audiobook_decoder *dec) {
     case DECODER_KIND_MP3:
         mp3dec_ex_close(&dec->u.mp3);
         break;
+    case DECODER_KIND_M4B:
+        m4b_decoder_close(&dec->u.m4b);
+        break;
     default:
         break;
     }
@@ -92,6 +105,8 @@ int decoder_seek_ms(audiobook_decoder *dec, uint64_t position_ms) {
         return drflac_seek_to_pcm_frame(dec->u.flac, frame) ? 0 : -1;
     case DECODER_KIND_MP3:
         return mp3dec_ex_seek(&dec->u.mp3, frame * dec->channels) == 0 ? 0 : -1;
+    case DECODER_KIND_M4B:
+        return m4b_decoder_seek_ms(&dec->u.m4b, position_ms);
     case DECODER_KIND_SILENCE:
     case DECODER_KIND_NONE:
         dec->current_frame = frame;
@@ -122,6 +137,12 @@ size_t decoder_read_frames(audiobook_decoder *dec, int16_t *dst, size_t frames) 
         dec->eof = got == 0;
         return got;
     }
+    case DECODER_KIND_M4B: {
+        size_t got = m4b_decoder_read_frames(&dec->u.m4b, dst, frames);
+        dec->current_frame += got;
+        dec->eof = got == 0;
+        return got;
+    }
     case DECODER_KIND_SILENCE:
         memset(dst, 0, frames * dec->channels * sizeof(int16_t));
         dec->current_frame += frames;
@@ -134,6 +155,9 @@ size_t decoder_read_frames(audiobook_decoder *dec, int16_t *dst, size_t frames) 
 
 uint64_t decoder_duration_ms(const audiobook_decoder *dec) {
     if (!dec) return 0;
+    if (dec->kind == DECODER_KIND_M4B) {
+        return m4b_decoder_duration_ms(&dec->u.m4b);
+    }
     return frames_to_ms(dec->total_frames, dec->sample_rate);
 }
 

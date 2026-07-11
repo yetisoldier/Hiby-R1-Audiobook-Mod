@@ -225,6 +225,7 @@ static int open_book(ui_context *ui, audiobook_player *player, audiobook_db *db,
     uint64_t saved_absolute = prog.total_book_elapsed_ms > 0 ? (uint64_t)prog.total_book_elapsed_ms : (uint64_t)prog.position_ms;
     uint64_t paused_seconds = 0;
     bool rebooted = false;
+    bool was_completed = prog.completed != 0;
     if (prog.last_played_at > 0) {
         if (now < (uint64_t)prog.last_played_at) {
             rebooted = true;
@@ -234,24 +235,44 @@ static int open_book(ui_context *ui, audiobook_player *player, audiobook_db *db,
     }
     uint32_t rewinded_local = resume_smart_rewind_ms(paused_seconds, rebooted, (uint32_t)saved_local);
     progress_row play_prog = prog;
-    if (play_prog.completed) {
+    if (was_completed) {
         play_prog.track_ordinal = 1;
         play_prog.position_ms = 0;
         play_prog.total_book_elapsed_ms = 0;
+        play_prog.completed = 0;
+        play_prog.completed_at = 0;
     } else {
         play_prog.position_ms = (int64_t)rewinded_local;
         play_prog.total_book_elapsed_ms = (int64_t)saved_absolute;
     }
+    play_prog.protected_until_ms = (int64_t)now + 10000;
+    play_prog.last_played_at = (int64_t)now;
+    play_prog.last_saved_at = (int64_t)now;
     player_open_book(player, book, &ui->tracks, &play_prog);
     player_play(player);
     if (have_progress || saved_local > 0 || prog.completed) {
-        prog.position_ms = (int64_t)saved_local;
-        prog.total_book_elapsed_ms = (int64_t)saved_absolute;
-        prog.protected_until_ms = (int64_t)saved_local;
-        prog.last_played_at = (int64_t)now;
-        prog.last_saved_at = (int64_t)now;
-        (void)db_set_progress_txn(db, &prog);
-        (void)resume_write_record_atomic(ui->cfg.app_root, &prog, book);
+        progress_row write_prog = prog;
+        if (was_completed) {
+            write_prog.track_ordinal = 1;
+            write_prog.position_ms = 0;
+            write_prog.total_book_elapsed_ms = 0;
+            write_prog.completed = 0;
+            write_prog.completed_at = 0;
+        } else {
+            write_prog.position_ms = (int64_t)saved_local;
+            write_prog.total_book_elapsed_ms = (int64_t)saved_absolute;
+            write_prog.completed = 0;
+            write_prog.completed_at = 0;
+        }
+        write_prog.protected_until_ms = (int64_t)now + 10000;
+        write_prog.last_played_at = (int64_t)now;
+        write_prog.last_saved_at = (int64_t)now;
+        if (play_prog.completed) {
+            (void)db_set_book_completion_txn(db, &write_prog);
+        } else {
+            (void)db_set_progress_txn(db, &write_prog);
+        }
+        (void)resume_write_record_atomic(ui->cfg.app_root, &write_prog, book);
     }
     if (resume) {
         audiobook_event ev = {0};
@@ -259,7 +280,8 @@ static int open_book(ui_context *ui, audiobook_player *player, audiobook_db *db,
         ev.book_id = (uint32_t)book->book_id;
         snprintf(ev.book_key, sizeof(ev.book_key), "%s", book->book_key);
         progress_row out;
-        resume_bind_book(resume, book, &prog);
+        progress_row bound_prog = was_completed ? play_prog : prog;
+        resume_bind_book(resume, book, &bound_prog);
         resume_on_event(resume, &ev, &out);
     }
     ui->screen = UI_SCREEN_NOW_PLAYING;

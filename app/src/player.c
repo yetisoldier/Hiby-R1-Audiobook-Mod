@@ -79,7 +79,7 @@ static int open_transport_locked(audiobook_player *player) {
     player->audio_open = true;
 
     uint64_t seek_ms = player->pending_seek_ms;
-    uint64_t duration_ms = decoder_duration_ms(&player->decoder);
+    uint64_t duration_ms = track_duration_ms_locked(&player->queue, player->queue.current_index);
     if (duration_ms > 0 && seek_ms > duration_ms) seek_ms = duration_ms;
     if (seek_ms > 0 || player->pending_seek) {
         (void)decoder_seek_ms(&player->decoder, seek_ms);

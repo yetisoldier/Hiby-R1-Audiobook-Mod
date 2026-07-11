@@ -1,5 +1,6 @@
 #include "db.h"
 #include "common.h"
+#include "m4b_decoder.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -174,40 +175,93 @@ int db_set_progress_txn(audiobook_db *adb, const progress_row *progress) {
     return 0;
 }
 
-int db_set_book_completion_txn(audiobook_db *adb, int64_t book_id, int completed, int64_t completed_at, int64_t last_played_at) {
-    if (!adb || !adb->db) return -1;
+int db_set_book_completion_txn(audiobook_db *adb, const progress_row *progress) {
+    if (!adb || !adb->db || !progress) return -1;
     if (exec_sql(adb->db, "BEGIN IMMEDIATE;") != 0) return -1;
 
-    sqlite3_stmt *progress = NULL;
+    sqlite3_stmt *progress_st = NULL;
     sqlite3_stmt *book = NULL;
     int ok = 0;
 
-    if (prepare(adb->db, &progress,
-                "UPDATE progress SET completed=?, completed_at=?, last_played_at=?, last_saved_at=?, protected_until_ms=0 WHERE book_id=?") != 0) {
+    if (prepare(adb->db, &progress_st,
+                "INSERT INTO progress(book_id,track_id,track_ordinal,position_ms,total_book_elapsed_ms,playback_speed,last_played_at,completed,completed_at,last_saved_at,protected_until_ms)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?)"
+                " ON CONFLICT(book_id) DO UPDATE SET track_id=excluded.track_id, track_ordinal=excluded.track_ordinal, position_ms=excluded.position_ms, total_book_elapsed_ms=excluded.total_book_elapsed_ms, playback_speed=excluded.playback_speed, last_played_at=excluded.last_played_at, completed=excluded.completed, completed_at=excluded.completed_at, last_saved_at=excluded.last_saved_at, protected_until_ms=excluded.protected_until_ms") != 0) {
         goto done;
     }
-    sqlite3_bind_int(progress, 1, completed ? 1 : 0);
-    sqlite3_bind_int64(progress, 2, completed_at);
-    sqlite3_bind_int64(progress, 3, last_played_at);
-    sqlite3_bind_int64(progress, 4, last_played_at);
-    sqlite3_bind_int64(progress, 5, book_id);
-    if (sqlite3_step(progress) != SQLITE_DONE) goto done;
+    sqlite3_bind_int64(progress_st, 1, progress->book_id);
+    sqlite3_bind_int64(progress_st, 2, progress->track_id);
+    sqlite3_bind_int(progress_st, 3, progress->track_ordinal);
+    sqlite3_bind_int64(progress_st, 4, progress->position_ms);
+    sqlite3_bind_int64(progress_st, 5, progress->total_book_elapsed_ms);
+    sqlite3_bind_double(progress_st, 6, progress->playback_speed);
+    sqlite3_bind_int64(progress_st, 7, progress->last_played_at);
+    sqlite3_bind_int(progress_st, 8, progress->completed);
+    sqlite3_bind_int64(progress_st, 9, progress->completed_at);
+    sqlite3_bind_int64(progress_st, 10, progress->last_saved_at);
+    sqlite3_bind_int64(progress_st, 11, progress->protected_until_ms);
+    if (sqlite3_step(progress_st) != SQLITE_DONE) goto done;
 
     if (prepare(adb->db, &book,
                 "UPDATE books SET completed=?, completed_at=?, last_played_at=? WHERE book_id=?") != 0) {
         goto done;
     }
-    sqlite3_bind_int(book, 1, completed ? 1 : 0);
-    sqlite3_bind_int64(book, 2, completed_at);
-    sqlite3_bind_int64(book, 3, last_played_at);
-    sqlite3_bind_int64(book, 4, book_id);
+    sqlite3_bind_int(book, 1, progress->completed ? 1 : 0);
+    sqlite3_bind_int64(book, 2, progress->completed_at);
+    sqlite3_bind_int64(book, 3, progress->last_played_at);
+    sqlite3_bind_int64(book, 4, progress->book_id);
     if (sqlite3_step(book) != SQLITE_DONE) goto done;
 
     ok = 1;
 
 done:
-    if (progress) sqlite3_finalize(progress);
+    if (progress_st) sqlite3_finalize(progress_st);
     if (book) sqlite3_finalize(book);
+    if (!ok) {
+        exec_sql(adb->db, "ROLLBACK;");
+        return -1;
+    }
+    if (exec_sql(adb->db, "COMMIT;") != 0) {
+        exec_sql(adb->db, "ROLLBACK;");
+        return -1;
+    }
+    return 0;
+}
+
+int db_replace_track_chapters(audiobook_db *adb, int64_t track_id, const m4b_chapter *chapters, size_t count) {
+    if (!adb || !adb->db) return -1;
+    if (exec_sql(adb->db, "BEGIN IMMEDIATE;") != 0) return -1;
+
+    sqlite3_stmt *del = NULL;
+    sqlite3_stmt *ins = NULL;
+    int ok = 0;
+
+    if (prepare(adb->db, &del, "DELETE FROM chapters WHERE track_id=?") != 0) goto done;
+    sqlite3_bind_int64(del, 1, track_id);
+    if (sqlite3_step(del) != SQLITE_DONE) goto done;
+
+    if (count > 0) {
+        if (prepare(adb->db, &ins,
+                    "INSERT INTO chapters(track_id,ordinal,title,start_ms,end_ms,bookmarkable) VALUES(?,?,?,?,?,1)") != 0) {
+            goto done;
+        }
+        for (size_t i = 0; i < count; i++) {
+            sqlite3_bind_int64(ins, 1, track_id);
+            sqlite3_bind_int(ins, 2, (int)(i + 1));
+            sqlite3_bind_text(ins, 3, chapters[i].title, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(ins, 4, chapters[i].start_ms);
+            sqlite3_bind_int64(ins, 5, chapters[i].end_ms);
+            if (sqlite3_step(ins) != SQLITE_DONE) goto done;
+            sqlite3_reset(ins);
+            sqlite3_clear_bindings(ins);
+        }
+    }
+
+    ok = 1;
+
+done:
+    if (del) sqlite3_finalize(del);
+    if (ins) sqlite3_finalize(ins);
     if (!ok) {
         exec_sql(adb->db, "ROLLBACK;");
         return -1;
@@ -502,5 +556,12 @@ void db_free_bookmark_list(bookmark_list *list) {
 }
 
 int db_mark_book_completed(audiobook_db *adb, int64_t book_id, int64_t completed_at) {
-    return db_set_book_completion_txn(adb, book_id, 1, completed_at, completed_at);
+    if (!adb || !adb->db) return -1;
+    sqlite3_stmt *st = NULL;
+    if (prepare(adb->db, &st, "UPDATE books SET completed=1, completed_at=? WHERE book_id=?") != 0) return -1;
+    sqlite3_bind_int64(st, 1, completed_at);
+    sqlite3_bind_int64(st, 2, book_id);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE ? 0 : -1;
 }

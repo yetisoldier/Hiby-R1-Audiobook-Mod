@@ -8,12 +8,14 @@
 #include "dr_flac.h"
 #include "dr_wav.h"
 #include "minimp3_ex.h"
+#include "m4b_decoder.h"
 
 typedef enum decoder_kind {
     DECODER_KIND_NONE = 0,
     DECODER_KIND_WAV,
     DECODER_KIND_FLAC,
     DECODER_KIND_MP3,
+    DECODER_KIND_M4B,
     DECODER_KIND_SILENCE,
 } decoder_kind;
 
@@ -29,6 +31,7 @@ typedef struct audiobook_decoder {
         drwav wav;
         drflac *flac;
         mp3dec_ex_t mp3;
+        m4b_decoder_state m4b;
     } u;
 } audiobook_decoder;
 
