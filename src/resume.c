@@ -131,6 +131,16 @@ int json_bool(const char *json, const char *key, bool *out) {
     return 0;
 }
 
+static void json_time_or_zero(const char *json, const char *key, time_t *out) {
+    int v = -1;
+    if (!out) return;
+    if (json_number(json, key, &v) == 0 && v > 0) {
+        *out = (time_t)v;
+    } else {
+        *out = 0;
+    }
+}
+
 /* ── safe_id ──────────────────────────────────────────────────────── */
 
 void safe_id(const char *in, char *out, size_t out_len) {
@@ -227,6 +237,9 @@ int existing_record_for_path(const daemon_config *cfg, const char *path,
     if (json_value(buf, "position_ms", numbuf, sizeof(numbuf)) == 0)
         rec->position_ms = (uint32_t)strtoul(numbuf, NULL, 10);
 
+    json_time_or_zero(buf, "last_played_at", &rec->last_played_at);
+    json_time_or_zero(buf, "completed_at", &rec->completed_at);
+
     bool bval = false;
     json_bool(buf, "completed", &bval);
     rec->completed = bval;
@@ -255,8 +268,7 @@ bool completion_state_for_path_position(const daemon_config *cfg,
 
 /* ── Save position ────────────────────────────────────────────────── */
 
-static void generate_timestamp_utc(char *out, size_t out_len) {
-    time_t now = time(NULL);
+static void generate_timestamp_utc(char *out, size_t out_len, time_t now) {
     struct tm tm;
     gmtime_r(&now, &tm);
     strftime(out, out_len, "%Y-%m-%dT%H:%M:%SZ", &tm);
@@ -278,8 +290,9 @@ int save_position(const daemon_config *cfg, const char *path,
     }
 
     /* Generate timestamp */
+    time_t now = time(NULL);
     char timestamp[32];
-    generate_timestamp_utc(timestamp, sizeof(timestamp));
+    generate_timestamp_utc(timestamp, sizeof(timestamp), now);
 
     /* Build the JSON record */
     char json[4096];
@@ -354,12 +367,25 @@ int save_position(const daemon_config *cfg, const char *path,
     /* position_ms */
     pos += snprintf(json + pos, sizeof(json) - pos, "  \"position_ms\": %u,\n", position_ms);
 
+    /* last_played_at */
+    time_t last_played_at = (template_rec && template_rec->last_played_at > 0)
+                                ? template_rec->last_played_at : now;
+    pos += snprintf(json + pos, sizeof(json) - pos, "  \"last_played_at\": %ld,\n",
+                    (long)last_played_at);
+
     /* updated_at */
     pos += snprintf(json + pos, sizeof(json) - pos, "  \"updated_at\": \"%s\",\n", timestamp);
 
-    /* completed — always false on save (completion is detected, not saved) */
-    pos += snprintf(json + pos, sizeof(json) - pos, "  \"completed\": false\n");
-
+    /* completed_at / completed */
+    if (template_rec && template_rec->completed) {
+        time_t completed_at = template_rec->completed_at > 0 ? template_rec->completed_at : now;
+        pos += snprintf(json + pos, sizeof(json) - pos, "  \"completed_at\": %ld,\n",
+                        (long)completed_at);
+        pos += snprintf(json + pos, sizeof(json) - pos, "  \"completed\": true\n");
+    } else {
+        pos += snprintf(json + pos, sizeof(json) - pos, "  \"completed_at\": null,\n");
+        pos += snprintf(json + pos, sizeof(json) - pos, "  \"completed\": false\n");
+    }
     pos += snprintf(json + pos, sizeof(json) - pos, "}\n");
 
     /* Write atomically: temp file + rename */
@@ -405,21 +431,46 @@ int save_position(const daemon_config *cfg, const char *path,
 
 /* ── Restore target computation ───────────────────────────────────── */
 
-uint32_t restore_target_ms(const daemon_config *cfg, uint32_t saved_position_ms) {
-    if (!cfg) return saved_position_ms;
+static uint32_t smart_rewind_ms_for_resume(const daemon_config *cfg,
+                                            time_t last_played_at) {
+    if (!cfg) return 0;
 
-    if (saved_position_ms <= cfg->restore_rewind_ms) {
+    if (!cfg->smart_rewind_enabled) {
+        return cfg->restore_rewind_ms;
+    }
+
+    if (last_played_at <= 0) {
+        return cfg->rewind_long_ms;
+    }
+
+    time_t now = time(NULL);
+    if (now <= last_played_at) {
         return 0;
     }
 
-    uint32_t target = saved_position_ms - cfg->restore_rewind_ms;
+    uint32_t paused_seconds = (uint32_t)(now - last_played_at);
+    if (paused_seconds < 300) {
+        return 0;
+    }
+    if (paused_seconds < 3600) {
+        return cfg->rewind_short_ms;
+    }
+    if (paused_seconds < 86400) {
+        return cfg->rewind_medium_ms;
+    }
+    return cfg->rewind_long_ms;
+}
 
-    /* Clamp: don't restore below restore_min_ms */
-    if (target < cfg->restore_min_ms) {
-        target = cfg->restore_min_ms;
+uint32_t restore_target_ms(const daemon_config *cfg, uint32_t saved_position_ms,
+                           time_t last_played_at) {
+    if (!cfg) return saved_position_ms;
+
+    uint32_t rewind_ms = smart_rewind_ms_for_resume(cfg, last_played_at);
+    if (saved_position_ms <= rewind_ms) {
+        return 0;
     }
 
-    return target;
+    return saved_position_ms - rewind_ms;
 }
 
 /* ── Restore logic ────────────────────────────────────────────────── */
@@ -453,7 +504,7 @@ int maybe_restore(const daemon_config *cfg, const char *path,
     }
 
     /* Compute restore target */
-    uint32_t target = restore_target_ms(cfg, rec.position_ms);
+    uint32_t target = restore_target_ms(cfg, rec.position_ms, rec.last_played_at);
 
     /* In a full implementation, this would call the seek helper or UI seek.
      * For Phase 2, we just log the intent. */
