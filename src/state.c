@@ -117,15 +117,17 @@ void state_diag_log(daemon_runtime *rt, const daemon_config *cfg, time_t now) {
     if (!rt || !cfg || cfg->diagnostics_interval_seconds == 0) return;
     if (rt->diag_last_log_at == 0) { rt->diag_last_log_at = now; return; }
     if ((now - rt->diag_last_log_at) < (time_t)cfg->diagnostics_interval_seconds) return;
-    log_msg("stats loops=%d ab=%d nab=%d pp=%d mp=%d ms=%d pr=%d sv=%d",
+    log_msg("stats loops=%d ab=%d nab=%d pp=%d mp=%d ms=%d pr=%d sv=%d at_fired=%d at_skipped=%d",
             rt->diag_loops, rt->diag_audiobook_loops,
             rt->diag_non_audiobook_loops, rt->diag_path_previews,
             rt->diag_marker_polls, rt->diag_marker_skips,
-            rt->diag_position_reads, rt->diag_saves);
+            rt->diag_position_reads, rt->diag_saves,
+            rt->diag_autotap_fired, rt->diag_autotap_skipped);
     rt->diag_last_log_at = now;
     rt->diag_loops = rt->diag_audiobook_loops = rt->diag_non_audiobook_loops = 0;
     rt->diag_path_previews = rt->diag_marker_polls = rt->diag_marker_skips = 0;
     rt->diag_position_reads = rt->diag_saves = 0;
+    rt->diag_autotap_fired = rt->diag_autotap_skipped = 0;
 }
 
 /* ── Logging helpers ──────────────────────────────────────────────── */
@@ -854,6 +856,117 @@ int state_maybe_restore_track(daemon_runtime *rt, const daemon_config *cfg,
     return -1;
 }
 
+/* ── Auto-tap first track (Phase 2) ───────────────────────────── */
+
+/*
+ * auto_tap_first_track — detect .m3u playlist open under _views/ and
+ * automatically tap the first track so playback starts without manual
+ * selection.
+ *
+ * Detection: the path contains "_views/" (or "_views\\") and ".m3u".
+ * Guard: only fires once per unique path (rt->autotap_last_path).
+ * Delay: sleeps autotap_delay_ms before tapping (configurable).
+ * Touch: reuses touch_first_track() from ui.c (same pre-recorded event).
+ *
+ * Returns true if a tap was sent, false if skipped.
+ */
+static bool auto_tap_first_track(daemon_runtime *rt,
+                                 const daemon_config *cfg,
+                                 const char *path)
+{
+    if (!rt || !cfg || !path || !path[0])
+        return false;
+
+    /* Master switch */
+    if (!cfg->autotap_enabled) {
+        state_diag_inc(rt, &rt->diag_autotap_skipped);
+        return false;
+    }
+
+    /* Must be an audiobook path */
+    if (!path_preview_is_audiobook(path)) {
+        state_diag_inc(rt, &rt->diag_autotap_skipped);
+        return false;
+    }
+
+    /* Must contain _views/ (or _views\) and .m3u */
+    bool has_views = false;
+    bool has_m3u   = false;
+
+    /* Check for _views/ or _views\ in the path (case-insensitive).
+     * hiby paths use backslashes: a:\Audiobooks\_views\Titles\Book.m3u
+     * But forward slashes may also appear depending on source. */
+    {
+        const char *p = path;
+        for (; *p; p++) {
+            if (strncasecmp(p, "_views", 6) == 0) {
+                char sep = p[6];
+                if (sep == '\\' || sep == '/') {
+                    has_views = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    /* Check for .m3u extension (case-insensitive) */
+    {
+        size_t plen = strlen(path);
+        if (plen >= 4) {
+            const char *ext = path + plen - 4;
+            if (strncasecmp(ext, ".m3u", 4) == 0)
+                has_m3u = true;
+        }
+        /* Also match .m3u anywhere in path (some paths may have suffixes) */
+        if (!has_m3u) {
+            const char *p = path;
+            for (; *p; p++) {
+                if (strncasecmp(p, ".m3u", 4) == 0) {
+                    has_m3u = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (cfg->autotap_require_views_path && !has_views) {
+        state_diag_inc(rt, &rt->diag_autotap_skipped);
+        return false;
+    }
+    if (!has_m3u) {
+        state_diag_inc(rt, &rt->diag_autotap_skipped);
+        return false;
+    }
+
+    /* Only auto-tap once per unique playlist path */
+    if (strcmp(rt->autotap_last_path, path) == 0) {
+        state_diag_inc(rt, &rt->diag_autotap_skipped);
+        return false;
+    }
+
+    /* Wait for the track list to render on screen */
+    if (cfg->autotap_delay_ms > 0) {
+        log_msg("auto-tap wait delay=%ums path=%s", cfg->autotap_delay_ms, path);
+        usleep(cfg->autotap_delay_ms * 1000);
+    }
+
+    /* Send the touch event to tap row 1 (first track) */
+    int rc = touch_first_track(cfg);
+    if (rc == 0) {
+        log_msg("auto-tap fired row=1 path=%s", path);
+        strncpy(rt->autotap_last_path, path,
+                sizeof(rt->autotap_last_path) - 1);
+        rt->autotap_last_path[sizeof(rt->autotap_last_path) - 1] = '\0';
+        rt->autotap_fired_at = time(NULL);
+        state_diag_inc(rt, &rt->diag_autotap_fired);
+        return true;
+    }
+
+    log_msg("auto-tap failed touch rc=%d path=%s", rc, path);
+    state_diag_inc(rt, &rt->diag_autotap_skipped);
+    return false;
+}
+
 /* ── Main poll cycle ──────────────────────────────────────────────── */
 
 uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
@@ -952,6 +1065,9 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
             resume_reset_failures();
             rt->last_saved_bucket = -1;
             rt->deferred_overwrite_path[0] = '\0';
+
+            /* Phase 2: Auto-tap first track when .m3u playlist opens */
+            auto_tap_first_track(rt, cfg, path);
         }
 
         char root[512]; state_book_root(path, root, sizeof(root));
@@ -1117,6 +1233,7 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
         rt->deferred_overwrite_path[0] = '\0';
         rt->completed_start_over_path[0] = '\0';
         rt->last_path[0] = '\0';
+        rt->autotap_last_path[0] = '\0';  /* clear auto-tap state on exit */
     }
 
     return loop_sleep;

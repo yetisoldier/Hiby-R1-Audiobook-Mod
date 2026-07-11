@@ -155,6 +155,12 @@ typedef struct {
     /* Logging */
     uint32_t log_max_bytes;
 
+    /* Auto-tap (Phase 2: auto-tap first track when .m3u opens) */
+    uint8_t  autotap_enabled;            /* default: 1 — auto-tap first track after .m3u open */
+    uint32_t autotap_delay_ms;           /* default: 500 — ms to wait after playlist opens before tapping */
+    uint32_t autotap_max_wait_ms;        /* default: 3000 — max wait for screen render before giving up */
+    uint8_t  autotap_require_views_path; /* default: 1 — only auto-tap from _views/ paths */
+
     /* Shadow mode (migration) */
     uint8_t  shadow_mode;       /* 0=act, 1=log-only */
 

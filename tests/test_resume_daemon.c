@@ -1515,6 +1515,89 @@ static void test_state_geometry_defaults(void) {
     CHECK_INT_EQ(row, 5);
 }
 
+/* ── Auto-tap config tests (Phase 2) ─────────────────────────────── */
+
+static void test_autotap_config_defaults(void) {
+    daemon_config cfg;
+    config_load(&cfg, NULL);
+    CHECK_INT_EQ((int)cfg.autotap_enabled, 1);
+    CHECK_INT_EQ((int)cfg.autotap_delay_ms, 500);
+    CHECK_INT_EQ((int)cfg.autotap_max_wait_ms, 3000);
+    CHECK_INT_EQ((int)cfg.autotap_require_views_path, 1);
+    config_free(&cfg);
+}
+
+static void test_autotap_config_env_override(void) {
+    daemon_config cfg;
+    setenv("AUDIOBOOK_AUTOTAP_ENABLED", "0", 1);
+    setenv("AUDIOBOOK_AUTOTAP_DELAY_MS", "1000", 1);
+    setenv("AUDIOBOOK_AUTOTAP_MAX_WAIT_MS", "5000", 1);
+    setenv("AUDIOBOOK_AUTOTAP_REQUIRE_VIEWS_PATH", "0", 1);
+    config_load(&cfg, NULL);
+    CHECK_INT_EQ((int)cfg.autotap_enabled, 0);
+    CHECK_INT_EQ((int)cfg.autotap_delay_ms, 1000);
+    CHECK_INT_EQ((int)cfg.autotap_max_wait_ms, 5000);
+    CHECK_INT_EQ((int)cfg.autotap_require_views_path, 0);
+    config_free(&cfg);
+    unsetenv("AUDIOBOOK_AUTOTAP_ENABLED");
+    unsetenv("AUDIOBOOK_AUTOTAP_DELAY_MS");
+    unsetenv("AUDIOBOOK_AUTOTAP_MAX_WAIT_MS");
+    unsetenv("AUDIOBOOK_AUTOTAP_REQUIRE_VIEWS_PATH");
+}
+
+static void test_autotap_config_file_override(void) {
+    daemon_config cfg;
+    make_test_config(&cfg);
+
+    char conf_path[512];
+    snprintf(conf_path, sizeof(conf_path), "%s/resume-daemon.conf", tmpdir);
+    FILE *fp = fopen(conf_path, "w");
+    CHECK(fp != NULL);
+    fprintf(fp, "AUTOTAP_ENABLED=0\n");
+    fprintf(fp, "AUTOTAP_DELAY_MS=750\n");
+    fprintf(fp, "AUTOTAP_MAX_WAIT_MS=2000\n");
+    fprintf(fp, "AUTOTAP_REQUIRE_VIEWS_PATH=0\n");
+    fclose(fp);
+
+    config_load(&cfg, conf_path);
+    CHECK_INT_EQ((int)cfg.autotap_enabled, 0);
+    CHECK_INT_EQ((int)cfg.autotap_delay_ms, 750);
+    CHECK_INT_EQ((int)cfg.autotap_max_wait_ms, 2000);
+    CHECK_INT_EQ((int)cfg.autotap_require_views_path, 0);
+    config_free(&cfg);
+}
+
+static void test_autotap_config_clamp(void) {
+    daemon_config cfg;
+    setenv("AUDIOBOOK_AUTOTAP_DELAY_MS", "99999", 1);
+    config_load(&cfg, NULL);
+    /* Should be clamped to max_val=10000 */
+    CHECK(cfg.autotap_delay_ms <= 10000);
+    config_free(&cfg);
+    unsetenv("AUDIOBOOK_AUTOTAP_DELAY_MS");
+}
+
+/* ── Auto-tap runtime state tests ────────────────────────────────── */
+
+static void test_autotap_state_init_clears(void) {
+    daemon_runtime rt;
+    state_init(&rt);
+    CHECK(rt.autotap_last_path[0] == '\0');
+    CHECK_INT_EQ((int)rt.autotap_fired_at, 0);
+    CHECK_INT_EQ(rt.diag_autotap_fired, 0);
+    CHECK_INT_EQ(rt.diag_autotap_skipped, 0);
+}
+
+static void test_autotap_diag_counters_increment(void) {
+    daemon_runtime rt;
+    state_init(&rt);
+    state_diag_inc(&rt, &rt.diag_autotap_fired);
+    state_diag_inc(&rt, &rt.diag_autotap_fired);
+    state_diag_inc(&rt, &rt.diag_autotap_skipped);
+    CHECK_INT_EQ(rt.diag_autotap_fired, 2);
+    CHECK_INT_EQ(rt.diag_autotap_skipped, 1);
+}
+
 /* ── Main ─────────────────────────────────────────────────────────── */
 
 int main(int argc, char *argv[]) {
@@ -1677,6 +1760,14 @@ int main(int argc, char *argv[]) {
     RUN_TEST(test_state_geometry_too_many);
     RUN_TEST(test_state_geometry_invalid_index);
     RUN_TEST(test_state_geometry_defaults);
+
+    /* Auto-tap config tests (Phase 2) */
+    RUN_TEST(test_autotap_config_defaults);
+    RUN_TEST(test_autotap_config_env_override);
+    RUN_TEST(test_autotap_config_file_override);
+    RUN_TEST(test_autotap_config_clamp);
+    RUN_TEST(test_autotap_state_init_clears);
+    RUN_TEST(test_autotap_diag_counters_increment);
 
 printf("\n=== Results ===\n");
     printf("  Total:   %d\n", tests_run);

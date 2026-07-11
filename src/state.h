@@ -74,6 +74,10 @@ typedef struct {
     /* Helper failure tracking */
     int      helper_failures;
 
+    /* Auto-tap (Phase 2: track-once-per-playlist) */
+    char     autotap_last_path[512];   /* path we already auto-tapped for (prevent double-tap) */
+    time_t   autotap_fired_at;         /* when we last fired an auto-tap (for rate-limit/debug) */
+
     /* Diagnostics */
     time_t   diag_last_log_at;
     int      diag_loops;
@@ -84,6 +88,8 @@ typedef struct {
     int      diag_marker_skips;
     int      diag_position_reads;
     int      diag_saves;
+    int      diag_autotap_fired;       /* count of auto-tap attempts */
+    int      diag_autotap_skipped;     /* count of auto-tap skips */
 } daemon_runtime;
 
 /* ── Initialization ───────────────────────────────────────────────── */

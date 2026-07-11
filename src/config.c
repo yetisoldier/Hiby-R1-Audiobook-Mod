@@ -190,6 +190,12 @@ static const config_field FIELDS[] = {
     /* Logging */
     FIELD("AUDIOBOOK_RESUME_LOG_MAX_BYTES",  "RESUME_LOG_MAX_BYTES",  CFG_U32, log_max_bytes, 1024, 10485760),
 
+    /* Auto-tap (Phase 2) */
+    FIELD("AUDIOBOOK_AUTOTAP_ENABLED",            "AUTOTAP_ENABLED",            CFG_BOOL, autotap_enabled,            0, 1),
+    FIELD("AUDIOBOOK_AUTOTAP_DELAY_MS",           "AUTOTAP_DELAY_MS",           CFG_U32,  autotap_delay_ms,           0, 10000),
+    FIELD("AUDIOBOOK_AUTOTAP_MAX_WAIT_MS",        "AUTOTAP_MAX_WAIT_MS",        CFG_U32,  autotap_max_wait_ms,        0, 30000),
+    FIELD("AUDIOBOOK_AUTOTAP_REQUIRE_VIEWS_PATH", "AUTOTAP_REQUIRE_VIEWS_PATH", CFG_BOOL, autotap_require_views_path, 0, 1),
+
     /* Shadow mode */
     FIELD("AUDIOBOOK_SHADOW_MODE",           "SHADOW_MODE",           CFG_BOOL, shadow_mode, 0, 1),
 
@@ -357,6 +363,12 @@ static void set_defaults(daemon_config *c) {
     /* Logging */
     c->log_max_bytes                    = 524288;  /* 512 KB */
 
+    /* Auto-tap (Phase 2) */
+    c->autotap_enabled             = 1;
+    c->autotap_delay_ms            = 500;
+    c->autotap_max_wait_ms         = 3000;
+    c->autotap_require_views_path  = 1;
+
     /* Shadow mode */
     c->shadow_mode                      = 0;
 
@@ -523,7 +535,8 @@ void config_log_summary(const daemon_config *c) {
     log_msg("start interval=%us idle=%us marker_idle=%us marker_music=%us diag=%us "
             "min_save=%ums bucket=%ums restore_before=%ums restore_min=%ums rewind=%ums "
             "position_addr=0x%x duration_addr=0x%x marker_addr=0x%x "
-            "autostart=%d restore=%d track_restore=%d shadow=%d source_only=%d",
+            "autostart=%d restore=%d track_restore=%d autotap=%d autotap_delay=%ums "
+            "shadow=%d source_only=%d",
             c->interval_seconds, c->idle_interval_seconds,
             c->book_title_marker_idle_poll_seconds, c->book_title_marker_music_poll_seconds,
             c->diagnostics_interval_seconds,
@@ -531,6 +544,7 @@ void config_log_summary(const daemon_config *c) {
             c->restore_min_ms, c->restore_rewind_ms,
             c->player_position_addr, c->player_duration_addr, c->book_title_marker_addr,
             c->book_title_autostart_enabled, c->restore_enabled, c->track_restore_enabled,
+            c->autotap_enabled, c->autotap_delay_ms,
             c->shadow_mode, c->source_only);
 }
 
