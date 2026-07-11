@@ -771,13 +771,17 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
                                         sizeof(tmpl.root_hiby_path));
                         safe_id(tmpl.root_hiby_path, tmpl.book_id,
                                 sizeof(tmpl.book_id));
-                        if (bkp) strncpy(tmpl.book_key, bkp,
-                                         sizeof(tmpl.book_key) - 1);
+                        if (bkp) {
+                            strncpy(tmpl.book_key, bkp,
+                                    sizeof(tmpl.book_key) - 1);
+                            tmpl.book_key[sizeof(tmpl.book_key) - 1] = '\0';
+                        }
                         tmpl.media_id = ce_now->media_id;
                         tmpl.track_index = ce_now->index;
                         tmpl.track_count = ce_now->count;
                         strncpy(tmpl.chapter_title, ce_now->title,
                                 sizeof(tmpl.chapter_title) - 1);
+                        tmpl.chapter_title[sizeof(tmpl.chapter_title) - 1] = '\0';
                         tmpl.last_played_at = now_loop;
                         tmpl.completed_at = now_loop;
                         tmpl.completed = true;
