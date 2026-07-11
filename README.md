@@ -18,8 +18,8 @@ firmware should reverse it, but use it at your own risk. Keep a known-good stock
 
 ### Manual Install
 
-1. Download `r1-audiobooks-1.6.18-audiobook.upt` from the
-   [latest release](https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v1.6.1).
+1. Download `r1-audiobooks-1.7.0A.upt` from the
+   [latest release](https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v1.7.0A).
 2. Copy it to the SD-card root and rename it to exactly `r1.upt`. The R1 will
    not recognize the update otherwise.
 3. Safely eject/remount the SD card if you copied it outside the player.

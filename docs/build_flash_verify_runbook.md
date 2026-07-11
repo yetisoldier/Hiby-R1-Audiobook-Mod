@@ -6,9 +6,9 @@ firmware, not for normal end users.
 
 ## Current Release Reference
 
-- Public release: `v1.6.1`
-- Firmware marker: `1.6.18-audiobook`
-- Package: `r1-audiobooks-1.6.18-audiobook.upt`
+- Public release: `v1.7.0A`
+- Firmware marker: `1.7.0A`
+- Package: `r1-audiobooks-1.7.0A.upt`
 - Base firmware: stock HiBy R1 1.6 for the normal R1
 - Target device: normal HiBy R1 only, not R1 MIDI
 

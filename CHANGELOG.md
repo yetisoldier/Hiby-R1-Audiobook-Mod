@@ -2,6 +2,73 @@
 
 All public releases are for the normal HiBy R1 on stock firmware 1.6. Do not install these packages on the R1 MIDI.
 
+## v1.7.0A - 2026-07-11
+
+Firmware marker: `1.7.0A`
+
+Major architecture release. The resume daemon is rewritten in C, the auto-tap system uses framebuffer detection, and the automated test suite passes 3/3 on-device.
+
+### C Resume Daemon (Major Change)
+
+- **Replaced the shell-based resume daemon with a compiled C daemon** (`r1_audiobook_resume_daemon` v0.1.0). The C daemon runs in LIVE mode (shadow mode retired) and is faster, more reliable, and more capable than the shell daemon.
+- The C daemon is a single 153 KB static MIPS binary with 11 internal modules and 170 unit tests.
+- Polling is every 2 seconds during playback and every 5 seconds when idle, with 200 ms fast-poll during auto-tap sequences.
+- Position saves are committed after 15 seconds of playback (configurable), with a 3-second minimum save threshold to prevent saving near-zero positions.
+- The daemon reads the `hiby_player` process memory directly via `/proc/<pid>/mem` for position, duration, and track metadata. No more fragile shell parsing.
+
+### Auto-Tap (Approach A: Framebuffer-Based)
+
+- **The auto-tap system now uses framebuffer detection** instead of path-based `.m3u` detection. The daemon captures `/dev/fb0`, classifies the screen (launcher, list, now-playing), and injects touch events via `/dev/input/event1`.
+- When a user taps an audiobook title, the daemon detects the track-list screen via framebuffer, reads the saved track index from the resume record, and taps the correct track row automatically.
+- A follow-up tap is injected after playback starts to land on the Now Playing screen.
+- Auto-tap fires reliably (`at_fired` > 0) where the old path-based detection always failed (`at_fired=0`).
+
+### Autostart and Context
+
+- The daemon activates an autostart context when entering an audiobook from idle. This allows the daemon to pre-arm and auto-tap before the track list fully renders.
+- Music-to-audiobook and audiobook-to-music transitions are handled correctly. Leaving music and entering an audiobook restores the saved position and track.
+- The autostart context has a 5-minute window (configurable) after which it deactivates.
+
+### Explorer Marker Bug Fix
+
+- Fixed a register encoding bug in the explorer marker code cave at `0x360E38`. The `lw`/`sw` instructions used `t0` (register 8) as the base instead of `s0` (register 16). Since `s0` held the marker address (`0x8E4000`) but `t0` contained garbage, the marker was never written. Fixed: `0x8D080000` → `0x8E080000`, `0xAD080000` → `0xAE080000`.
+
+### Automated Test Suite
+
+- Added a regression test suite (`tests/test_suite.py`) with 3 smoke tests: `test_launcher`, `test_playback`, `test_resume`.
+- Added retry logic (3 retries with backoff) to `capture_screenshot` and `invoke_control` to handle USB ADB transient failures.
+- Reduced per-command timeout from 120s to 30s to prevent hung tests from eating the entire test budget.
+- **3/3 smoke tests pass on R1 hardware** (launcher 35s, playback 123s, resume 123s).
+
+### On-Device Validation
+
+- Comprehensive on-device validation plan covering 19 full tests + 5 edge cases.
+- **19/19 applicable tests pass.** Music playback, audiobook hub, sorting, separation, resume, auto-tap, transitions, daemon health, and edge cases (m4b, 99 tracks, special characters).
+- Daemon health: 0 crashes, 1 start (initial), 25 resume records, normal log cadence.
+
+### Phase 2 Static Analysis
+
+- Confirmed that `0x4EFE00` is the `.m3u` file-open callback via string analysis ("m3u" at `0x780E2C`).
+- The explorer marker fires when a `.m3u` is tapped from the folder view, not when a title row is tapped from the native hub.
+- Phase 3 (extended marker + direct-open pre-arm) deprioritized — the existing auto-tap works well enough.
+
+### Other Changes
+
+- PowerShell build scripts ported to Python (24 scripts).
+- Overlay-based build system.
+- Documentation consolidated.
+- Roadmap updated with Phase 2 findings.
+
+### Package
+
+- Package: `r1-audiobooks-1.7.0A.upt` (42,369,024 bytes)
+- MD5: `787a205618b35d75822c0f2d8517ed1f`
+- SHA256: `8335ced3d273f32c57d33eddc74792c754691b428d9d6fa95eef31c6adaeebad`
+- Rootfs MD5: `f92e1afe2bb082d4a03118e39dd904e1`
+- Rootfs SHA256: `b2cd5633f61f31dc405092e9f05ce478a67764285a349d74132f3bc9800aa77c`
+- Base firmware: stock HiBy R1 1.6 for the normal R1
+- All v1.6.1 features retained: native Audiobooks hub, generated title/author views, DB maintenance, resume, audio unlocks.
+
 ## v1.6.1 - 2026-06-22
 
 Firmware marker: `1.6.18-audiobook`

@@ -19,6 +19,7 @@ Do not install these packages on the R1 MIDI.
 | v1.5.4 | `1.6.16.5-audiobook` | `r1-audiobooks-1.6.16.5-audiobook.upt` | `f6a0e65af41c7990f03e342fef995bad` | `efd77a5a6f83879e76089ace072657891ff2e5475c4f0e82d812f728ad4e2816` | [v1.5.4](https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v1.5.4) |
 | v1.6.0 | `1.6.17-audiobook` | `r1-audiobooks-1.6.17-audiobook.upt` | `e8491f65ead4ef7a34163a67c7ee7007` | `47b6b2aa85f0f14d13d659f0f3f987808f7d389a7a32bf7e54676388e6f82523` | [v1.6.0](https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v1.6.0) |
 | v1.6.1 | `1.6.18-audiobook` | `r1-audiobooks-1.6.18-audiobook.upt` | `e3dba87c24ef84196ec1c91fe3c3e26a` | `e42d70d84bf3353391c16fa60f83f399d2624226d2792f3c7882d9a1bbe45253` | [v1.6.1](https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v1.6.1) |
+| v1.7.0A | `1.7.0A` | `r1-audiobooks-1.7.0A.upt` | `787a205618b35d75822c0f2d8517ed1f` | `8335ced3d273f32c57d33eddc74792c754691b428d9d6fa95eef31c6adaeebad` | [v1.7.0A](https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v1.7.0A) |
 
 ## Rootfs Hashes
 
@@ -32,13 +33,14 @@ Do not install these packages on the R1 MIDI.
 | v1.5.4 | `1.6.16.5-audiobook` | `1797f124a92177605e776615144f323a` | `cf2076de6c700abd24d66dc587ac3109786829e5f589f4068e61988b0a481325` |
 | v1.6.0 | `1.6.17-audiobook` | `d8c6a46cb4dc90624042f89224f611e6` | `687b83dff23319af917e19af9bb1bc1c95a7f6c915e852d175385b1c4e9d6b5f` |
 | v1.6.1 | `1.6.18-audiobook` | `dd47cf5f338d70ecab1f8be108529505` | `bfac581b61ff87c133bb5eb085a5ce5bb56db10678bae84697fae04d8697f8e6` |
+| v1.7.0A | `1.7.0A` | `f92e1afe2bb082d4a03118e39dd904e1` | `b2cd5633f61f31dc405092e9f05ce478a67764285a349d74132f3bc9800aa77c` |
 
 ## Current Release
 
-The current public release is **v1.6.1** (`1.6.18-audiobook`).
+The current public release is **v1.7.0A** (`1.7.0A`).
 
-- Download page: <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v1.6.1>
-- Package: `r1-audiobooks-1.6.18-audiobook.upt`
+- Download page: <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v1.7.0A>
+- Package: `r1-audiobooks-1.7.0A.upt`
 - Base firmware: stock HiBy R1 1.6 for the normal R1
 
 ## Known Bad Packages (Do Not Flash)
