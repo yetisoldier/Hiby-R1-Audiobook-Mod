@@ -150,6 +150,7 @@ void state_log_restore_wait(daemon_runtime *rt, const daemon_config *cfg,
                 rt->book_title_autostart_seq, path, pos);
         strncpy(rt->book_title_restore_wait_log_key, key,
                 sizeof(rt->book_title_restore_wait_log_key) - 1);
+        rt->book_title_restore_wait_log_key[sizeof(rt->book_title_restore_wait_log_key) - 1] = '\0';
     }
 }
 
@@ -163,6 +164,7 @@ void state_log_pre_restore_skip(daemon_runtime *rt, const daemon_config *cfg,
                 rt->book_title_autostart_seq, path, pos);
         strncpy(rt->book_title_pre_restore_log_key, key,
                 sizeof(rt->book_title_pre_restore_log_key) - 1);
+        rt->book_title_pre_restore_log_key[sizeof(rt->book_title_pre_restore_log_key) - 1] = '\0';
     }
 }
 
@@ -304,6 +306,7 @@ int state_direct_start_saved(daemon_runtime *rt, const daemon_config *cfg,
     char bk[128] = "";
     const char *bkp = book_key_for_path(cat, track_path);
     if (bkp) strncpy(bk, bkp, sizeof(bk) - 1);
+    bk[sizeof(bk) - 1] = '\0';
     bk[sizeof(bk) - 1] = '\0';
 
     resume_record rec;
@@ -448,6 +451,7 @@ int state_maybe_restore_track(daemon_runtime *rt, const daemon_config *cfg,
     const char *bkp = book_key_for_path(cat, path);
     if (bkp) strncpy(bk, bkp, sizeof(bk) - 1);
     bk[sizeof(bk) - 1] = '\0';
+    bk[sizeof(bk) - 1] = '\0';
 
     resume_record rec;
     if (existing_record_for_path(cfg, path, bk, root, &rec) != 0) return -1;
@@ -585,12 +589,18 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
 
         state_diag_inc(rt, &rt->diag_position_reads);
         uint32_t pos = position_ms_memory(cfg);
+        /* Save previous cycle's position for natural-EOF detection.
+         * On EOF, position stops advancing, so last_position_ms == pos
+         * means the decoder hit the end, not a user seek. */
+        bool pos_stopped = (rt->last_position_ms == pos);
+        rt->last_position_ms = pos;
         bool auto_restore = state_autostart_active(rt);
 
         char root[512]; state_book_root(path, root, sizeof(root));
         char bk[128] = "";
         const char *bkp = book_key_for_path(cat, path);
         if (bkp) strncpy(bk, bkp, sizeof(bk) - 1);
+        bk[sizeof(bk) - 1] = '\0';
         bk[sizeof(bk) - 1] = '\0';
         resume_record rec;
         bool have_rec = existing_record_for_path(cfg, path, bk, root, &rec) == 0;
@@ -609,6 +619,7 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
                 rt->deferred_overwrite_path[0] = '\0';
                 strncpy(rt->book_title_autostart_reset_key, rk,
                         sizeof(rt->book_title_autostart_reset_key) - 1);
+        rt->book_title_autostart_reset_key[sizeof(rt->book_title_autostart_reset_key) - 1] = '\0';
             }
         }
 
@@ -688,6 +699,7 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
                             strncpy(path, pa, sizeof(path) - 1);
                             path[sizeof(path) - 1] = '\0';
                             path[sizeof(path) - 1] = '\0';
+                            path[sizeof(path) - 1] = '\0';
                             track_changed = true;
                             state_diag_inc(rt, &rt->diag_position_reads);
                             pos = position_ms_memory(cfg);
@@ -744,7 +756,7 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
                 ce_now->index == ce_now->count) {
                 uint32_t dur = duration_ms_memory(cfg);
                 if (dur > 1000 && pos >= dur &&
-                    rt->last_position_ms >= pos) {
+                    pos_stopped) {
                     if (shadow_is_active(cfg)) {
                         shadow_log_action("COMPLETE",
                             "path=%s pos=%u dur=%u track=%d/%d",
@@ -823,12 +835,14 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
                     state_book_root(path, tmpl.root_hiby_path, sizeof(tmpl.root_hiby_path));
                     safe_id(tmpl.root_hiby_path, tmpl.book_id, sizeof(tmpl.book_id));
                     if (bkp) strncpy(tmpl.book_key, bkp, sizeof(tmpl.book_key) - 1);
+                    tmpl.book_key[sizeof(tmpl.book_key) - 1] = '\0';
                     const catalog_entry *ce_now = catalog_field_for_path(cat, path);
                     if (ce_now) {
                         tmpl.media_id = ce_now->media_id;
                         tmpl.track_index = ce_now->index;
                         tmpl.track_count = ce_now->count;
                         strncpy(tmpl.chapter_title, ce_now->title, sizeof(tmpl.chapter_title) - 1);
+                        tmpl.chapter_title[sizeof(tmpl.chapter_title) - 1] = '\0';
                     }
                     tmpl.last_played_at = now_loop;
                     shadow_wrap_save(cfg, path, pos, &tmpl);

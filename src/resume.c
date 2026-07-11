@@ -215,18 +215,30 @@ int existing_record_for_path(const daemon_config *cfg, const char *path,
     rec->schema_version = 3;
 
     char tmp[512];
-    if (json_value(buf, "book_id", tmp, sizeof(tmp)) == 0)
+    if (json_value(buf, "book_id", tmp, sizeof(tmp)) == 0) {
         strncpy(rec->book_id, tmp, sizeof(rec->book_id) - 1);
-    if (json_value(buf, "book_key", tmp, sizeof(tmp)) == 0)
+        rec->book_id[sizeof(rec->book_id) - 1] = '\0';
+    }
+    if (json_value(buf, "book_key", tmp, sizeof(tmp)) == 0) {
         strncpy(rec->book_key, tmp, sizeof(rec->book_key) - 1);
-    if (json_value(buf, "root_hiby_path", tmp, sizeof(tmp)) == 0)
+        rec->book_key[sizeof(rec->book_key) - 1] = '\0';
+    }
+    if (json_value(buf, "root_hiby_path", tmp, sizeof(tmp)) == 0) {
         strncpy(rec->root_hiby_path, tmp, sizeof(rec->root_hiby_path) - 1);
-    if (json_value(buf, "current_path", tmp, sizeof(tmp)) == 0)
+        rec->root_hiby_path[sizeof(rec->root_hiby_path) - 1] = '\0';
+    }
+    if (json_value(buf, "current_path", tmp, sizeof(tmp)) == 0) {
         strncpy(rec->current_path, tmp, sizeof(rec->current_path) - 1);
-    if (json_value(buf, "chapter_title", tmp, sizeof(tmp)) == 0)
+        rec->current_path[sizeof(rec->current_path) - 1] = '\0';
+    }
+    if (json_value(buf, "chapter_title", tmp, sizeof(tmp)) == 0) {
         strncpy(rec->chapter_title, tmp, sizeof(rec->chapter_title) - 1);
-    if (json_value(buf, "updated_at", tmp, sizeof(tmp)) == 0)
+        rec->chapter_title[sizeof(rec->chapter_title) - 1] = '\0';
+    }
+    if (json_value(buf, "updated_at", tmp, sizeof(tmp)) == 0) {
         strncpy(rec->updated_at, tmp, sizeof(rec->updated_at) - 1);
+        rec->updated_at[sizeof(rec->updated_at) - 1] = '\0';
+    }
 
     json_number(buf, "media_id", &rec->media_id);
     json_number(buf, "track_index", &rec->track_index);
@@ -309,6 +321,7 @@ int save_position(const daemon_config *cfg, const char *path,
     char book_id[256] = "";
     if (template_rec && template_rec->book_id[0]) {
         strncpy(book_id, template_rec->book_id, sizeof(book_id) - 1);
+        book_id[sizeof(book_id) - 1] = '\0';
     } else if (root[0]) {
         safe_id(root, book_id, sizeof(book_id));
     }
@@ -552,6 +565,7 @@ void note_seek_restore_failure(const char *path, uint32_t saved_pos,
     strncpy(failure_path, path, sizeof(failure_path) - 1);
     failure_path[sizeof(failure_path) - 1] = '\0';
     failure_path[sizeof(failure_path) - 1] = '\0';
+    failure_path[sizeof(failure_path) - 1] = '\0';
 
     strncpy(failure_kind, "seek", sizeof(failure_kind) - 1);
     failure_kind[sizeof(failure_kind) - 1] = '\0';
@@ -561,6 +575,7 @@ void note_seek_restore_failure(const char *path, uint32_t saved_pos,
 
     if (key) {
         strncpy(failure_key, key, sizeof(failure_key) - 1);
+        failure_key[sizeof(failure_key) - 1] = '\0';
         failure_key[sizeof(failure_key) - 1] = '\0';
         failure_key[sizeof(failure_key) - 1] = '\0';
     } else {
@@ -575,6 +590,7 @@ void note_track_restore_failure(const char *path) {
     if (!path) return;
 
     strncpy(failure_path, path, sizeof(failure_path) - 1);
+    failure_path[sizeof(failure_path) - 1] = '\0';
     failure_path[sizeof(failure_path) - 1] = '\0';
     failure_path[sizeof(failure_path) - 1] = '\0';
 
