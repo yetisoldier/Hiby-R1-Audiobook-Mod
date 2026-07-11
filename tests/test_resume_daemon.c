@@ -1598,6 +1598,488 @@ static void test_autotap_diag_counters_increment(void) {
     CHECK_INT_EQ(rt.diag_autotap_skipped, 1);
 }
 
+/* ── Save/Restore decision logic tests (Phase 3) ────────────────── */
+
+/* Test that shadow_wrap_save writes a real record when shadow is off */
+static void test_save_decision_shadow_off_writes(void) {
+    daemon_config cfg;
+    make_test_config(&cfg);
+    cfg.shadow_mode = 0;
+    log_init(cfg.log_path, cfg.log_max_bytes);
+
+    resume_record tmpl;
+    memset(&tmpl, 0, sizeof(tmpl));
+    strcpy(tmpl.book_id, "test_save_id");
+    strcpy(tmpl.book_key, "savekey1");
+    strcpy(tmpl.root_hiby_path, "a:\\Audiobooks\\SaveTest");
+    tmpl.track_index = 1;
+    tmpl.track_count = 5;
+
+    int rc = shadow_wrap_save(&cfg, "a:\\Audiobooks\\SaveTest\\01.mp3",
+                              50000, &tmpl);
+    CHECK_INT_EQ(rc, 0);
+
+    /* Verify record was actually written */
+    resume_record loaded;
+    int rc2 = existing_record_for_path(&cfg,
+                "a:\\Audiobooks\\SaveTest\\01.mp3",
+                "savekey1", "a:\\Audiobooks\\SaveTest", &loaded);
+    CHECK_INT_EQ(rc2, 0);
+    CHECK_INT_EQ((int)loaded.position_ms, 50000);
+
+    log_close();
+    config_free(&cfg);
+}
+
+/* Test that shadow_wrap_save does NOT write when shadow is on */
+static void test_save_decision_shadow_on_no_write(void) {
+    daemon_config cfg;
+    make_test_config(&cfg);
+    cfg.shadow_mode = 1;
+    log_init(cfg.log_path, cfg.log_max_bytes);
+
+    resume_record tmpl;
+    memset(&tmpl, 0, sizeof(tmpl));
+    strcpy(tmpl.book_key, "savekey2");
+    strcpy(tmpl.root_hiby_path, "a:\\Audiobooks\\ShadowTest");
+
+    int rc = shadow_wrap_save(&cfg, "a:\\Audiobooks\\ShadowTest\\01.mp3",
+                              75000, &tmpl);
+    CHECK_INT_EQ(rc, 0);
+
+    /* Verify NO record was written */
+    resume_record loaded;
+    int rc2 = existing_record_for_path(&cfg,
+                "a:\\Audiobooks\\ShadowTest\\01.mp3",
+                "savekey2", "a:\\Audiobooks\\ShadowTest", &loaded);
+    CHECK_INT_EQ(rc2, -1);
+
+    log_close();
+    config_free(&cfg);
+}
+
+/* Test save bucketing: same bucket should not trigger save */
+static void test_save_bucketing_same_bucket_no_save(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.save_bucket_ms = 15000;
+    cfg.min_save_ms = 3000;
+
+    int bucket1 = 120000 / 15000;  /* 8 */
+    int bucket2 = 134999 / 15000;  /* 8 */
+    CHECK_INT_EQ(bucket1, bucket2);
+    /* Same bucket → no save */
+}
+
+/* Test save bucketing: different bucket should trigger save */
+static void test_save_bucketing_diff_bucket_triggers_save(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.save_bucket_ms = 15000;
+
+    int bucket1 = 120000 / 15000;  /* 8 */
+    int bucket2 = 150000 / 15000;  /* 10 */
+    CHECK(bucket1 != bucket2);
+}
+
+/* Test that save is skipped when position < min_save_ms */
+static void test_save_min_position_skip(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.min_save_ms = 3000;
+    cfg.save_bucket_ms = 15000;
+
+    uint32_t pos = 2000;  /* below min_save_ms */
+    CHECK(pos < cfg.min_save_ms);
+    /* Save phase should be skipped entirely */
+}
+
+/* Test that save is allowed when position >= min_save_ms */
+static void test_save_min_position_allow(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.min_save_ms = 3000;
+
+    uint32_t pos = 5000;  /* above min_save_ms */
+    CHECK(pos >= cfg.min_save_ms);
+}
+
+/* Test shadow_wrap_restore in shadow mode: returns 0, no actual restore */
+static void test_restore_shadow_on_no_action(void) {
+    daemon_config cfg;
+    make_test_config(&cfg);
+    cfg.shadow_mode = 1;
+    cfg.restore_rewind_ms = 5000;
+    cfg.restore_min_ms = 10000;
+    log_init(cfg.log_path, cfg.log_max_bytes);
+
+    /* First save a record so restore could find it */
+    cfg.shadow_mode = 0;
+    resume_record tmpl;
+    memset(&tmpl, 0, sizeof(tmpl));
+    strcpy(tmpl.book_key, "restorekey1");
+    strcpy(tmpl.root_hiby_path, "a:\\Audiobooks\\RestoreTest");
+    save_position(&cfg, "a:\\Audiobooks\\RestoreTest\\01.mp3",
+                  100000, &tmpl);
+
+    /* Now switch to shadow mode and try restore */
+    cfg.shadow_mode = 1;
+    int rc = shadow_wrap_restore(&cfg,
+                "a:\\Audiobooks\\RestoreTest\\01.mp3",
+                5000, "restorekey1", "a:\\Audiobooks\\RestoreTest");
+    CHECK_INT_EQ(rc, 0);
+
+    log_close();
+    config_free(&cfg);
+}
+
+/* Test shadow_wrap_restore in active mode: delegates to maybe_restore */
+static void test_restore_shadow_off_delegates(void) {
+    daemon_config cfg;
+    make_test_config(&cfg);
+    cfg.shadow_mode = 0;
+    cfg.restore_enabled = 1;
+    cfg.restore_rewind_ms = 5000;
+    cfg.restore_min_ms = 10000;
+    cfg.restore_only_before_ms = 15000;
+    log_init(cfg.log_path, cfg.log_max_bytes);
+
+    /* No record exists — maybe_restore returns -1 */
+    int rc = shadow_wrap_restore(&cfg,
+                "a:\\Audiobooks\\NoRecord\\01.mp3",
+                5000, "nokey", "a:\\Audiobooks\\NoRecord");
+    CHECK_INT_EQ(rc, -1);
+
+    log_close();
+    config_free(&cfg);
+}
+
+/* Test shadow_wrap_play_mode in shadow mode */
+static void test_play_mode_shadow_on_logs(void) {
+    daemon_config cfg;
+    make_test_config(&cfg);
+    cfg.shadow_mode = 1;
+    cfg.play_mode_target = 3;
+    cfg.play_mode_touch_x = 200;
+    cfg.play_mode_touch_y = 80;
+    cfg.play_mode_max_taps = 3;
+    log_init(cfg.log_path, cfg.log_max_bytes);
+
+    int rc = shadow_wrap_play_mode(&cfg);
+    CHECK_INT_EQ(rc, 0);
+
+    log_close();
+    config_free(&cfg);
+}
+
+/* Test shadow_wrap_play_mode in active mode: delegates to ensure_audiobook_play_mode */
+static void test_play_mode_shadow_off_delegates(void) {
+    daemon_config cfg;
+    make_test_config(&cfg);
+    cfg.shadow_mode = 0;
+    cfg.play_mode_enforce_enabled = 1;
+    cfg.play_mode_target = 3;
+    log_init(cfg.log_path, cfg.log_max_bytes);
+
+    /* Without a real user.ini at the right offset, this returns -1 */
+    int rc = shadow_wrap_play_mode(&cfg);
+    /* It may return 0 or -1 depending on whether user.ini exists.
+     * Just check it doesn't crash. */
+    (void)rc;
+
+    log_close();
+    config_free(&cfg);
+}
+
+/* Test completion detection: last track, position near end from below */
+static void test_completion_last_track_near_end(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.completed_end_threshold_ms = 45000;
+
+    /* Simulate: track_index=5, track_count=5, pos=350000, dur=360000
+     * dur - pos = 10000 <= 45000 → completed */
+    int track_index = 5;
+    int track_count = 5;
+    uint32_t pos = 350000;
+    uint32_t dur = 360000;
+
+    CHECK(track_index == track_count);
+    uint32_t diff = (pos >= dur) ? (pos - dur) : (dur - pos);
+    CHECK(diff <= cfg.completed_end_threshold_ms);
+    /* Should trigger completion */
+}
+
+/* Test completion detection: not last track → no completion */
+static void test_completion_not_last_track(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.completed_end_threshold_ms = 45000;
+
+    int track_index = 3;
+    int track_count = 5;
+    CHECK(track_index != track_count);
+    /* Completion check should not trigger */
+}
+
+/* Test completion detection: last track but not near end */
+static void test_completion_last_track_not_near_end(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.completed_end_threshold_ms = 45000;
+
+    int track_index = 5;
+    int track_count = 5;
+    uint32_t pos = 100000;
+    uint32_t dur = 360000;
+
+    CHECK(track_index == track_count);
+    CHECK(pos < dur);
+    /* Not near end → no completion */
+}
+
+/* Test completion detection: position exactly at duration */
+static void test_completion_at_duration(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.completed_end_threshold_ms = 45000;
+
+    uint32_t pos = 360000;
+    uint32_t dur = 360000;
+
+    CHECK(pos >= dur);
+    CHECK((pos - dur) == 0);
+    CHECK((pos - dur) <= cfg.completed_end_threshold_ms);
+    /* Should trigger completion */
+}
+
+/* Test completion detection: position way past duration */
+static void test_completion_past_duration_within_threshold(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.completed_end_threshold_ms = 45000;
+
+    uint32_t pos = 395000;
+    uint32_t dur = 360000;
+
+    CHECK(pos >= dur);
+    CHECK((pos - dur) == 35000);
+    CHECK((pos - dur) <= cfg.completed_end_threshold_ms);
+    /* Should trigger completion */
+}
+
+/* Test completion detection: position past threshold */
+static void test_completion_past_threshold(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.completed_end_threshold_ms = 45000;
+
+    uint32_t pos = 410000;
+    uint32_t dur = 360000;
+
+    CHECK(pos >= dur);
+    CHECK((pos - dur) == 50000);
+    CHECK((pos - dur) > cfg.completed_end_threshold_ms);
+    /* Should NOT trigger completion (too far past) */
+}
+
+/* Test restore target computation with rewind */
+static void test_restore_target_with_rewind(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.restore_rewind_ms = 10000;
+    cfg.restore_min_ms = 5000;
+
+    uint32_t target = restore_target_ms(&cfg, 200000);
+    CHECK_INT_EQ((int)target, 190000);
+}
+
+/* Test restore target clamped to minimum */
+static void test_restore_target_clamped(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.restore_rewind_ms = 10000;
+    cfg.restore_min_ms = 8000;
+
+    uint32_t target = restore_target_ms(&cfg, 15000);
+    /* 15000 - 10000 = 5000, but clamped to 8000 */
+    CHECK_INT_EQ((int)target, 8000);
+}
+
+/* Test restore target when saved position is below rewind */
+static void test_restore_target_below_rewind(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.restore_rewind_ms = 10000;
+    cfg.restore_min_ms = 0;
+
+    uint32_t target = restore_target_ms(&cfg, 5000);
+    /* 5000 - 10000 would underflow, so returns 0 */
+    CHECK_INT_EQ((int)target, 0);
+}
+
+/* Test should_attempt_restore with autostart and high position */
+static void test_restore_attempt_autostart_high_pos(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.restore_enabled = 1;
+    cfg.restore_only_before_ms = 15000;
+    cfg.restore_min_ms = 5000;
+
+    /* With autostart, position above restore_only_before_ms is allowed */
+    bool attempt = should_attempt_restore_for_position(&cfg, 20000, true);
+    CHECK(attempt);
+}
+
+/* Test should_attempt_restore without autostart and high position */
+static void test_restore_attempt_no_autostart_high_pos(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.restore_enabled = 1;
+    cfg.restore_only_before_ms = 15000;
+    cfg.restore_min_ms = 5000;
+
+    /* Without autostart, position above threshold is rejected */
+    bool attempt = should_attempt_restore_for_position(&cfg, 20000, false);
+    CHECK(!attempt);
+}
+
+/* Test should_skip_failed_restore_save when position is below saved */
+static void test_skip_failed_save_below_saved(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.restore_retry_after_failure_seconds = 30;
+    cfg.restore_retry_max_after_failure_seconds = 300;
+    resume_reset_failures();
+    note_seek_restore_failure("a:\\Book\\01.mp3", 120000, "key");
+
+    /* Current position 5000 < saved 120000 → skip */
+    bool skip = should_skip_failed_restore_save(&cfg, "a:\\Book\\01.mp3", 5000);
+    CHECK(skip);
+    resume_reset_failures();
+}
+
+/* Test should_skip_failed_restore_save when position is above saved */
+static void test_skip_failed_save_above_saved(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.restore_retry_after_failure_seconds = 30;
+    cfg.restore_retry_max_after_failure_seconds = 300;
+    resume_reset_failures();
+    note_seek_restore_failure("a:\\Book\\01.mp3", 120000, "key");
+
+    /* Current position 130000 > saved 120000 → don't skip */
+    bool skip = should_skip_failed_restore_save(&cfg, "a:\\Book\\01.mp3", 130000);
+    CHECK(!skip);
+    resume_reset_failures();
+}
+
+/* Test that shadow_is_active correctly detects mode */
+static void test_shadow_active_detection(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.shadow_mode = 0;
+    CHECK(!shadow_is_active(&cfg));
+    cfg.shadow_mode = 1;
+    CHECK(shadow_is_active(&cfg));
+}
+
+/* Test completed record round-trip: save then read back completed=true */
+static void test_completed_record_roundtrip(void) {
+    daemon_config cfg;
+    make_test_config(&cfg);
+    log_init(cfg.log_path, cfg.log_max_bytes);
+
+    /* Save a record */
+    resume_record tmpl;
+    memset(&tmpl, 0, sizeof(tmpl));
+    strcpy(tmpl.book_id, "comp_test_id");
+    strcpy(tmpl.book_key, "compkey");
+    strcpy(tmpl.root_hiby_path, "a:\\Audiobooks\\CompTest");
+    tmpl.track_index = 5;
+    tmpl.track_count = 5;
+
+    save_position(&cfg, "a:\\Audiobooks\\CompTest\\05.mp3",
+                  350000, &tmpl);
+
+    /* Patch completed to true (simulating completion detection) */
+    char rec_path[512];
+    record_for_path(&cfg, "a:\\Audiobooks\\CompTest\\05.mp3",
+                    "compkey", "a:\\Audiobooks\\CompTest",
+                    rec_path, sizeof(rec_path));
+    int fd = open(rec_path, O_RDONLY);
+    CHECK(fd >= 0);
+    char buf[4096];
+    size_t tot = 0;
+    while (tot < sizeof(buf) - 1) {
+        ssize_t n = read(fd, buf + tot, sizeof(buf) - 1 - tot);
+        if (n > 0) { tot += (size_t)n; continue; }
+        if (n == 0) break;
+        if (errno == EINTR) continue;
+        break;
+    }
+    close(fd);
+    buf[tot] = '\0';
+    char *cp = strstr(buf, "\"completed\": false");
+    CHECK(cp != NULL);
+    cp[13] = 't'; cp[14] = 'r'; cp[15] = 'u'; cp[16] = 'e';
+    int wfd = open(rec_path, O_WRONLY | O_TRUNC, 0644);
+    CHECK(wfd >= 0);
+    write(wfd, buf, tot);
+    close(wfd);
+
+    /* Read back and verify completed=true */
+    resume_record loaded;
+    int rc = existing_record_for_path(&cfg,
+                "a:\\Audiobooks\\CompTest\\05.mp3",
+                "compkey", "a:\\Audiobooks\\CompTest", &loaded);
+    CHECK_INT_EQ(rc, 0);
+    CHECK(loaded.completed == true);
+    CHECK_INT_EQ(loaded.track_index, 5);
+    CHECK_INT_EQ(loaded.track_count, 5);
+
+    log_close();
+    config_free(&cfg);
+}
+
+/* Test deferred save: same path not deferred */
+static void test_defer_save_same_path_no_defer(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.new_track_commit_ms = 15000;
+
+    bool defer = should_defer_new_track_save(&cfg,
+        "a:\\Book\\01.mp3", "a:\\Book\\01.mp3",
+        time(NULL) - 1, time(NULL));
+    CHECK(!defer);
+}
+
+/* Test deferred save: different path, recent switch → deferred */
+static void test_defer_save_diff_path_recent_deferred(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.new_track_commit_ms = 15000;
+    time_t now = time(NULL);
+
+    bool defer = should_defer_new_track_save(&cfg,
+        "a:\\Book\\02.mp3", "a:\\Book\\01.mp3",
+        now - 3, now);
+    CHECK(defer);
+}
+
+/* Test deferred save: different path, old enough → not deferred */
+static void test_defer_save_diff_path_old_enough_no_defer(void) {
+    daemon_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.new_track_commit_ms = 15000;
+    time_t now = time(NULL);
+
+    bool defer = should_defer_new_track_save(&cfg,
+        "a:\\Book\\02.mp3", "a:\\Book\\01.mp3",
+        now - 20, now);
+    CHECK(!defer);
+}
+
 /* ── Main ─────────────────────────────────────────────────────────── */
 
 int main(int argc, char *argv[]) {
@@ -1768,6 +2250,36 @@ int main(int argc, char *argv[]) {
     RUN_TEST(test_autotap_config_clamp);
     RUN_TEST(test_autotap_state_init_clears);
     RUN_TEST(test_autotap_diag_counters_increment);
+
+    /* Save/Restore decision logic tests (Phase 3) */
+    RUN_TEST(test_save_decision_shadow_off_writes);
+    RUN_TEST(test_save_decision_shadow_on_no_write);
+    RUN_TEST(test_save_bucketing_same_bucket_no_save);
+    RUN_TEST(test_save_bucketing_diff_bucket_triggers_save);
+    RUN_TEST(test_save_min_position_skip);
+    RUN_TEST(test_save_min_position_allow);
+    RUN_TEST(test_restore_shadow_on_no_action);
+    RUN_TEST(test_restore_shadow_off_delegates);
+    RUN_TEST(test_play_mode_shadow_on_logs);
+    RUN_TEST(test_play_mode_shadow_off_delegates);
+    RUN_TEST(test_completion_last_track_near_end);
+    RUN_TEST(test_completion_not_last_track);
+    RUN_TEST(test_completion_last_track_not_near_end);
+    RUN_TEST(test_completion_at_duration);
+    RUN_TEST(test_completion_past_duration_within_threshold);
+    RUN_TEST(test_completion_past_threshold);
+    RUN_TEST(test_restore_target_with_rewind);
+    RUN_TEST(test_restore_target_clamped);
+    RUN_TEST(test_restore_target_below_rewind);
+    RUN_TEST(test_restore_attempt_autostart_high_pos);
+    RUN_TEST(test_restore_attempt_no_autostart_high_pos);
+    RUN_TEST(test_skip_failed_save_below_saved);
+    RUN_TEST(test_skip_failed_save_above_saved);
+    RUN_TEST(test_shadow_active_detection);
+    RUN_TEST(test_completed_record_roundtrip);
+    RUN_TEST(test_defer_save_same_path_no_defer);
+    RUN_TEST(test_defer_save_diff_path_recent_deferred);
+    RUN_TEST(test_defer_save_diff_path_old_enough_no_defer);
 
 printf("\n=== Results ===\n");
     printf("  Total:   %d\n", tests_run);

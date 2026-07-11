@@ -13,6 +13,7 @@
 #include "ui.h"
 #include "proc_mem.h"
 #include "helpers.h"
+#include "shadow.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -951,6 +952,16 @@ static bool auto_tap_first_track(daemon_runtime *rt,
     }
 
     /* Send the touch event to tap row 1 (first track) */
+    if (shadow_is_active(cfg)) {
+        shadow_log_action("AUTO-TAP", "WOULD AUTO-TAP row=1 path=%s", path);
+        strncpy(rt->autotap_last_path, path,
+                sizeof(rt->autotap_last_path) - 1);
+        rt->autotap_last_path[sizeof(rt->autotap_last_path) - 1] = '\0';
+        rt->autotap_fired_at = time(NULL);
+        state_diag_inc(rt, &rt->diag_autotap_fired);
+        return true;
+    }
+
     int rc = touch_first_track(cfg);
     if (rc == 0) {
         log_msg("auto-tap fired row=1 path=%s", path);
@@ -1056,11 +1067,13 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
 
         /* Path change */
         if (strcmp(path, rt->last_path) != 0) {
-            char root[512]; state_book_root(path, root, sizeof(root));
+            char root_pc[512]; state_book_root(path, root_pc, sizeof(root_pc));
             const catalog_entry *e = catalog_field_for_path(cat, path);
             log_msg("audiobook path=%s pos=%u track=%d/%d", path, pos,
                     e ? e->index : -1, e ? e->count : -1);
-            ensure_audiobook_play_mode(cfg);
+            /* Play-mode enforcement: use shadow wrapper */
+            if (cfg->play_mode_enforce_enabled)
+                shadow_wrap_play_mode(cfg);
             rt->restored_path[0] = '\0';
             resume_reset_failures();
             rt->last_saved_bucket = -1;
@@ -1153,7 +1166,7 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
                         rt->completed_saved_path[0] &&
                         strcmp(rt->completed_saved_path, path) == 0) {
                         /* already restored */
-                    } else if (maybe_restore(cfg, path, pos, bk, root) == 0) {
+                    } else if (shadow_wrap_restore(cfg, path, pos, bk, root) == 0) {
                         strncpy(rt->restored_path, path, sizeof(rt->restored_path) - 1);
                         rt->restored_path[sizeof(rt->restored_path) - 1] = '\0';
                         strncpy(rt->completed_saved_path, path,
@@ -1171,6 +1184,82 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
             }
         }
 
+        /* Completion detection: check if we're near the end of the last track */
+        if (cfg->completed_end_threshold_ms > 0) {
+            const catalog_entry *ce = catalog_field_for_path(cat, path);
+            if (ce && ce->index > 0 && ce->count > 0 &&
+                ce->index == ce->count) {
+                /* On the last track — check if position is near the end */
+                uint32_t dur = duration_ms_memory(cfg);
+                if (dur > 0 &&
+                    (pos >= dur ? (pos - dur) : (dur - pos)) <=
+                    cfg->completed_end_threshold_ms) {
+                    /* Position is within threshold of the end (above or below) */
+                    if (shadow_is_active(cfg)) {
+                        shadow_log_action("COMPLETE",
+                            "path=%s pos=%u dur=%u track=%d/%d",
+                            path, pos, dur, ce->index, ce->count);
+                    } else {
+                        log_msg("completed detected path=%s pos=%u dur=%u track=%d/%d",
+                                path, pos, dur, ce->index, ce->count);
+                        /* Mark the book as completed in the resume record */
+                        resume_record tmpl;
+                        memset(&tmpl, 0, sizeof(tmpl));
+                        tmpl.schema_version = 3;
+                        state_book_root(path, tmpl.root_hiby_path,
+                                        sizeof(tmpl.root_hiby_path));
+                        safe_id(tmpl.root_hiby_path, tmpl.book_id,
+                                sizeof(tmpl.book_id));
+                        if (bkp) strncpy(tmpl.book_key, bkp,
+                                         sizeof(tmpl.book_key) - 1);
+                        tmpl.media_id = ce->media_id;
+                        tmpl.track_index = ce->index;
+                        tmpl.track_count = ce->count;
+                        strncpy(tmpl.chapter_title, ce->title,
+                                sizeof(tmpl.chapter_title) - 1);
+                        tmpl.completed = true;
+                        /* Save with completed=true by writing record directly */
+                        save_position(cfg, path, pos, &tmpl);
+                        /* Now patch the completed field — save_position writes
+                         * completed=false, so we need to fix it in-place */
+                        char rec_path[512];
+                        record_for_path(cfg, path, bk, root,
+                                        rec_path, sizeof(rec_path));
+                        int rfd = open(rec_path, O_RDONLY);
+                        if (rfd >= 0) {
+                            char rbuf[4096];
+                            size_t rtot = 0;
+                            while (rtot < sizeof(rbuf) - 1) {
+                                ssize_t rn = read(rfd, rbuf + rtot,
+                                                  sizeof(rbuf) - 1 - rtot);
+                                if (rn > 0) { rtot += (size_t)rn; continue; }
+                                if (rn == 0) break;
+                                if (errno == EINTR) continue;
+                                break;
+                            }
+                            close(rfd);
+                            rbuf[rtot] = '\0';
+                            /* Replace "completed": false with true */
+                            char *cp = strstr(rbuf, "\"completed\": false");
+                            if (cp) {
+                                cp[13] = 't'; cp[14] = 'r'; cp[15] = 'u';
+                                cp[16] = 'e';
+                                int wfd = open(rec_path,
+                                              O_WRONLY | O_TRUNC, 0644);
+                                if (wfd >= 0) {
+                                    write(wfd, rbuf, rtot);
+                                    close(wfd);
+                                }
+                            }
+                        }
+                    }
+                    state_diag_inc(rt, &rt->diag_saves);
+                    /* Don't save again in the save phase */
+                    pos = 0;
+                }
+            }
+        }
+
         /* Save phase */
         if (pos >= cfg->min_save_ms) {
             int bucket = (int)(pos / cfg->save_bucket_ms);
@@ -1183,7 +1272,7 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
                 /* skip */
             } else if (rt->completed_start_over_path[0] &&
                        strcmp(rt->completed_start_over_path, path) == 0) {
-                save_position(cfg, path, pos, NULL);
+                shadow_wrap_save(cfg, path, pos, NULL);
                 state_diag_inc(rt, &rt->diag_saves);
                 rt->last_saved_bucket = bucket;
                 rt->completed_start_over_path[0] = '\0';
@@ -1211,7 +1300,7 @@ uint32_t state_poll_cycle(daemon_runtime *rt, const daemon_config *cfg,
                     tmpl.track_count = ce->count;
                     strncpy(tmpl.chapter_title, ce->title, sizeof(tmpl.chapter_title) - 1);
                 }
-                save_position(cfg, path, pos, &tmpl);
+                shadow_wrap_save(cfg, path, pos, &tmpl);
                 state_diag_inc(rt, &rt->diag_saves);
                 rt->last_saved_bucket = bucket;
                 rt->deferred_overwrite_path[0] = '\0';
