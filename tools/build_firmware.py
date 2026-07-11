@@ -440,6 +440,8 @@ def build(args: argparse.Namespace) -> None:
         player_patch_args.append("--audiobook-native-hub-view-rows")
     if args.include_audiobook_title_auto_start_marker:
         player_patch_args.append("--audiobook-title-autostart-marker")
+    if args.include_audiobook_explorer_marker:
+        player_patch_args.append("--audiobook-explorer-marker")
     if args.include_select_dispatch_branch:
         player_patch_args.append("--select-dispatch-branch")
 
@@ -904,6 +906,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Add audiobook native hub view rows to hiby_player")
     parser.add_argument("--include-audiobook-title-auto-start-marker", action="store_true",
                         help="Add audiobook title auto-start marker to hiby_player")
+    parser.add_argument("--include-audiobook-explorer-marker", action="store_true",
+                        help="Add extended autostart marker for .m3u explorer callback")
     parser.add_argument("--include-select-dispatch-branch", action="store_true",
                         help="Add select dispatch branch to hiby_player")
     parser.add_argument("--include-audiobook-launcher-icon", action="store_true",

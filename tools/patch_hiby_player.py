@@ -68,8 +68,8 @@ def text_addr(offset: int) -> int:
     return TEXT_LOAD_BASE + offset
 
 
-STOCK_MD5 = "ad69fa8377fb85b01ed5d65fe976b19a"
-STOCK_SHA256 = "8398e1e1295e83b033bf7b8c39932fff3f620831f5a91682869554047b26f6b2"
+STOCK_MD5 = "cd4d2812ab3425174b52925766424d2b"
+STOCK_SHA256 = "a977d74043d997c6eb34720bd3e0e8c17f88caee6e0ec520cb05807b7a987bd4"
 
 SCAN_SKIP_OFFSET = 0x35BE70
 SCAN_SKIP_ORIGINAL = "System Volume Information".encode("utf-16le") + b"\x00\x00"
@@ -214,6 +214,49 @@ AUDIOBOOK_TITLE_MARKER_PATCHES = (
     AUDIOBOOK_TITLE_MARKER_HOOK,
 )
 
+# ── Extended autostart marker (Approach E) ──────────────────────────────
+# Second marker hook that fires when a .m3u file is opened from the
+# filesystem explorer (vg_listview_explorer -> m3u callback at 0x4efe00).
+# This enables the daemon to detect title taps from the native hub's
+# Titles/Authors/Series views, which use .m3u playlists.
+# Uses the same marker address (0x8E4000) so the daemon's existing
+# marker polling detects the change.
+AUDIOBOOK_EXPLORER_MARKER_CAVE_OFFSET = 0x360E38
+AUDIOBOOK_EXPLORER_MARKER_HOOK = (
+    0x00EFE00,
+    bytes.fromhex("c0ffbd273800b7af"),
+    bytes.fromhex("8e831d0800000000"),
+)
+AUDIOBOOK_EXPLORER_MARKER_CODE = bytes.fromhex(
+    # addiu sp, sp, -32
+    # sw ra, 28(sp)
+    # sw s0, 24(sp)
+    # lui s0, 0x008E
+    # addiu s0, s0, 0x4000
+    # lw t0, 0(s0)
+    # addiu t0, t0, 1
+    # sw t0, 0(s0)
+    # lw s0, 24(sp)
+    # lw ra, 28(sp)
+    # addiu sp, sp, 32
+    # addiu sp, sp, -64  (original instruction 1)
+    # sw s7, 56(sp)       (original instruction 2)
+    # j 0x4efe08
+    # nop
+    "e0ffbd271c00bfaf1800b0af8e00103c00401026"
+    "0000088d01000825000008ad1800b08f1c00bf8f"
+    "2000bd27c0ffbd273800b7af82bf130800000000"
+    "0000"
+)
+AUDIOBOOK_EXPLORER_MARKER_PATCHES = (
+    (
+        AUDIOBOOK_EXPLORER_MARKER_CAVE_OFFSET,
+        b"\x00" * len(AUDIOBOOK_EXPLORER_MARKER_CODE),
+        AUDIOBOOK_EXPLORER_MARKER_CODE,
+    ),
+    AUDIOBOOK_EXPLORER_MARKER_HOOK,
+)
+
 AUDIOBOOK_NATIVE_HUB_TITLE_ROW_CAVE_OFFSET = 0x35DE60
 AUDIOBOOK_NATIVE_HUB_TITLE_ROW_CODE = bytes.fromhex(
     # move a0, s2
@@ -250,7 +293,7 @@ AUDIOBOOK_NATIVE_HUB_TITLE_ROW_PATCHES = (
     ),
     (
         0x38D27C,
-        bytes.fromhex("080d5400"),
+        bytes.fromhex("08077600"),
         bytes.fromhex("60de7500"),
     ),
 )
@@ -289,13 +332,13 @@ AUDIOBOOK_NATIVE_HUB_FOLDER_ROWS_PATCHES = (
     (
         # Stock Favorites row -> audiobook folder explorer.
         0x38D280,
-        bytes.fromhex("2c0e5400"),
+        bytes.fromhex("38077600"),
         pack_u32(0x0075DEA0),
     ),
     (
         # Stock Files row -> audiobook folder explorer.
         0x38D284,
-        bytes.fromhex("480d5400"),
+        bytes.fromhex("68077600"),
         pack_u32(0x0075DEA0),
     ),
 )
@@ -581,19 +624,19 @@ AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_PATCHES = (
     (
         # Row 1: Titles.
         0x38D27C,
-        bytes.fromhex("080d5400"),
+        bytes.fromhex("08077600"),
         pack_u32(AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_ADDR),
     ),
     (
         # Row 2: Authors.
         0x38D280,
-        bytes.fromhex("2c0e5400"),
+        bytes.fromhex("38077600"),
         pack_u32(AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_ADDR + 0x30),
     ),
     (
         # Row 3: Series.
         0x38D284,
-        bytes.fromhex("480d5400"),
+        bytes.fromhex("68077600"),
         pack_u32(AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_BASE_ADDR + 0x60),
     ),
     (
@@ -708,6 +751,7 @@ def apply_patches(
     audiobook_native_hub_folder_rows: bool,
     audiobook_native_hub_view_rows: bool,
     audiobook_title_autostart_marker: bool,
+    audiobook_explorer_marker: bool,
     select_dispatch: bool,
 ) -> None:
     md5 = digest(input_path, "md5")
@@ -801,6 +845,11 @@ def apply_patches(
         for offset, expected, replacement in AUDIOBOOK_TITLE_MARKER_PATCHES:
             patch_bytes(data, offset, expected, replacement)
         applied.append("audiobook-title-autostart-marker")
+
+    if audiobook_explorer_marker:
+        for offset, expected, replacement in AUDIOBOOK_EXPLORER_MARKER_PATCHES:
+            patch_bytes(data, offset, expected, replacement)
+        applied.append("audiobook-explorer-marker")
 
     if select_dispatch:
         patch_bytes(data, *SELECT_DISPATCH_PATCH)
@@ -906,6 +955,15 @@ def main() -> None:
             "daemon can auto-start audiobook title taps. Experimental and off by default."
         ),
     )
+    parser.add_argument(
+        "--audiobook-explorer-marker",
+        action="store_true",
+        help=(
+            "Extended autostart marker: hooks the m3u callback at 0x4efe00 so "
+            "the resume daemon detects .m3u title taps from the explorer view. "
+            "Uses the same marker address (0x8E4000) as the title autostart marker."
+        ),
+    )
     args = parser.parse_args()
 
     apply_patches(
@@ -920,6 +978,7 @@ def main() -> None:
         audiobook_native_hub_folder_rows=args.audiobook_native_hub_folder_rows,
         audiobook_native_hub_view_rows=args.audiobook_native_hub_view_rows,
         audiobook_title_autostart_marker=args.audiobook_title_autostart_marker,
+        audiobook_explorer_marker=args.audiobook_explorer_marker,
         select_dispatch=args.select_dispatch_branch,
     )
 
