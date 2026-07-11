@@ -902,14 +902,25 @@ static bool auto_tap_first_track_fb(daemon_runtime *rt,
         return false;
     }
 
+    /* Look up saved resume record for this book to find the saved track */
+    char book_root[512];
+    state_book_root(path, book_root, sizeof(book_root));
+
+    int saved_track_index = -1;
+    resume_record rec;
+    if (existing_record_for_path(cfg, path, NULL, book_root, &rec) == 0) {
+        saved_track_index = rec.track_index;
+        log_msg("auto-tap saved track=%d path=%s", saved_track_index, path);
+    }
+
     /* Enter fast-poll mode */
     uint32_t poll_ms = cfg->autotap_fb_poll_ms > 0 ? cfg->autotap_fb_poll_ms : 200;
     uint32_t timeout_ms = cfg->autotap_fb_timeout_ms > 0 ? cfg->autotap_fb_timeout_ms : 5000;
     time_t deadline = time(NULL) + (time_t)((timeout_ms + 999) / 1000);
     rt->autotap_fast_poll_until = deadline;
 
-    log_msg("auto-tap fast-poll start path=%s poll=%ums timeout=%ums",
-            path, poll_ms, timeout_ms);
+    log_msg("auto-tap fast-poll start path=%s poll=%ums timeout=%ums saved_track=%d",
+            path, poll_ms, timeout_ms, saved_track_index);
 
     while (time(NULL) <= deadline) {
         /* Open framebuffer and check for track-list screen */
@@ -924,18 +935,43 @@ static bool auto_tap_first_track_fb(daemon_runtime *rt,
         close(fb);
 
         if (track_list_visible) {
-            /* Track list is on screen — tap the first track */
+            /* Track list is on screen — tap the appropriate track */
             if (shadow_is_active(cfg)) {
-                shadow_log_action("AUTO-TAP", "WOULD AUTO-TAP row=1 path=%s", path);
-            } else {
-                int rc = touch_first_track(cfg);
-                if (rc != 0) {
-                    log_msg("auto-tap touch failed rc=%d path=%s", rc, path);
-                    /* Still mark as tapped to avoid retry loop */
+                if (saved_track_index > 1) {
+                    shadow_log_action("AUTO-TAP",
+                            "WOULD AUTO-TAP track=%d path=%s", saved_track_index, path);
                 } else {
-                    log_msg("auto-tap fired row=1 path=%s", path);
+                    shadow_log_action("AUTO-TAP", "WOULD AUTO-TAP row=1 path=%s", path);
+                }
+            } else {
+                int rc;
+                if (saved_track_index > 1) {
+                    /* Tap the saved track (swipe + tap) */
+                    rc = state_tap_track_index(rt, cfg, saved_track_index, "auto-tap");
+                    if (rc != 0) {
+                        log_msg("auto-tap track-index failed si=%d rc=%d path=%s",
+                                saved_track_index, rc, path);
+                        /* Fall back to row 1 */
+                        rc = touch_first_track(cfg);
+                    } else {
+                        log_msg("auto-tap fired track=%d path=%s", saved_track_index, path);
+                    }
+                } else {
+                    rc = touch_first_track(cfg);
+                    if (rc != 0) {
+                        log_msg("auto-tap touch failed rc=%d path=%s", rc, path);
+                    } else {
+                        log_msg("auto-tap fired row=1 path=%s", path);
+                    }
                 }
             }
+
+            /* Activate autostart context so restore logic fires */
+            rt->book_title_autostart_until = time(NULL) +
+                (time_t)(cfg->restore_retry_after_failure_seconds > 0 ?
+                         cfg->restore_retry_after_failure_seconds : 30);
+            log_msg("auto-tap autostart activated until=%ld path=%s",
+                    (long)rt->book_title_autostart_until, path);
 
             /* Mark this path as tapped (prevent double-tap) */
             strncpy(rt->autotap_last_path, path,
@@ -944,6 +980,21 @@ static bool auto_tap_first_track_fb(daemon_runtime *rt,
             rt->autotap_fired_at = time(NULL);
             rt->autotap_fast_poll_until = 0;
             state_diag_inc(rt, &rt->diag_autotap_fired);
+
+            /* Follow-up: wait briefly then tap to enter Now Playing */
+            if (!shadow_is_active(cfg)) {
+                sleep(1);
+                int fb2 = open("/dev/fb0", O_RDONLY);
+                if (fb2 >= 0) {
+                    bool still_list = audiobook_track_list_visible(fb2, cfg);
+                    close(fb2);
+                    if (still_list) {
+                        touch_first_track(cfg);
+                        log_msg("auto-tap follow-up now-playing tap path=%s", path);
+                    }
+                }
+            }
+
             return true;
         }
 
