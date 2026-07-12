@@ -3,6 +3,8 @@
 
 #include <stdlib.h>
 
+#include <stdio.h>
+
 void config_init(audiobook_config *cfg) {
     if (!cfg) return;
     *cfg = (audiobook_config){0};
@@ -14,7 +16,14 @@ void config_init(audiobook_config *cfg) {
     ab_copy_str(cfg->fb_path, sizeof(cfg->fb_path), "/dev/fb0");
     ab_copy_str(cfg->touch_path, sizeof(cfg->touch_path), "/dev/input/event1");
     ab_copy_str(cfg->pcm_device, sizeof(cfg->pcm_device), "/dev/snd/pcmC0D0p");
-    ab_copy_str(cfg->font_path, sizeof(cfg->font_path), "/usr/share/audiobooks/fonts/font.dat");
+    /* Try the stock device font location first, fall back to our packaged copy. */
+    ab_copy_str(cfg->font_path, sizeof(cfg->font_path), "/usr/resource/fonts/msyh.ttf");
+    FILE *font_test = fopen(cfg->font_path, "rb");
+    if (font_test) {
+        fclose(font_test);
+    } else {
+        ab_copy_str(cfg->font_path, sizeof(cfg->font_path), "/usr/share/audiobooks/fonts/msyh.ttf");
+    }
     cfg->scan_interval_ms = 3000;
     cfg->save_interval_ms = 5000;
     cfg->back_skip_ms = 15000;

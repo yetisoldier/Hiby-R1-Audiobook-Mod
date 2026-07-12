@@ -15,12 +15,17 @@ typedef struct m4b_chapter {
     char title[128];
 } m4b_chapter;
 
+typedef struct m4b_frame_info {
+    uint64_t len;
+    uint64_t offset;
+} m4b_frame_info_t;
+
 typedef struct m4b_decoder_state {
     bool open;
     bool mp4_container;
     char path[512];
     FILE *adts_file;
-    frame_info_t *adts_frames;
+    m4b_frame_info_t *adts_frames;
     size_t adts_frame_count;
     size_t adts_frame_cap;
     size_t adts_frame_index;

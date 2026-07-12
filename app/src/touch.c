@@ -56,6 +56,7 @@ int touch_poll(touch_context *touch, touch_event *ev, int timeout_ms) {
                 if (abs(dx) < 40 && abs(dy) < 40) ev->action = TOUCH_TAP;
                 else if (dy < -80 && abs(dx) < 150) ev->action = TOUCH_SWIPE_UP;
                 else if (dy > 80 && abs(dx) < 150) ev->action = TOUCH_SWIPE_DOWN;
+                else if (dx > 80 && abs(dy) < 100) ev->action = TOUCH_SWIPE_RIGHT;
                 else if (touch->start_x < 40 && dx > 120) ev->action = TOUCH_BACK_EDGE;
                 else ev->action = TOUCH_NONE;
                 return 0;

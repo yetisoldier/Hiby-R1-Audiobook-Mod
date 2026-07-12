@@ -10,6 +10,7 @@ typedef enum {
     TOUCH_SWIPE_UP,
     TOUCH_SWIPE_DOWN,
     TOUCH_BACK_EDGE,
+    TOUCH_SWIPE_RIGHT,
 } touch_action;
 
 typedef struct touch_event {

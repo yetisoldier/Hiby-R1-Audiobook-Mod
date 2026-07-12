@@ -119,35 +119,11 @@ if [ "$1" != start ]; then
   fi
 fi
 
-mkdir -p "$BASE/bin" "$BASE/input" "$BASE/resume.d"
+mkdir -p "$BASE/bin" "$BASE/resume.d"
 clear_stock_audiobook_last_file
-cp -f /usr/bin/r1_audiobook_resume_helper "$BASE/bin/r1_audiobook_resume_helper"
-cp -f /usr/bin/r1_audiobook_memscan "$BASE/bin/r1_audiobook_memscan"
-cp -f /usr/bin/r1_audiobook_direct_open "$BASE/bin/r1_audiobook_direct_open"
 cp -f /usr/bin/r1_audiobook_resume_daemon "$BASE/bin/r1_audiobook_resume_daemon"
 cp -f /usr/bin/r1_audiobook_resume_daemon.sh "$BASE/bin/r1_audiobook_resume_daemon.sh"
 cp -f /usr/bin/r1_audiobook_resume_daemon_shell.sh "$BASE/bin/r1_audiobook_resume_daemon_shell.sh"
-cp -f /usr/bin/r1_touch_next_event1.bin "$BASE/input/touch_next_event1.bin"
-cp -f /usr/bin/r1_touch_first_track_event1.bin "$BASE/input/touch_first_track_event1.bin"
-cp -f /usr/bin/r1_touch_first_track_down_event1.bin "$BASE/input/touch_first_track_down_event1.bin"
-cp -f /usr/bin/r1_touch_first_track_move_event1.bin "$BASE/input/touch_first_track_move_event1.bin"
-cp -f /usr/bin/r1_touch_first_track_up_event1.bin "$BASE/input/touch_first_track_up_event1.bin"
-cp -f /usr/bin/r1_touch_back_event1.bin "$BASE/input/touch_back_event1.bin"
-cp -f /usr/bin/r1_touch_track_row1_event1.bin "$BASE/input/touch_track_row1_event1.bin"
-cp -f /usr/bin/r1_touch_track_row2_event1.bin "$BASE/input/touch_track_row2_event1.bin"
-cp -f /usr/bin/r1_touch_track_row3_event1.bin "$BASE/input/touch_track_row3_event1.bin"
-cp -f /usr/bin/r1_touch_track_row4_event1.bin "$BASE/input/touch_track_row4_event1.bin"
-cp -f /usr/bin/r1_touch_track_row5_event1.bin "$BASE/input/touch_track_row5_event1.bin"
-cp -f /usr/bin/r1_touch_track_swipe_down_event1.bin "$BASE/input/touch_track_swipe_down_event1.bin"
-cp -f /usr/bin/r1_touch_track_swipe_move1_event1.bin "$BASE/input/touch_track_swipe_move1_event1.bin"
-cp -f /usr/bin/r1_touch_track_swipe_move2_event1.bin "$BASE/input/touch_track_swipe_move2_event1.bin"
-cp -f /usr/bin/r1_touch_track_swipe_move3_event1.bin "$BASE/input/touch_track_swipe_move3_event1.bin"
-cp -f /usr/bin/r1_touch_track_swipe_move4_event1.bin "$BASE/input/touch_track_swipe_move4_event1.bin"
-cp -f /usr/bin/r1_touch_track_swipe_move5_event1.bin "$BASE/input/touch_track_swipe_move5_event1.bin"
-cp -f /usr/bin/r1_touch_track_swipe_move6_event1.bin "$BASE/input/touch_track_swipe_move6_event1.bin"
-cp -f /usr/bin/r1_touch_track_swipe_up_event1.bin "$BASE/input/touch_track_swipe_up_event1.bin"
-cp -f /usr/bin/r1_key_next_event0.bin "$BASE/input/key_next_event0.bin"
-cp -f /usr/bin/r1_key_prev_event2.bin "$BASE/input/key_prev_event2.bin"
 
 if [ ! -s "$BASE/catalog.tsv" ]; then
   if [ -f /usr/bin/r1_audiobook_catalog.tsv ]; then
@@ -155,12 +131,7 @@ if [ ! -s "$BASE/catalog.tsv" ]; then
   fi
 fi
 
-chmod 755 "$BASE/bin/r1_audiobook_resume_helper" "$BASE/bin/r1_audiobook_memscan" "$BASE/bin/r1_audiobook_direct_open" "$BASE/bin/r1_audiobook_resume_daemon" "$BASE/bin/r1_audiobook_resume_daemon.sh" "$BASE/bin/r1_audiobook_resume_daemon_shell.sh"
-for file in "$BASE/input/"*.bin; do
-  if [ -e "$file" ]; then
-    chmod 644 "$file"
-  fi
-done
+chmod 755 "$BASE/bin/r1_audiobook_resume_daemon" "$BASE/bin/r1_audiobook_resume_daemon.sh" "$BASE/bin/r1_audiobook_resume_daemon_shell.sh"
 
 old_pid=$(cat "$BASE/resume-daemon.pid" 2>/dev/null || true)
 [ -n "$old_pid" ] && kill "$old_pid" 2>/dev/null || true
@@ -171,20 +142,20 @@ rm -f "$BASE/resume-daemon.pid" "$BASE/resume-daemon.ssd.pid"
 
 AUDIOBOOK_POSITION_SOURCE=memory
 AUDIOBOOK_RESTORE_ENABLED=1
-AUDIOBOOK_TRACK_RESTORE_ENABLED=__AUDIOBOOK_TRACK_RESTORE_ENABLED__
-AUDIOBOOK_TRACK_RESTORE_FIRST_TRACK_ENTRY_ENABLED=__AUDIOBOOK_TRACK_RESTORE_FIRST_TRACK_ENTRY_ENABLED__
+AUDIOBOOK_TRACK_RESTORE_ENABLED=0
+AUDIOBOOK_TRACK_RESTORE_FIRST_TRACK_ENTRY_ENABLED=0
 AUDIOBOOK_TRACK_RESTORE_FIRST_TRACK_ENTRY_MAX_MS=15000
-AUDIOBOOK_BOOK_TITLE_AUTOSTART_ENABLED=__AUDIOBOOK_BOOK_TITLE_AUTOSTART_ENABLED__
-AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED=__AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED__
-AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED=__AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED__
+AUDIOBOOK_BOOK_TITLE_AUTOSTART_ENABLED=0
+AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_SELECT_ENABLED=0
+AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_PREPLAY_ENABLED=0
 AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_MAX_SWIPES=20
 AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_VISIBLE_ROWS=5
 AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_ROWS_PER_SWIPE=4
-AUDIOBOOK_BOOK_TITLE_MEMSCAN_ENABLED=__AUDIOBOOK_BOOK_TITLE_MEMSCAN_ENABLED__
-AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_CALIBRATE_ENABLED=__AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_CALIBRATE_ENABLED__
-AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_RECOVERY_TRANSPORT_ENABLED=__AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_RECOVERY_TRANSPORT_ENABLED__
+AUDIOBOOK_BOOK_TITLE_MEMSCAN_ENABLED=0
+AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_CALIBRATE_ENABLED=0
+AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_RECOVERY_TRANSPORT_ENABLED=0
 AUDIOBOOK_BOOK_TITLE_DIRECT_TRACK_RECOVERY_MAX_STEPS=20
-AUDIOBOOK_BOOK_TITLE_DIRECT_OPEN_ENABLED=__AUDIOBOOK_BOOK_TITLE_DIRECT_OPEN_ENABLED__
+AUDIOBOOK_BOOK_TITLE_DIRECT_OPEN_ENABLED=0
 AUDIOBOOK_DIRECT_OPEN_PROBE_ADDR=0x760708
 AUDIOBOOK_DIRECT_OPEN_SCRATCH_ADDR=0x8e4400
 AUDIOBOOK_DIRECT_OPEN_TIMEOUT_MS=6000
@@ -206,11 +177,11 @@ AUDIOBOOK_RESTORE_RETRY_MAX_AFTER_FAILURE_SECONDS=300
 AUDIOBOOK_FAILED_RESTORE_SKIP_LOG_BUCKET_MS=30000
 AUDIOBOOK_BOOK_TITLE_RESTORE_LOG_BUCKET_MS=5000
 AUDIOBOOK_RESUME_LOG_MAX_BYTES=524288
-AUDIOBOOK_UI_SEEK_FALLBACK_ENABLED=__AUDIOBOOK_UI_SEEK_FALLBACK_ENABLED__
+AUDIOBOOK_UI_SEEK_FALLBACK_ENABLED=0
 AUDIOBOOK_UI_SEEK_SCREEN_GUARD_ENABLED=1
 AUDIOBOOK_UI_SEEK_SCREEN_MIN_BAR_PIXELS=300
 AUDIOBOOK_UI_SEEK_TOUCH_FRAMES=2
-AUDIOBOOK_BACK_GUARD_ENABLED=__AUDIOBOOK_BACK_GUARD_ENABLED__
+AUDIOBOOK_BACK_GUARD_ENABLED=0
 AUDIOBOOK_BACK_GUARD_WINDOW_SECONDS=60
 AUDIOBOOK_BACK_GUARD_AFTER_SCREEN_SECONDS=8
 AUDIOBOOK_BACK_GUARD_IDLE_INTERVAL_SECONDS=1
@@ -351,7 +322,7 @@ def run(cmd: list[str | Path], *, cwd: Optional[Path] = None, check: bool = True
     """Run a subprocess command, logging it first."""
     cmd_str = [str(c) for c in cmd]
     log.info("RUN: %s", " ".join(cmd_str))
-    result = subprocess.run(cmd_str, cwd=str(cwd) if cwd else None)
+    result = subprocess.run(cmd_str, cwd=str(cwd) if cwd else None, capture_output=True, text=True)
     if check and result.returncode != 0:
         raise RuntimeError(f"Command failed (exit {result.returncode}): {' '.join(cmd_str)}")
     return result
@@ -418,10 +389,32 @@ def build(args: argparse.Namespace) -> None:
     log.info("Extracting rootfs from %s → %s", rootfs_path, root_tree)
     run([unsquashfs, "-d", str(root_tree), str(rootfs_path)])
 
+    # -- Remove legacy standalone-app artifacts left by stock/prior firmware -
+    log.info("Removing legacy direct-open, touch-event, and helper artifacts")
+    legacy_patterns = [
+        "usr/bin/r1_audiobook_direct_open",
+        "usr/bin/r1_audiobook_memscan",
+        "usr/bin/r1_audiobook_refresh.sh",
+        "usr/bin/r1_audiobook_resume_helper",
+        "usr/bin/r1_touch_*.bin",
+    ]
+    for pattern in legacy_patterns:
+        for path in root_tree.glob(pattern):
+            try:
+                path.unlink()
+                log.info("Removed legacy artifact: %s", path.relative_to(root_tree))
+            except OSError as exc:
+                log.warning("Could not remove %s: %s", path, exc)
+
     # -- Build standalone audiobook app ------------------------------------
     log.info("Building standalone audiobook app")
     run(["sh", "app/build.sh"])
     built_app = resolve_path_strict("build/r1_audiobook_app")
+    file_stdout = run(["file", str(built_app)], cwd=Path(__file__).resolve().parent.parent).stdout
+    log.info("Using built app: %s (%d bytes, %s)", built_app, built_app.stat().st_size,
+             "stripped" if "not stripped" not in file_stdout else "UNSTRIPPED")
+    if "not stripped" in file_stdout:
+        log.warning("Build produced an unstripped binary; firmware will be larger than 5 MB")
 
     # -- Patch hiby_player --------------------------------------------------
     player_patch_args: list[str | Path] = [str(player_path), "-o", str(patched_player)]
@@ -479,12 +472,21 @@ def build(args: argparse.Namespace) -> None:
         log.info("Generating audiobook launcher icons")
         run_python("generate_audiobook_launcher_icons.py", [str(root_tree)])
 
-    # -- Install standalone app + launcher wrapper --------------------------
+    # -- Install standalone app + launcher wrapper + UI assets ----------------
     bin_dir = root_tree / "usr" / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
+    share_dir = root_tree / "usr" / "share" / "audiobooks"
+    font_dir = share_dir / "fonts"
+    theme_dir = share_dir / "hiby-theme"
+    font_dir.mkdir(parents=True, exist_ok=True)
+    theme_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(built_app, bin_dir / "r1_audiobook_app")
     shutil.copy2(resolve_path_strict("tools/r1_audiobook_launch.sh"), bin_dir / "r1_audiobook_launch.sh")
     (bin_dir / "r1_audiobook_launch.sh").chmod(0o755)
+    shutil.copy2(resolve_path_strict("app/assets/msyh.ttf"), font_dir / "msyh.ttf")
+    if (root_tree / "usr" / "share" / "audiobooks" / "hiby-theme").exists():
+        shutil.rmtree(root_tree / "usr" / "share" / "audiobooks" / "hiby-theme")
+    shutil.copytree(resolve_path_strict("app/assets/hiby-theme"), theme_dir)
 
     # -- OTA info -----------------------------------------------------------
     ota_info_path = root_tree / "etc" / "ota_info"
@@ -543,7 +545,8 @@ def build(args: argparse.Namespace) -> None:
     native_hub_folder_rows_marker = "enabled" if args.include_audiobook_native_hub_folder_rows else "disabled"
     native_hub_view_rows_marker = "enabled" if args.include_audiobook_native_hub_view_rows else "disabled"
     audiobook_view_generation_enabled = "1" if args.include_audiobook_native_hub_view_rows else "0"
-    resume_runtime_profile_marker = "conservative" if args.use_conservative_resume_runtime else "direct"
+    resume_runtime_profile_marker = "disabled"
+    audiobook_view_generation_enabled = "0"
 
     version_text = (
         f"version={args.custom_version_id}\n"
@@ -586,7 +589,7 @@ def build(args: argparse.Namespace) -> None:
 
     # -- Audiobook resume runtime -------------------------------------------
     if args.include_audiobook_resume_runtime:
-        _install_resume_runtime(args, out_dir, root_tree, include_native_hub_launcher)
+        _install_resume_runtime(args, root_tree)
 
     # -- Audiobook DB maintenance -------------------------------------------
     if args.include_audiobook_db_maintenance:
@@ -599,6 +602,21 @@ def build(args: argparse.Namespace) -> None:
         ["--rootfs", str(rootfs_path), "--unsquashfs", str(unsquashfs), "--output", str(pseudo_file)],
     )
 
+    # Drop pseudo entries for legacy artifacts we just removed so mksquashfs doesn't warn.
+    if pseudo_file.exists():
+        keep_lines: list[str] = []
+        for line in pseudo_file.read_text(encoding="ascii").splitlines():
+            parts = line.split()
+            if not parts:
+                keep_lines.append(line)
+                continue
+            rel = parts[0].lstrip("/")
+            if (root_tree / rel).exists():
+                keep_lines.append(line)
+            else:
+                log.debug("Dropping pseudo entry for removed path: %s", rel)
+        pseudo_file.write_text("\n".join(keep_lines) + "\n", encoding="ascii")
+
     # -- Apply new file mode overrides --------------------------------------
     new_file_mode_overrides: list[tuple[str, str]] = []
     if args.enable_boot_adb:
@@ -609,36 +627,14 @@ def build(args: argparse.Namespace) -> None:
         ("etc/r1_audiobook_version", "0644"),
         ("usr/bin/r1_audiobook_app", "0755"),
         ("usr/bin/r1_audiobook_launch.sh", "0755"),
-        ("usr/bin/r1_audiobook_resume_helper", "0755"),
-        ("usr/bin/r1_audiobook_direct_open", "0755"),
         ("usr/bin/r1_audiobook_resume_daemon", "0755"),
         ("usr/bin/r1_audiobook_resume_daemon.sh", "0755"),
         ("usr/bin/r1_audiobook_resume_daemon_shell.sh", "0755"),
         ("usr/bin/r1_audiobook_db_maint", "0755"),
         ("usr/bin/r1_audiobook_db_watch.sh", "0755"),
-        ("usr/bin/r1_audiobook_refresh.sh", "0755"),
         ("usr/bin/r1_usrlocal_media_seed.db", "0644"),
-        ("usr/bin/r1_touch_next_event1.bin", "0644"),
-        ("usr/bin/r1_touch_first_track_event1.bin", "0644"),
-        ("usr/bin/r1_touch_first_track_down_event1.bin", "0644"),
-        ("usr/bin/r1_touch_first_track_move_event1.bin", "0644"),
-        ("usr/bin/r1_touch_first_track_up_event1.bin", "0644"),
-        ("usr/bin/r1_touch_back_event1.bin", "0644"),
-        ("usr/bin/r1_touch_track_row1_event1.bin", "0644"),
-        ("usr/bin/r1_touch_track_row2_event1.bin", "0644"),
-        ("usr/bin/r1_touch_track_row3_event1.bin", "0644"),
-        ("usr/bin/r1_touch_track_row4_event1.bin", "0644"),
-        ("usr/bin/r1_touch_track_row5_event1.bin", "0644"),
-        ("usr/bin/r1_touch_track_swipe_down_event1.bin", "0644"),
-        ("usr/bin/r1_touch_track_swipe_move1_event1.bin", "0644"),
-        ("usr/bin/r1_touch_track_swipe_move2_event1.bin", "0644"),
-        ("usr/bin/r1_touch_track_swipe_move3_event1.bin", "0644"),
-        ("usr/bin/r1_touch_track_swipe_move4_event1.bin", "0644"),
-        ("usr/bin/r1_touch_track_swipe_move5_event1.bin", "0644"),
-        ("usr/bin/r1_touch_track_swipe_move6_event1.bin", "0644"),
-        ("usr/bin/r1_touch_track_swipe_up_event1.bin", "0644"),
-        ("usr/bin/r1_key_next_event0.bin", "0644"),
-        ("usr/bin/r1_key_prev_event2.bin", "0644"),
+        ("usr/share/audiobooks/fonts/msyh.ttf", "0644"),
+        ("usr/share/audiobooks/hiby-theme", "0644"),
         ("usr/bin/r1_audiobook_catalog.tsv", "0644"),
     ])
 
@@ -686,103 +682,20 @@ def build(args: argparse.Namespace) -> None:
 
 def _install_resume_runtime(
     args: argparse.Namespace,
-    out_dir: Path,
     root_tree: Path,
-    include_native_hub_launcher: bool,
 ) -> None:
-    """Install audiobook resume runtime files into the rootfs tree."""
+    """Install audiobook resume runtime files into the rootfs tree.
+
+    For the standalone-app firmware path the legacy touch event streams,
+    memscan, and direct-open helpers are intentionally not copied. Only the
+    resume daemon and its wrappers remain so the daemon can still act as a
+    lifecycle/power-event bridge if enabled.
+    """
     log.info("Installing audiobook resume runtime")
 
-    resume_helper_path = resolve_path_strict(args.audiobook_resume_helper)
-    memscan_helper_path = resolve_path_strict(args.audiobook_memscan_helper)
-    direct_open_helper_path = resolve_path_strict(args.audiobook_direct_open_helper)
     resume_daemon_path = resolve_path_strict(args.audiobook_resume_daemon)
     resume_daemon_wrapper_path = resolve_path_strict(args.audiobook_resume_wrapper)
     resume_daemon_shell_path = resolve_path_strict(args.audiobook_resume_shell)
-
-    # -- Generate or resolve touch event streams ----------------------------
-    if args.touch_next_event_source:
-        touch_next_event_path = resolve_path_strict(args.touch_next_event_source)
-    else:
-        touch_next_event_path = out_dir / "touch_next_event1.bin"
-        run_python("adb_inject_touch_event.py", ["--output", str(touch_next_event_path)])
-
-    if args.touch_first_track_event_source:
-        touch_first_track_event_path = resolve_path_strict(args.touch_first_track_event_source)
-    else:
-        touch_first_track_event_path = out_dir / "touch_first_track_event1.bin"
-        run_python("adb_inject_touch_event.py", [
-            "--x", "203", "--y", "197", "--output", str(touch_first_track_event_path),
-        ])
-
-    touch_first_track_down_event_path = out_dir / "touch_first_track_down_event1.bin"
-    run_python("adb_inject_touch_event.py", [
-        "--x", "203", "--y", "197", "--touch-phase", "down",
-        "--output", str(touch_first_track_down_event_path),
-    ])
-
-    touch_first_track_move_event_path = out_dir / "touch_first_track_move_event1.bin"
-    run_python("adb_inject_touch_event.py", [
-        "--x", "203", "--y", "197", "--touch-phase", "move",
-        "--output", str(touch_first_track_move_event_path),
-    ])
-
-    touch_first_track_up_event_path = out_dir / "touch_first_track_up_event1.bin"
-    run_python("adb_inject_touch_event.py", [
-        "--x", "203", "--y", "197", "--touch-phase", "up",
-        "--output", str(touch_first_track_up_event_path),
-    ])
-
-    touch_back_event_path = out_dir / "touch_back_event1.bin"
-    run_python("adb_inject_touch_event.py", [
-        "--x", "30", "--y", "400", "--to-x", "360", "--to-y", "400",
-        "--drag-frames", "18", "--output", str(touch_back_event_path),
-    ])
-
-    # Track row events
-    touch_track_row_event_paths: list[Path] = [touch_first_track_event_path]
-    track_row_specs = [
-        ("touch_track_row2_event1.bin", 203, 325),
-        ("touch_track_row3_event1.bin", 203, 453),
-        ("touch_track_row4_event1.bin", 203, 581),
-        ("touch_track_row5_event1.bin", 203, 745),
-    ]
-    for name, x, y in track_row_specs:
-        p = out_dir / name
-        run_python("adb_inject_touch_event.py", ["--x", str(x), "--y", str(y), "--output", str(p)])
-        touch_track_row_event_paths.append(p)
-
-    # Track swipe events
-    touch_track_swipe_event_paths: list[Path] = []
-    swipe_phase_specs = [
-        ("touch_track_swipe_down_event1.bin", 120, 680, "down"),
-        ("touch_track_swipe_move1_event1.bin", 120, 600, "move"),
-        ("touch_track_swipe_move2_event1.bin", 120, 520, "move"),
-        ("touch_track_swipe_move3_event1.bin", 120, 440, "move"),
-        ("touch_track_swipe_move4_event1.bin", 120, 360, "move"),
-        ("touch_track_swipe_move5_event1.bin", 120, 280, "move"),
-        ("touch_track_swipe_move6_event1.bin", 120, 220, "move"),
-        ("touch_track_swipe_up_event1.bin", 120, 220, "up"),
-    ]
-    for name, x, y, phase in swipe_phase_specs:
-        p = out_dir / name
-        run_python("adb_inject_touch_event.py", [
-            "--x", str(x), "--y", str(y), "--touch-phase", phase, "--output", str(p),
-        ])
-        touch_track_swipe_event_paths.append(p)
-
-    # Key events
-    if args.key_next_event_source:
-        key_next_event_path = resolve_path_strict(args.key_next_event_source)
-    else:
-        key_next_event_path = out_dir / "key_next_event0.bin"
-        run_python("adb_inject_touch_event.py", ["--button", "next", "--output", str(key_next_event_path)])
-
-    if args.key_prev_event_source:
-        key_prev_event_path = resolve_path_strict(args.key_prev_event_source)
-    else:
-        key_prev_event_path = out_dir / "key_prev_event2.bin"
-        run_python("adb_inject_touch_event.py", ["--button", "prev", "--output", str(key_prev_event_path)])
 
     # Resume catalog (optional)
     resume_catalog_path: Optional[Path] = None
@@ -793,47 +706,25 @@ def _install_resume_runtime(
     bin_dir = root_tree / "usr" / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
 
-    shutil.copy2(resume_helper_path, bin_dir / "r1_audiobook_resume_helper")
-    shutil.copy2(memscan_helper_path, bin_dir / "r1_audiobook_memscan")
-    shutil.copy2(direct_open_helper_path, bin_dir / "r1_audiobook_direct_open")
     shutil.copy2(resume_daemon_path, bin_dir / "r1_audiobook_resume_daemon")
     shutil.copy2(resume_daemon_wrapper_path, bin_dir / "r1_audiobook_resume_daemon.sh")
     shutil.copy2(resume_daemon_shell_path, bin_dir / "r1_audiobook_resume_daemon_shell.sh")
-    shutil.copy2(touch_next_event_path, bin_dir / "r1_touch_next_event1.bin")
-    shutil.copy2(touch_first_track_event_path, bin_dir / "r1_touch_first_track_event1.bin")
-    shutil.copy2(touch_first_track_down_event_path, bin_dir / "r1_touch_first_track_down_event1.bin")
-    shutil.copy2(touch_first_track_move_event_path, bin_dir / "r1_touch_first_track_move_event1.bin")
-    shutil.copy2(touch_first_track_up_event_path, bin_dir / "r1_touch_first_track_up_event1.bin")
-    shutil.copy2(touch_back_event_path, bin_dir / "r1_touch_back_event1.bin")
-
-    for i, row_path in enumerate(touch_track_row_event_paths):
-        row_number = i + 1
-        shutil.copy2(row_path, bin_dir / f"r1_touch_track_row{row_number}_event1.bin")
-
-    for swipe_path in touch_track_swipe_event_paths:
-        shutil.copy2(swipe_path, bin_dir / f"r1_{swipe_path.name}")
-
-    shutil.copy2(key_next_event_path, bin_dir / "r1_key_next_event0.bin")
-    shutil.copy2(key_prev_event_path, bin_dir / "r1_key_prev_event2.bin")
 
     if resume_catalog_path:
         shutil.copy2(resume_catalog_path, bin_dir / "r1_audiobook_catalog.tsv")
 
     # -- Write resume boot script -------------------------------------------
-    conservative = args.use_conservative_resume_runtime
-    audiobook_track_restore_enabled = "0" if conservative else "1"
-    audiobook_book_title_autostart_enabled = "0" if conservative else "1"
-    audiobook_direct_track_select_enabled = "0" if conservative else "1"
-    audiobook_direct_track_preplay_enabled = "0" if conservative else "1"
-    audiobook_book_title_memscan_enabled = "0" if conservative else "1"
-    audiobook_direct_track_calibrate_enabled = "0" if conservative else "1"
-    audiobook_direct_track_recovery_enabled = "0" if conservative else "1"
+    audiobook_track_restore_enabled = "0"
+    audiobook_book_title_autostart_enabled = "0"
+    audiobook_direct_track_select_enabled = "0"
+    audiobook_direct_track_preplay_enabled = "0"
+    audiobook_book_title_memscan_enabled = "0"
+    audiobook_direct_track_calibrate_enabled = "0"
+    audiobook_direct_track_recovery_enabled = "0"
     audiobook_direct_open_enabled = "0"
-    audiobook_ui_seek_fallback_enabled = "0" if conservative else "1"
-    audiobook_back_guard_enabled = "0" if (conservative or include_native_hub_launcher) else "1"
-    audiobook_first_track_entry_restore_enabled = (
-        "1" if (not conservative and args.include_audiobook_native_hub_view_rows) else "0"
-    )
+    audiobook_ui_seek_fallback_enabled = "0"
+    audiobook_back_guard_enabled = "0"
+    audiobook_first_track_entry_restore_enabled = "0"
 
     resume_script_text = RESUME_BOOT_SCRIPT
     replacements = {
@@ -871,7 +762,6 @@ def _install_db_maintenance(
 
     db_maint_helper_path = resolve_path_strict(args.audiobook_db_maint_helper)
     db_watch_path = resolve_path_strict(args.audiobook_db_watch)
-    db_refresh_path = resolve_path_strict(args.audiobook_refresh_request)
     media_db_seed_path = resolve_path_strict(args.media_db_seed)
 
     bin_dir = root_tree / "usr" / "bin"
@@ -879,7 +769,6 @@ def _install_db_maintenance(
 
     shutil.copy2(db_maint_helper_path, bin_dir / "r1_audiobook_db_maint")
     shutil.copy2(db_watch_path, bin_dir / "r1_audiobook_db_watch.sh")
-    shutil.copy2(db_refresh_path, bin_dir / "r1_audiobook_refresh.sh")
     shutil.copy2(media_db_seed_path, bin_dir / "r1_usrlocal_media_seed.db")
 
     db_maint_script_text = DB_MAINT_BOOT_SCRIPT
@@ -954,20 +843,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--unlock-usb-dac-mode", action="store_true",
                         help="Unlock USB DAC mode")
     parser.add_argument("--include-audiobook-resume-runtime", action="store_true",
-                        help="Install audiobook resume runtime (daemon, helpers, event streams)")
-    parser.add_argument("--use-conservative-resume-runtime", action="store_true",
-                        help="Use conservative resume runtime profile (disables advanced features)")
+                        help="Install audiobook resume runtime (daemon and wrappers only)")
 
     # Resume runtime helper paths
-    parser.add_argument("--audiobook-resume-helper",
-                        default="work/device-audiobook-helper-20260609/audiobooks/bin/r1_audiobook_resume_helper",
-                        help="Path to r1_audiobook_resume_helper binary")
-    parser.add_argument("--audiobook-memscan-helper",
-                        default="work/native-memscan/r1_audiobook_memscan",
-                        help="Path to r1_audiobook_memscan binary")
-    parser.add_argument("--audiobook-direct-open-helper",
-                        default="work/native-direct-open/r1_audiobook_direct_open",
-                        help="Path to r1_audiobook_direct_open binary")
     parser.add_argument("--audiobook-resume-daemon",
                         default="build/r1_audiobook_resume_daemon",
                         help="Path to compiled r1_audiobook_resume_daemon binary")
@@ -989,9 +867,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--audiobook-db-watch",
                         default="tools/r1_audiobook_db_watch.sh",
                         help="Path to r1_audiobook_db_watch.sh")
-    parser.add_argument("--audiobook-refresh-request",
-                        default="tools/r1_audiobook_refresh.sh",
-                        help="Path to r1_audiobook_refresh.sh")
     parser.add_argument("--media-db-seed",
                         default="firmware/seed/usrlocal_media.seed.db",
                         help="Path to media DB seed file")
@@ -1005,16 +880,6 @@ def build_parser() -> argparse.ArgumentParser:
                         help="OTA version number (non-negative integer)")
     parser.add_argument("--ota-site", default="",
                         help="OTA site URL override")
-
-    # Touch/key event sources
-    parser.add_argument("--touch-next-event-source", default="",
-                        help="Path to pre-built touch-next event stream")
-    parser.add_argument("--touch-first-track-event-source", default="",
-                        help="Path to pre-built touch-first-track event stream")
-    parser.add_argument("--key-next-event-source", default="",
-                        help="Path to pre-built key-next event stream")
-    parser.add_argument("--key-prev-event-source", default="",
-                        help="Path to pre-built key-prev event stream")
 
     return parser
 

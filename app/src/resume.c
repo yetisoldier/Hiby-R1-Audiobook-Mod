@@ -54,13 +54,19 @@ int resume_bind_book(resume_state *r, const book_row *book, const progress_row *
     return 0;
 }
 
+static bool smart_rewind_enabled = true;
+
 uint32_t resume_smart_rewind_ms(uint64_t paused_seconds, bool rebooted, uint32_t saved_position_ms) {
-    if (saved_position_ms < 3000) return saved_position_ms;
-    uint32_t rewind = 5000;
-    if (paused_seconds > 900) rewind = 20000;
-    else if (paused_seconds > 300) rewind = 10000;
-    if (rebooted) rewind += 2000;
-    return saved_position_ms > rewind ? saved_position_ms - rewind : 0;
+    /* Only apply a rewind when smart rewind is enabled and we know how long
+     * playback has been paused. saved_position_ms is intentionally not used for
+     * tier decisions; it is just the return base. */
+    (void)saved_position_ms;
+    if (!smart_rewind_enabled) return 0;
+    if (rebooted || paused_seconds <= 0) return 20000;
+    if (paused_seconds < 300) return 0;
+    if (paused_seconds < 3600) return 5000;
+    if (paused_seconds < 86400) return 10000;
+    return 20000;
 }
 
 int resume_on_event(resume_state *r, const audiobook_event *ev, progress_row *out) {

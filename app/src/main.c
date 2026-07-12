@@ -145,7 +145,11 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    library_refresh(&db, &cfg, NULL);
+    /* Only auto-scan on first run when the library is empty. Refresh from the
+     * Settings screen or --scan-only will still trigger a full re-scan. */
+    if (!db_has_library(&db) || scan_only) {
+        library_scan_incremental(&db, &cfg, NULL);
+    }
     if (scan_only) {
         db_close(&db);
         return 0;

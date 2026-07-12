@@ -11,22 +11,17 @@
 
   "add_files": [
     {
-      "target": "usr/bin/r1_audiobook_resume_helper",
-      "source": "work/device-audiobook-helper-20260609/audiobooks/bin/r1_audiobook_resume_helper",
-      "mode": "0755",
-      "description": "Native MIPS resume helper binary"
+      "target": "usr/share/audiobooks/fonts/msyh.ttf",
+      "source": "app/assets/msyh.ttf",
+      "mode": "0644",
+      "description": "Chinese fallback font for stb_truetype UI"
     },
     {
-      "target": "usr/bin/r1_audiobook_memscan",
-      "source": "work/native-memscan/r1_audiobook_memscan",
-      "mode": "0755",
-      "description": "Native MIPS memory scan helper for direct track selection"
-    },
-    {
-      "target": "usr/bin/r1_audiobook_direct_open",
-      "source": "work/native-direct-open/r1_audiobook_direct_open",
-      "mode": "0755",
-      "description": "Native MIPS direct-open helper for off-screen track selection"
+      "target": "usr/share/audiobooks/hiby-theme",
+      "source_type": "directory",
+      "source": "app/assets/hiby-theme",
+      "mode": "0644",
+      "description": "HiBy theme PNG assets for the audiobook UI"
     },
     {
       "target": "usr/bin/r1_audiobook_app",
@@ -44,7 +39,7 @@
       "target": "usr/bin/r1_audiobook_resume_daemon",
       "source": "build/r1_audiobook_resume_daemon",
       "mode": "0755",
-      "description": "Compiled MIPS audiobook resume daemon"
+      "description": "Compiled MIPS audiobook resume daemon (lifecycle/IPC bridge only)"
     },
     {
       "target": "usr/bin/r1_audiobook_resume_daemon.sh",
@@ -69,197 +64,6 @@
       "source": "tools/r1_audiobook_db_watch.sh",
       "mode": "0755",
       "description": "Database watcher shell script"
-    },
-    {
-      "target": "usr/bin/r1_audiobook_refresh.sh",
-      "source": "tools/r1_audiobook_refresh.sh",
-      "mode": "0755",
-      "description": "Refresh library trigger script"
-    },
-    {
-      "target": "usr/bin/r1_usrlocal_media_seed.db",
-      "source": "firmware/seed/usrlocal_media.seed.db",
-      "mode": "0644",
-      "description": "Seed media database for initial DB bootstrap"
-    },
-    {
-      "target": "usr/bin/r1_audiobook_catalog.tsv",
-      "source": "",
-      "mode": "0644",
-      "description": "Optional resume catalog TSV (used only if --audiobook-resume-catalog is provided)",
-      "optional": true
-    },
-
-    {
-      "target": "usr/bin/r1_touch_next_event1.bin",
-      "source_type": "generated",
-      "generator": "adb_inject_touch_event.py",
-      "generator_args": [],
-      "mode": "0644",
-      "description": "Touch event stream: tap next"
-    },
-    {
-      "target": "usr/bin/r1_touch_first_track_event1.bin",
-      "source_type": "generated",
-      "generator": "adb_inject_touch_event.py",
-      "generator_args": ["--x", "203", "--y", "197"],
-      "mode": "0644",
-      "description": "Touch event stream: tap first track"
-    },
-    {
-      "target": "usr/bin/r1_touch_first_track_down_event1.bin",
-      "source_type": "generated",
-      "generator": "adb_inject_touch_event.py",
-      "generator_args": ["--x", "203", "--y", "197", "--touch-phase", "down"],
-      "mode": "0644",
-      "description": "Touch event stream: first track press down"
-    },
-    {
-      "target": "usr/bin/r1_touch_first_track_move_event1.bin",
-      "source_type": "generated",
-      "generator": "adb_inject_touch_event.py",
-      "generator_args": ["--x", "203", "--y", "197", "--touch-phase", "move"],
-      "mode": "0644",
-      "description": "Touch event stream: first track move"
-    },
-    {
-      "target": "usr/bin/r1_touch_first_track_up_event1.bin",
-      "source_type": "generated",
-      "generator": "adb_inject_touch_event.py",
-      "generator_args": ["--x", "203", "--y", "197", "--touch-phase", "up"],
-      "mode": "0644",
-      "description": "Touch event stream: first track release"
-    },
-    {
-      "target": "usr/bin/r1_touch_back_event1.bin",
-      "source_type": "generated",
-      "generator": "adb_inject_touch_event.py",
-      "generator_args": ["--x", "30", "--y", "400", "--to-x", "360", "--to-y", "400", "--drag-frames", "18"],
-      "mode": "0644",
-      "description": "Touch event stream: back swipe"
-    },
-
-    {
-      "target": "usr/bin/r1_touch_track_row1_event1.bin",
-      "source_type": "generated",
-      "generator": "adb_inject_touch_event.py",
-      "generator_args": ["--x", "203", "--y", "197"],
-      "mode": "0644",
-      "description": "Touch event stream: track row 1 (same as first track)"
-    },
-    {
-      "target": "usr/bin/r1_touch_track_row2_event1.bin",
-      "source_type": "generated",
-      "generator": "adb_inject_touch_event.py",
-      "generator_args": ["--x", "203", "--y", "325"],
-      "mode": "0644",
-      "description": "Touch event stream: track row 2"
-    },
-    {
-      "target": "usr/bin/r1_touch_track_row3_event1.bin",
-      "source_type": "generated",
-      "generator": "adb_inject_touch_event.py",
-      "generator_args": ["--x", "203", "--y", "453"],
-      "mode": "0644",
-      "description": "Touch event stream: track row 3"
-    },
-    {
-      "target": "usr/bin/r1_touch_track_row4_event1.bin",
-      "source_type": "generated",
-      "generator": "adb_inject_touch_event.py",
-      "generator_args": ["--x", "203", "--y", "581"],
-      "mode": "0644",
-      "description": "Touch event stream: track row 4"
-    },
-    {
-      "target": "usr/bin/r1_touch_track_row5_event1.bin",
-      "source_type": "generated",
-      "generator": "adb_inject_touch_event.py",
-      "generator_args": ["--x", "203", "--y", "745"],
-      "mode": "0644",
-      "description": "Touch event stream: track row 5"
-    },
-
-    {
-      "target": "usr/bin/r1_touch_track_swipe_down_event1.bin",
-      "source_type": "generated",
-      "generator": "adb_inject_touch_event.py",
-      "generator_args": ["--x", "120", "--y", "680", "--touch-phase", "down"],
-      "mode": "0644",
-      "description": "Touch event stream: swipe down start"
-    },
-    {
-      "target": "usr/bin/r1_touch_track_swipe_move1_event1.bin",
-      "source_type": "generated",
-      "generator": "adb_inject_touch_event.py",
-      "generator_args": ["--x", "120", "--y", "600", "--touch-phase", "move"],
-      "mode": "0644",
-      "description": "Touch event stream: swipe move 1"
-    },
-    {
-      "target": "usr/bin/r1_touch_track_swipe_move2_event1.bin",
-      "source_type": "generated",
-      "generator": "adb_inject_touch_event.py",
-      "generator_args": ["--x", "120", "--y", "520", "--touch-phase", "move"],
-      "mode": "0644",
-      "description": "Touch event stream: swipe move 2"
-    },
-    {
-      "target": "usr/bin/r1_touch_track_swipe_move3_event1.bin",
-      "source_type": "generated",
-      "generator": "adb_inject_touch_event.py",
-      "generator_args": ["--x", "120", "--y", "440", "--touch-phase", "move"],
-      "mode": "0644",
-      "description": "Touch event stream: swipe move 3"
-    },
-    {
-      "target": "usr/bin/r1_touch_track_swipe_move4_event1.bin",
-      "source_type": "generated",
-      "generator": "adb_inject_touch_event.py",
-      "generator_args": ["--x", "120", "--y", "360", "--touch-phase", "move"],
-      "mode": "0644",
-      "description": "Touch event stream: swipe move 4"
-    },
-    {
-      "target": "usr/bin/r1_touch_track_swipe_move5_event1.bin",
-      "source_type": "generated",
-      "generator": "adb_inject_touch_event.py",
-      "generator_args": ["--x", "120", "--y", "280", "--touch-phase", "move"],
-      "mode": "0644",
-      "description": "Touch event stream: swipe move 5"
-    },
-    {
-      "target": "usr/bin/r1_touch_track_swipe_move6_event1.bin",
-      "source_type": "generated",
-      "generator": "adb_inject_touch_event.py",
-      "generator_args": ["--x", "120", "--y", "220", "--touch-phase", "move"],
-      "mode": "0644",
-      "description": "Touch event stream: swipe move 6"
-    },
-    {
-      "target": "usr/bin/r1_touch_track_swipe_up_event1.bin",
-      "source_type": "generated",
-      "generator": "adb_inject_touch_event.py",
-      "generator_args": ["--x", "120", "--y", "220", "--touch-phase", "up"],
-      "mode": "0644",
-      "description": "Touch event stream: swipe up release"
-    },
-
-    {
-      "target": "usr/bin/r1_key_next_event0.bin",
-      "source_type": "generated",
-      "generator": "adb_inject_touch_event.py",
-      "generator_args": ["--button", "next"],
-      "mode": "0644",
-      "description": "Key event stream: next button"
-    },
-    {
-      "target": "usr/bin/r1_key_prev_event2.bin",
-      "source_type": "generated",
-      "generator": "adb_inject_touch_event.py",
-      "generator_args": ["--button", "prev"],
-      "mode": "0644",
-      "description": "Key event stream: prev button"
     }
   ],
 
@@ -310,18 +114,9 @@
     {
       "target": "usr/bin/hiby_player",
       "tool": "patch_hiby_player.py",
-      "description": "Apply guarded byte patches to the stock hiby_player binary",
+      "description": "Apply only the media-scanner audiobook skip patch to the stock hiby_player binary",
       "flags": [
-        "--scan-skip",
-        "--book-audio-shim",
-        "--audiobook-launcher-genre",
-        "--audiobook-private-direct-route",
-        "--audiobook-native-hub-title-row",
-        "--audiobook-native-hub-launcher",
-        "--audiobook-native-hub-folder-rows",
-        "--audiobook-native-hub-view-rows",
-        "--audiobook-title-autostart-marker",
-        "--select-dispatch-branch"
+        "--scan-skip"
       ]
     }
   ],
@@ -333,9 +128,7 @@
       "description": "Patch resource string INI files (about_dev.ini, book.ini, songlist.ini, launcher.ini) and config.json product version",
       "flags": [
         "--about-model",
-        "--product-version",
-        "--audiobook-native-hub-labels",
-        "--audiobook-native-hub-view-labels"
+        "--product-version"
       ]
     },
     {
@@ -400,37 +193,13 @@
     {"target": "etc/r1_audiobook_version", "mode": "0644"},
     {"target": "usr/bin/r1_audiobook_app", "mode": "0755"},
     {"target": "usr/bin/r1_audiobook_launch.sh", "mode": "0755"},
-    {"target": "usr/bin/r1_audiobook_resume_helper", "mode": "0755"},
-    {"target": "usr/bin/r1_audiobook_direct_open", "mode": "0755"},
     {"target": "usr/bin/r1_audiobook_resume_daemon", "mode": "0755"},
     {"target": "usr/bin/r1_audiobook_resume_daemon.sh", "mode": "0755"},
     {"target": "usr/bin/r1_audiobook_resume_daemon_shell.sh", "mode": "0755"},
     {"target": "usr/bin/r1_audiobook_db_maint", "mode": "0755"},
     {"target": "usr/bin/r1_audiobook_db_watch.sh", "mode": "0755"},
-    {"target": "usr/bin/r1_audiobook_refresh.sh", "mode": "0755"},
-    {"target": "usr/bin/r1_usrlocal_media_seed.db", "mode": "0644"},
-    {"target": "usr/bin/r1_touch_next_event1.bin", "mode": "0644"},
-    {"target": "usr/bin/r1_touch_first_track_event1.bin", "mode": "0644"},
-    {"target": "usr/bin/r1_touch_first_track_down_event1.bin", "mode": "0644"},
-    {"target": "usr/bin/r1_touch_first_track_move_event1.bin", "mode": "0644"},
-    {"target": "usr/bin/r1_touch_first_track_up_event1.bin", "mode": "0644"},
-    {"target": "usr/bin/r1_touch_back_event1.bin", "mode": "0644"},
-    {"target": "usr/bin/r1_touch_track_row1_event1.bin", "mode": "0644"},
-    {"target": "usr/bin/r1_touch_track_row2_event1.bin", "mode": "0644"},
-    {"target": "usr/bin/r1_touch_track_row3_event1.bin", "mode": "0644"},
-    {"target": "usr/bin/r1_touch_track_row4_event1.bin", "mode": "0644"},
-    {"target": "usr/bin/r1_touch_track_row5_event1.bin", "mode": "0644"},
-    {"target": "usr/bin/r1_touch_track_swipe_down_event1.bin", "mode": "0644"},
-    {"target": "usr/bin/r1_touch_track_swipe_move1_event1.bin", "mode": "0644"},
-    {"target": "usr/bin/r1_touch_track_swipe_move2_event1.bin", "mode": "0644"},
-    {"target": "usr/bin/r1_touch_track_swipe_move3_event1.bin", "mode": "0644"},
-    {"target": "usr/bin/r1_touch_track_swipe_move4_event1.bin", "mode": "0644"},
-    {"target": "usr/bin/r1_touch_track_swipe_move5_event1.bin", "mode": "0644"},
-    {"target": "usr/bin/r1_touch_track_swipe_move6_event1.bin", "mode": "0644"},
-    {"target": "usr/bin/r1_touch_track_swipe_up_event1.bin", "mode": "0644"},
-    {"target": "usr/bin/r1_key_next_event0.bin", "mode": "0644"},
-    {"target": "usr/bin/r1_key_prev_event2.bin", "mode": "0644"},
-    {"target": "usr/bin/r1_audiobook_catalog.tsv", "mode": "0644"}
+    {"target": "usr/share/audiobooks/fonts/msyh.ttf", "mode": "0644"},
+    {"target": "usr/share/audiobooks/hiby-theme", "mode": "0644"}
   ],
 
   "squashfs_options": {

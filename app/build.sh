@@ -56,9 +56,9 @@ mkdir -p "$OUT_DIR"
 ensure_sqlite
 ensure_faad2
 
-COMMON_FLAGS="-std=c11 -Wall -Wextra -Werror -O2 -ffunction-sections -fdata-sections -fno-strict-aliasing"
+COMMON_FLAGS="-std=c11 -Wall -Wextra -Werror -O2 -ffunction-sections -fdata-sections -fno-strict-aliasing -D_FILE_OFFSET_BITS=64"
 FAAD_WARN_FLAGS="-Wno-unused-parameter -Wno-missing-field-initializers"
-DEFS="-D_POSIX_C_SOURCE=200809L -D_GNU_SOURCE -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_JSON1 -DPACKAGE_VERSION=\"faad2-master\""
+DEFS="-D_POSIX_C_SOURCE=200809L -D_GNU_SOURCE -D_LARGEFILE64_SOURCE -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_JSON1 -DPACKAGE_VERSION=\"faad2-master\""
 INCLUDES="-I$APP_DIR/src -I$APP_DIR/assets -I$SQLITE_DIR -I$FAAD_DIR/include -I$FAAD_DIR/libfaad -I$FAAD_DIR/frontend"
 FAAD_SOURCES="$(find "$FAAD_DIR/libfaad" -maxdepth 1 -name '*.c' | sort | tr '\n' ' ') $FAAD_DIR/frontend/mp4read.c $FAAD_DIR/frontend/unicode_support.c"
 SOURCES="

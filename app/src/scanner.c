@@ -172,6 +172,45 @@ static int add_track(scan_book *book, const char *path, const struct stat *st, i
     return 0;
 }
 
+static int update_track_from_existing(audiobook_db *db, track_row *row) {
+    if (!db || !db->db || !row) return -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db->db,
+            "SELECT track_id, duration_ms, embedded_chapters, file_size, file_mtime, fingerprint "
+            "FROM tracks WHERE path=?", -1, &st, NULL) != SQLITE_OK) {
+        return -1;
+    }
+    sqlite3_bind_text(st, 1, row->path, -1, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    int updated = 0;
+    if (rc == SQLITE_ROW) {
+        int64_t old_mtime = sqlite3_column_int64(st, 4);
+        int64_t old_size = sqlite3_column_int64(st, 3);
+        if (old_mtime == row->file_mtime && old_size == row->file_size) {
+            row->track_id = sqlite3_column_int64(st, 0);
+            row->duration_ms = sqlite3_column_int64(st, 1);
+            row->embedded_chapters = sqlite3_column_int(st, 2);
+            const unsigned char *fp = sqlite3_column_text(st, 5);
+            if (fp) snprintf(row->fingerprint, sizeof(row->fingerprint), "%s", (const char *)fp);
+            updated = 1;
+        }
+    }
+    sqlite3_finalize(st);
+    return updated;
+}
+
+static int persist_existing_chapter_count(audiobook_db *db, int64_t track_id) {
+    if (!db || !db->db) return 0;
+    sqlite3_stmt *st = NULL;
+    int count = 0;
+    if (sqlite3_prepare_v2(db->db, "SELECT COUNT(*) FROM chapters WHERE track_id=?", -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(st, 1, track_id);
+        if (sqlite3_step(st) == SQLITE_ROW) count = sqlite3_column_int(st, 0);
+        sqlite3_finalize(st);
+    }
+    return count;
+}
+
 static int collect_tracks(scan_book *book, const char *path, int disc) {
     DIR *dir = opendir(path);
     if (!dir) return -1;
@@ -214,28 +253,39 @@ static int persist_book(audiobook_db *db, scan_book *book, library_refresh_repor
     for (size_t i = 0; i < book->track_count; i++) {
         book->row.total_duration_ms += book->tracks[i].row.duration_ms;
     }
-    if (db_upsert_book(db, &book->row, &book->row.book_id) == 0) {
-        for (size_t i = 0; i < book->track_count; i++) {
-            book->tracks[i].row.book_id = book->row.book_id;
-            if (db_upsert_track(db, &book->tracks[i].row, &book->tracks[i].row.track_id) == 0) {
-                if (ab_ends_with(book->tracks[i].row.path, ".m4b") || ab_ends_with(book->tracks[i].row.path, ".m4a")) {
-                    m4b_decoder_state decoder;
-                    if (m4b_decoder_open(&decoder, book->tracks[i].row.path) == 0) {
-                        size_t chapter_count = m4b_decoder_chapter_count(&decoder);
-                        const m4b_chapter *chapters = m4b_decoder_chapters(&decoder);
-                        if (chapter_count > 0 && chapters) {
-                            (void)db_replace_track_chapters(db, book->tracks[i].row.track_id, chapters, chapter_count);
-                            book->tracks[i].row.embedded_chapters = (int)chapter_count;
-                            (void)db_upsert_track(db, &book->tracks[i].row, &book->tracks[i].row.track_id);
-                        }
-                        m4b_decoder_close(&decoder);
-                    }
+    if (db_upsert_book(db, &book->row, &book->row.book_id) != 0) return -1;
+    for (size_t i = 0; i < book->track_count; i++) {
+        book->tracks[i].row.book_id = book->row.book_id;
+        int unchanged = update_track_from_existing(db, &book->tracks[i].row);
+        int64_t existing_track_id = book->tracks[i].row.track_id;
+        if (db_upsert_track(db, &book->tracks[i].row, &book->tracks[i].row.track_id) != 0) continue;
+        if (unchanged) {
+            if (report) report->tracks_unchanged++;
+            if (book->tracks[i].row.embedded_chapters == 0 && existing_track_id > 0) {
+                book->tracks[i].row.embedded_chapters = persist_existing_chapter_count(db, existing_track_id);
+                if (book->tracks[i].row.embedded_chapters > 0) {
+                    (void)db_upsert_track(db, &book->tracks[i].row, &book->tracks[i].row.track_id);
                 }
-                if (report) report->tracks_found++;
+            }
+            continue;
+        }
+        if (report) report->tracks_updated++;
+        if (ab_ends_with(book->tracks[i].row.path, ".m4b") || ab_ends_with(book->tracks[i].row.path, ".m4a")) {
+            m4b_decoder_state decoder;
+            if (m4b_decoder_open(&decoder, book->tracks[i].row.path) == 0) {
+                size_t chapter_count = m4b_decoder_chapter_count(&decoder);
+                const m4b_chapter *chapters = m4b_decoder_chapters(&decoder);
+                if (chapter_count > 0 && chapters) {
+                    (void)db_replace_track_chapters(db, book->tracks[i].row.track_id, chapters, chapter_count);
+                    book->tracks[i].row.embedded_chapters = (int)chapter_count;
+                    (void)db_upsert_track(db, &book->tracks[i].row, &book->tracks[i].row.track_id);
+                }
+                m4b_decoder_close(&decoder);
             }
         }
-        if (report) report->books_found++;
+        if (report) report->tracks_found++;
     }
+    if (report) report->books_found++;
     return 0;
 }
 
@@ -305,11 +355,25 @@ static int scan_tree(audiobook_db *db, const char *path, library_refresh_report 
 int library_refresh(audiobook_db *db, const audiobook_config *cfg, library_refresh_report *report) {
     if (!db || !cfg) return -1;
     if (report) memset(report, 0, sizeof(*report));
-    db_clear_library(db);
     if (scan_tree(db, cfg->library_root, report) != 0) {
         if (report) report->errors++;
-    } else if (report) {
-        report->roots_scanned = 1;
+        return -1;
     }
+    if (report) report->roots_scanned = 1;
+
+    db_delete_orphan_books(db);
+    return 0;
+}
+
+int library_scan_incremental(audiobook_db *db, const audiobook_config *cfg, library_refresh_report *report) {
+    if (!db || !cfg) return -1;
+    if (report) memset(report, 0, sizeof(*report));
+    if (scan_tree(db, cfg->library_root, report) != 0) {
+        if (report) report->errors++;
+        return -1;
+    }
+    if (report) report->roots_scanned = 1;
+
+    db_delete_orphan_books(db);
     return 0;
 }

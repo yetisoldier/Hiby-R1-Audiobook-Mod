@@ -62,14 +62,14 @@ bool ab_ends_with(const char *s, const char *suffix) {
     if (!s || !suffix) return false;
     size_t sl = strlen(s);
     size_t su = strlen(suffix);
-    return sl >= su && strcmp(s + sl - su, suffix) == 0;
+    return sl >= su && strcasecmp(s + sl - su, suffix) == 0;
 }
 
 bool ab_is_audio_file(const char *path) {
     return ab_ends_with(path, ".mp3") || ab_ends_with(path, ".m4b") ||
            ab_ends_with(path, ".m4a") || ab_ends_with(path, ".flac") ||
            ab_ends_with(path, ".wav") || ab_ends_with(path, ".ogg") ||
-           ab_ends_with(path, ".opus");
+           ab_ends_with(path, ".opus") || ab_ends_with(path, ".aac");
 }
 
 uint64_t ab_now_ms(void) {

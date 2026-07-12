@@ -110,7 +110,12 @@ def test_resume_logic() -> None:
                 #include <string.h>
                 int main(int argc, char **argv) {
                     if (argc < 2) return 2;
-                    printf("%u\\n", resume_smart_rewind_ms(600, 0, 30000));
+                    printf("%u\\n", resume_smart_rewind_ms(600, 0, 30000)); /* 5-60min -> 5s rewind -> 25000 */
+                    printf("%u\\n", resume_smart_rewind_ms(60, 0, 30000));   /* <5 min -> no rewind */
+                    printf("%u\\n", resume_smart_rewind_ms(3600, 0, 30000)); /* 1-24h -> 10s */
+                    printf("%u\\n", resume_smart_rewind_ms(90000, 0, 30000)); /* >24h -> 20s */
+                    printf("%u\\n", resume_smart_rewind_ms(1, 1, 30000));    /* rebooted -> 20s */
+                    printf("%u\\n", resume_smart_rewind_ms(90000, 0, 2000));  /* <3s headroom */
                     book_row book = {0};
                     progress_row prog = {0};
                     snprintf(book.book_key, sizeof(book.book_key), "demo-book");
@@ -144,8 +149,13 @@ def test_resume_logic() -> None:
         state_dir.mkdir()
         result = run([str(helper), str(state_dir)], cwd=REPO)
         lines = result.stdout.strip().splitlines()
-        assert lines[0] == "20000", lines
-        assert lines[1].startswith("7 2 12345 1.5 777"), lines
+        assert lines[0] == "5000", lines
+        assert lines[1] == "0", lines
+        assert lines[2] == "10000", lines
+        assert lines[3] == "20000", lines
+        assert lines[4] == "20000", lines
+        assert lines[5] == "20000", lines
+        assert lines[6].startswith("7 2 12345 1.5 777"), lines
 
 
 def test_resume_seek_helper() -> None:
@@ -208,7 +218,7 @@ def test_resume_seek_helper() -> None:
             ],
         )
         result = run([str(helper)], cwd=REPO)
-        assert result.stdout.strip() == "500", result.stdout
+        assert result.stdout.strip() == "1500", result.stdout
 
 
 def test_track_upsert_ids() -> None:

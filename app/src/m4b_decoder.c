@@ -43,10 +43,10 @@ static int adts_scan_frames(m4b_decoder_state *state) {
     if (!state->adts_file) return -1;
 
     uint8_t header[9];
-    uint64_t offset = 0;
+    off_t offset = 0;
     state->adts_frame_index = 0;
     while (1) {
-        if (fseek(state->adts_file, (long)offset, SEEK_SET) != 0) return -1;
+        if (fseeko(state->adts_file, offset, SEEK_SET) != 0) return -1;
         size_t got = fread(header, 1, sizeof(header), state->adts_file);
         if (got < 7) break;
         uint32_t frame_len = 0;
@@ -61,16 +61,16 @@ static int adts_scan_frames(m4b_decoder_state *state) {
             state->adts_frames = ab_xrealloc(state->adts_frames, new_cap * sizeof(*state->adts_frames));
             state->adts_frame_cap = new_cap;
         }
-        state->adts_frames[state->adts_frame_count].offset = (uint32_t)offset;
+        state->adts_frames[state->adts_frame_count].offset = (uint64_t)offset;
         state->adts_frames[state->adts_frame_count].len = frame_len;
         if (frame_len > state->adts_frame_max_size) state->adts_frame_max_size = frame_len;
         state->adts_frame_count++;
-        offset += frame_len;
+        offset += (off_t)frame_len;
     }
 
     if (state->adts_frame_count == 0) return -1;
     state->adts_frame_buf = ab_xcalloc(state->adts_frame_max_size, sizeof(uint8_t));
-    if (fseek(state->adts_file, (long)state->adts_frames[0].offset, SEEK_SET) != 0) return -1;
+    if (fseeko(state->adts_file, (off_t)state->adts_frames[0].offset, SEEK_SET) != 0) return -1;
 
     size_t first_len = state->adts_frames[0].len;
     if (fread(state->adts_frame_buf, 1, first_len, state->adts_file) != first_len) return -1;
@@ -148,7 +148,7 @@ static int parse_chpl_box(FILE *fp, uint64_t box_end, m4b_decoder_state *state) 
         }
         title[to_read] = '\0';
         if ((size_t)title_len > to_read) {
-            if (fseek(fp, (long)(title_len - (int)to_read), SEEK_CUR) != 0) {
+            if (fseeko(fp, (off_t)(title_len - (int)to_read), SEEK_CUR) != 0) {
                 free(chapters);
                 return -1;
             }
@@ -168,8 +168,8 @@ static int parse_chpl_box(FILE *fp, uint64_t box_end, m4b_decoder_state *state) 
 }
 
 static int scan_mp4_boxes(FILE *fp, uint64_t box_end, m4b_decoder_state *state) {
-    while ((uint64_t)ftell(fp) < box_end) {
-        long box_start = ftell(fp);
+    while ((uint64_t)ftello(fp) < box_end) {
+        off_t box_start = ftello(fp);
         uint32_t size32 = 0;
         if (read_be32(fp, &size32) != 0) return -1;
         char type[5] = {0};
@@ -191,7 +191,7 @@ static int scan_mp4_boxes(FILE *fp, uint64_t box_end, m4b_decoder_state *state) 
         } else if (!strcmp(type, "chpl")) {
             if (parse_chpl_box(fp, next, state) != 0) return -1;
         } else {
-            if (fseek(fp, (long)next, SEEK_SET) != 0) return -1;
+            if (fseeko(fp, (off_t)next, SEEK_SET) != 0) return -1;
         }
     }
     return 0;
@@ -200,16 +200,16 @@ static int scan_mp4_boxes(FILE *fp, uint64_t box_end, m4b_decoder_state *state) 
 static int parse_mp4_chapters(m4b_decoder_state *state) {
     FILE *fp = faad_fopen(state->path, "rb");
     if (!fp) return 0;
-    if (fseek(fp, 0, SEEK_END) != 0) {
+    if (fseeko(fp, 0, SEEK_END) != 0) {
         fclose(fp);
         return -1;
     }
-    long end = ftell(fp);
+    off_t end = ftello(fp);
     if (end <= 0) {
         fclose(fp);
         return 0;
     }
-    if (fseek(fp, 0, SEEK_SET) != 0) {
+    if (fseeko(fp, 0, SEEK_SET) != 0) {
         fclose(fp);
         return -1;
     }
@@ -292,8 +292,8 @@ static int read_adts_frame(m4b_decoder_state *state, int16_t *dst, size_t frames
         state->eof = true;
         return 0;
     }
-    frame_info_t info = state->adts_frames[state->adts_frame_index];
-    if (fseek(state->adts_file, (long)info.offset, SEEK_SET) != 0) {
+    m4b_frame_info_t info = state->adts_frames[state->adts_frame_index];
+    if (fseeko(state->adts_file, (off_t)info.offset, SEEK_SET) != 0) {
         state->eof = true;
         return 0;
     }
@@ -357,10 +357,10 @@ int m4b_decoder_seek_ms(m4b_decoder_state *state, uint64_t position_ms) {
         return 0;
     }
     uint64_t frame = ms_to_frames(position_ms, state->sample_rate, state->pcm_frame_size);
-    if (frame >= state->adts_frame_count) frame = state->adts_frame_count > 0 ? state->adts_frame_count - 1 : 0;
+    if (state->adts_frame_count > 0 && frame >= state->adts_frame_count) frame = state->adts_frame_count - 1;
     state->adts_frame_index = (size_t)frame;
     state->current_frame = frame * state->pcm_frame_size;
-    if (fseek(state->adts_file, (long)state->adts_frames[state->adts_frame_index].offset, SEEK_SET) != 0) return -1;
+    if (fseeko(state->adts_file, (off_t)state->adts_frames[state->adts_frame_index].offset, SEEK_SET) != 0) return -1;
     NeAACDecPostSeekReset(state->decoder, 1);
     state->eof = false;
     return 0;
