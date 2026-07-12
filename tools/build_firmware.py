@@ -833,7 +833,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--include-audiobook-native-hub-view-rows", action="store_true",
                         help="Add audiobook native hub view rows to hiby_player")
     parser.add_argument("--include-audiobook-system-launcher", action="store_true",
-                        help="Patch Audiobooks tile to call system() with our launch script")
+                        help="Patch Audiobooks tile to create flag file via open()/close() PLT calls")
     parser.add_argument("--include-audiobook-title-auto-start-marker", action="store_true",
                         help="Add audiobook title auto-start marker to hiby_player")
     parser.add_argument("--include-audiobook-explorer-marker", action="store_true",

@@ -291,6 +291,12 @@ int main(int argc, char **argv) {
         if (ipc_fd >= 0) ipc_send_event(ipc_fd, ev.type, ab_now_ms(), &ev);
     }
 
+    /* Clear framebuffer to prevent stale frame on exit */
+    if (ui.fb.pixels) {
+        memset(ui.fb.pixels, 0, (size_t)ui.fb.stride * ui.fb.height * sizeof(uint16_t));
+        fb_present(&ui.fb);
+    }
+
     ui_shutdown(&ui);
     player_shutdown(&player);
     if (ipc_fd >= 0) close(ipc_fd);
