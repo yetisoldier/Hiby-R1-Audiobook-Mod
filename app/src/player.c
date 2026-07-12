@@ -196,22 +196,25 @@ static void *player_worker(void *arg) {
             continue;
         }
 
-        /* ── Speed control via frame skip / repeat ──
-         * For speed > 1.0x: skip frames to advance faster.
-         * For speed < 1.0x: repeat frames to slow down.
-         * For speed == 1.0x: no change.
-         * Position tracking (refresh_snapshot_locked) uses decoder.current_frame
-         * which already reflects the actual decoder position, so it advances
-         * correctly when we skip frames (decoder advances, we just don't play all).
+        /* ── Speed control via fractional accumulator ──
+         * For speed > 1.0x: skip blocks using a fractional accumulator.
+         *   For 2x: skip every other block (play 50%).
+         *   For 1.5x: skip 1 of every 3 blocks (play 67%).
+         *   For 1.25x: skip 1 of every 5 blocks (play 80%).
+         * For speed < 1.0x: repeat blocks using fractional accumulator.
+         *   For 0.75x: play ~1.33 extra copies of each block.
+         *   For 0.5x: play each block twice.
+         * Position tracking uses decoder.current_frame which reflects
+         * the actual decoder position, so it advances correctly.
          */
         float speed = player->speed;
         if (speed > 1.01f) {
-            /* Fast forward: skip frames proportional to speed ratio.
-             * For 2x: skip every other block. For 1.5x: skip 1 of every 3 blocks. */
-            int skip_mod = (int)(speed + 0.5f);
-            if (skip_mod < 2) skip_mod = 2;
-            player->speed_skip_counter++;
-            if (player->speed_skip_counter % skip_mod == 0) {
+            /* Fast forward: accumulate the fraction we should skip.
+             * For 2x: each block contributes (1 - 1/2) = 0.5 to accumulator.
+             * When accumulator >= 1.0, we skip that block and subtract 1.0. */
+            player->speed_accumulator += 1.0f - (1.0f / speed);
+            if (player->speed_accumulator >= 1.0f) {
+                player->speed_accumulator -= 1.0f;
                 /* Skip this block — decoder already advanced, just don't play it */
                 pthread_mutex_lock(&player->lock);
                 refresh_snapshot_locked(player);
@@ -219,12 +222,20 @@ static void *player_worker(void *arg) {
                 continue;
             }
         } else if (speed < 0.99f) {
-            /* Slow down: repeat frames. For 0.5x: play each block twice. */
-            int repeat_count = (int)(1.0f / speed + 0.5f);
-            if (repeat_count < 2) repeat_count = 2;
+            /* Slow down: repeat blocks to fill the extra time.
+             * For 0.5x: each block needs to be played (1/0.5)=2 times.
+             * For 0.75x: each block needs (1/0.75)=1.33 plays, so we
+             * accumulate the extra fraction and replay when it overflows. */
+            float extra_plays = (1.0f / speed) - 1.0f;
+            player->speed_accumulator += extra_plays;
+            int extra = 0;
+            while (player->speed_accumulator >= 1.0f) {
+                player->speed_accumulator -= 1.0f;
+                extra++;
+            }
             pthread_mutex_unlock(&player->lock);
             int repeat_failed = 0;
-            for (int rep = 1; rep < repeat_count; rep++) {
+            for (int rep = 0; rep < extra; rep++) {
                 if (write_stereo_block(player, input, frames * (player->decoder.channels ? player->decoder.channels : 2u), player->decoder.channels) != 0) {
                     repeat_failed = 1;
                     break;
@@ -375,6 +386,7 @@ int player_set_speed(audiobook_player *player, float speed) {
     if (!player || speed <= 0.25f || speed > 4.0f) return -1;
     pthread_mutex_lock(&player->lock);
     player->speed = speed;
+    player->speed_accumulator = 0.0f;  /* reset accumulator on speed change */
     pthread_mutex_unlock(&player->lock);
     return 0;
 }

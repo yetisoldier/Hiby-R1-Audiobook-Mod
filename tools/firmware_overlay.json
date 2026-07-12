@@ -11,6 +11,12 @@
 
   "add_files": [
     {
+      "target": "usr/bin/hiby_player.sh",
+      "source": "tools/hiby_player.sh",
+      "mode": "0755",
+      "description": "Patched hiby_player wrapper with audiobook launch flag detection"
+    },
+    {
       "target": "usr/share/audiobooks/fonts/msyh.ttf",
       "source": "app/assets/msyh.ttf",
       "mode": "0644",

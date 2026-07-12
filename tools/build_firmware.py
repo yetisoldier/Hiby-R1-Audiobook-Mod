@@ -586,6 +586,12 @@ def build(args: argparse.Namespace) -> None:
             raise RuntimeError(f"batd SD logger command still present in {player_launch_script}")
         write_ascii(player_launch_script, launch_text)
 
+    # -- Replace hiby_player.sh with audiobook-aware wrapper ---------------
+    if args.include_audiobook_system_launcher:
+        player_launch_script = root_tree / "usr" / "bin" / "hiby_player.sh"
+        hiby_sh = (Path(__file__).parent / "hiby_player.sh").read_text(encoding="utf-8", errors="replace")
+        write_ascii(player_launch_script, hiby_sh.replace("\r\n", "\n").replace("\r", "\n"))
+
     # -- Enable boot ADB ----------------------------------------------------
     if args.enable_boot_adb:
         persistent_adb_boot_script = root_tree / "etc" / "init.d" / "S90adb"

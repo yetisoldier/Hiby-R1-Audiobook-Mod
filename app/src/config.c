@@ -9,7 +9,7 @@ void config_init(audiobook_config *cfg) {
     if (!cfg) return;
     *cfg = (audiobook_config){0};
     ab_copy_str(cfg->app_root, sizeof(cfg->app_root), "/usr/data/audiobooks");
-    ab_copy_str(cfg->library_root, sizeof(cfg->library_root), "/Audiobooks");
+    ab_copy_str(cfg->library_root, sizeof(cfg->library_root), "/usr/data/mnt/sd_0/Audiobooks");
     ab_copy_str(cfg->db_path, sizeof(cfg->db_path), "/usr/data/audiobooks/library.db");
     ab_copy_str(cfg->cover_cache_dir, sizeof(cfg->cover_cache_dir), "/usr/data/audiobooks/cache/covers");
     ab_copy_str(cfg->resume_socket, sizeof(cfg->resume_socket), "/usr/data/audiobooks/run/resume.sock");

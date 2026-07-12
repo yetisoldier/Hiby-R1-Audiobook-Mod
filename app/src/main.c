@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 static volatile sig_atomic_t g_running = 1;
+volatile sig_atomic_t g_request_exit = 0;
 static void on_signal(int signo) {
     (void)signo;
     g_running = 0;
@@ -180,7 +181,7 @@ int main(int argc, char **argv) {
     player_snapshot prev_snap;
     player_snapshot snap;
     memset(&prev_snap, 0, sizeof(prev_snap));
-    while (g_running) {
+    while (g_running && !g_request_exit) {
         touch_event tev;
         if (touch_poll(&ui.touch, &tev, 200) == 0) {
             ui_handle_touch(&ui, &tev, &player, &db, &resume);

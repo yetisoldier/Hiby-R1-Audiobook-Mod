@@ -54,7 +54,7 @@ typedef struct audiobook_player {
     uint64_t duration_ms;
     float speed;
     bool eof_reached;
-    int speed_skip_counter;
+    float speed_accumulator;  /* fractional skip accumulator for speed control */
     pthread_t thread;
     pthread_mutex_t lock;
     pthread_cond_t cond;

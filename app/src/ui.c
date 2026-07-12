@@ -26,10 +26,10 @@
 #define TH_HEADER_BG        0x131Eu
 
 #define ICON_SIZE           32
-#define ROW_HEIGHT          92
-#define ROW_THUMB_SIZE      72
-#define MINI_H              64
-#define MINI_THUMB_SIZE     48
+#define ROW_HEIGHT          140
+#define ROW_THUMB_SIZE      96
+#define MINI_H              96
+#define MINI_THUMB_SIZE     64
 
 /* Theme roots: prefer the stock device theme if present, fall back to our overlay. */
 #define ASSET_DEVICE_ROOT  "/usr/resource/litegui/theme1"
@@ -188,8 +188,8 @@ static int ui_icon_button(ui_context *ui, const char *path, int x, int y, int w,
  * Drawing helpers
  * ------------------------------------------------------------------ */
 static void draw_header(ui_context *ui, const char *title) {
-    fb_fill_rect(&ui->fb, 0, 0, AB_SCREEN_W, 80, TH_HEADER_BG);
-    font_draw_text(&ui->fb, &ui->font, 18, 22, TH_TEXT_WHITE, title);
+    fb_fill_rect(&ui->fb, 0, 0, AB_SCREEN_W, 100, TH_HEADER_BG);
+    font_draw_text(&ui->fb, &ui->font, 18, 30, TH_TEXT_WHITE, title);
 }
 
 static void draw_hor_line(ui_context *ui, int y) {
@@ -220,9 +220,9 @@ static void draw_book_row(ui_context *ui, int y, const book_row *book, bool high
     cover_close(&tmp);
     int text_x = thumb_x + ROW_THUMB_SIZE + 14;
     uint16_t fg = highlighted ? TH_TEXT_WHITE : TH_TEXT_BLACK;
-    font_draw_text(&ui->fb, &ui->font, text_x, y + 18, fg, book->title);
+    font_draw_text(&ui->fb, &ui->font, text_x, y + 30, fg, book->title);
     if (book->author[0]) {
-        font_draw_text(&ui->fb, &ui->font, text_x, y + 40, highlighted ? TH_TEXT_WHITE : TH_SUBTITLE, book->author);
+        font_draw_text(&ui->fb, &ui->font, text_x, y + 80, highlighted ? TH_TEXT_WHITE : TH_SUBTITLE, book->author);
     }
     draw_hor_line(ui, y + ROW_HEIGHT - 1);
 }
@@ -231,18 +231,18 @@ static void draw_row_text(ui_context *ui, int y, const char *title, const char *
     uint16_t bg = highlighted ? TH_FOCUS_BLUE : TH_BG;
     fb_fill_rect(&ui->fb, 0, y, AB_SCREEN_W, ROW_HEIGHT, bg);
     uint16_t fg = highlighted ? TH_TEXT_WHITE : TH_TEXT_BLACK;
-    font_draw_text(&ui->fb, &ui->font, 24, y + 18, fg, title);
+    font_draw_text(&ui->fb, &ui->font, 24, y + 30, fg, title);
     if (subtitle && subtitle[0]) {
-        font_draw_text(&ui->fb, &ui->font, 24, y + 40, highlighted ? TH_TEXT_WHITE : TH_SUBTITLE, subtitle);
+        font_draw_text(&ui->fb, &ui->font, 24, y + 80, highlighted ? TH_TEXT_WHITE : TH_SUBTITLE, subtitle);
     }
     draw_hor_line(ui, y + ROW_HEIGHT - 1);
 }
 
 static void draw_home_row(ui_context *ui, int y, const char *title, const char *subtitle) {
     fb_fill_rect(&ui->fb, 0, y, AB_SCREEN_W, ROW_HEIGHT, TH_BG);
-    font_draw_text(&ui->fb, &ui->font, 24, y + 18, TH_TEXT_BLACK, title);
+    font_draw_text(&ui->fb, &ui->font, 24, y + 30, TH_TEXT_BLACK, title);
     if (subtitle && subtitle[0]) {
-        font_draw_text(&ui->fb, &ui->font, 24, y + 40, TH_SUBTITLE, subtitle);
+        font_draw_text(&ui->fb, &ui->font, 24, y + 80, TH_SUBTITLE, subtitle);
     }
     draw_hor_line(ui, y + ROW_HEIGHT - 1);
 }
@@ -256,12 +256,12 @@ static void draw_mini_player(ui_context *ui, const audiobook_player *player) {
     int y = AB_SCREEN_H - MINI_H;
     fb_fill_rect(&ui->fb, 0, y, AB_SCREEN_W, MINI_H, TH_TEXT_WHITE);
     cover_draw_scaled(&ui->fb, &ui->cover, 8, y + 8, MINI_THUMB_SIZE, MINI_THUMB_SIZE);
-    font_draw_text(&ui->fb, &ui->font, MINI_THUMB_SIZE + 20, y + 14, TH_TEXT_BLACK, book->title);
-    font_draw_text(&ui->fb, &ui->font, MINI_THUMB_SIZE + 20, y + 34, TH_SUBTITLE, player->state == PLAYER_PLAYING ? "Playing" : "Paused");
+    font_draw_text(&ui->fb, &ui->font, MINI_THUMB_SIZE + 20, y + 20, TH_TEXT_BLACK, book->title);
+    font_draw_text(&ui->fb, &ui->font, MINI_THUMB_SIZE + 20, y + 58, TH_SUBTITLE, player->state == PLAYER_PLAYING ? "Playing" : "Paused");
 
     char path[256];
     ui_theme_path(path, sizeof(path), player->state == PLAYER_PLAYING ? "btn_pause.png" : "btn_play.png");
-    ui_icon_button(ui, path, AB_SCREEN_W - 56, y + 16, 40, 40);
+    ui_icon_button(ui, path, AB_SCREEN_W - 72, y + 24, 48, 48);
 
     /* Treat mini-player area as interactive; rendered separately before present. */
 }
@@ -412,9 +412,9 @@ static void draw_now_playing(ui_context *ui, const audiobook_player *player) {
 
     book_row *book = &ui->books.items[ui->selected_book];
     font_draw_text(&ui->fb, &ui->font, 220, 120, TH_TEXT_BLACK, book->title);
-    font_draw_text(&ui->fb, &ui->font, 220, 150, TH_SUBTITLE, book->author);
+    font_draw_text(&ui->fb, &ui->font, 220, 180, TH_SUBTITLE, book->author);
     if (ui->tracks.count > 0) {
-        font_draw_text(&ui->fb, &ui->font, 220, 190, TH_TEXT_BLACK,
+        font_draw_text(&ui->fb, &ui->font, 220, 240, TH_TEXT_BLACK,
                        ui->tracks.items[ui->selected_track].title);
     }
 
@@ -423,13 +423,13 @@ static void draw_now_playing(ui_context *ui, const audiobook_player *player) {
     uint64_t dur = player ? player->duration_ms : 0;
     uint64_t remain = dur > pos ? dur - pos : 0;
     snprintf(status, sizeof(status), "%.2fx %llum left", player ? player->speed : 1.0f, (unsigned long long)remain);
-    font_draw_text(&ui->fb, &ui->font, 220, 230, TH_TEXT_BLACK, status);
+    font_draw_text(&ui->fb, &ui->font, 220, 300, TH_TEXT_BLACK, status);
 
     /* Progress bar using theme PNGs if available, otherwise rectangles */
     char bg_path[256], fg_path[256];
     ui_theme_path(bg_path, sizeof(bg_path), "progress_bg.png");
     ui_theme_path(fg_path, sizeof(fg_path), "progress.png");
-    int bar_x = 220, bar_y = 260, bar_w = 230, bar_h = 12;
+    int bar_x = 220, bar_y = 340, bar_w = 230, bar_h = 12;
     if (load_theme_image(&ui->assets.icon, bg_path) == 0) {
         blit_image_rgba(&ui->fb, &ui->assets.icon, bar_x, bar_y, bar_w, bar_h);
     } else {
@@ -643,7 +643,7 @@ int ui_handle_touch(ui_context *ui, const touch_event *ev, audiobook_player *pla
             ui->screen = UI_SCREEN_NOW_PLAYING;
             return 0;
         }
-        if (ev->y >= 90 && ev->y < 180) {
+        if (ev->y >= 100 && ev->y < 100 + ROW_HEIGHT) {
             ui_load_continue(ui, db);
             ui->screen = UI_SCREEN_CONTINUE;
             return 0;
@@ -756,6 +756,14 @@ int ui_handle_touch(ui_context *ui, const touch_event *ev, audiobook_player *pla
         ui->screen = UI_SCREEN_HOME;
         return 0;
     }
+    if ((ui->screen == UI_SCREEN_TITLES || ui->screen == UI_SCREEN_CONTINUE || ui->screen == UI_SCREEN_FINISHED) && ev->action == TOUCH_BACK_EDGE) {
+        ui->screen = UI_SCREEN_HOME;
+        return 0;
+    }
+    if (ui->screen == UI_SCREEN_HOME && ev->action == TOUCH_BACK_EDGE) {
+        g_request_exit = 1;
+        return 0;
+    }
     if ((ui->screen == UI_SCREEN_AUTHORS || ui->screen == UI_SCREEN_SERIES || ui->screen == UI_SCREEN_FOLDERS) && ev->action == TOUCH_BACK_EDGE) {
         ui->screen = UI_SCREEN_SETTINGS;
         return 0;
@@ -766,16 +774,16 @@ int ui_handle_touch(ui_context *ui, const touch_event *ev, audiobook_player *pla
             return 0;
         }
         if (ev->action == TOUCH_TAP) {
-            if (ev->y >= 520 && ev->y < 616) {
-                if (ev->x >= 20 && ev->x < 116) {
+            if (ev->y >= 560 && ev->y < 660) {
+                if (ev->x >= 20 && ev->x < 130) {
                     player_previous_track(player);
-                } else if (ev->x >= 132 && ev->x < 228) {
+                } else if (ev->x >= 150 && ev->x < 260) {
                     if (player->state == PLAYER_PLAYING) player_pause(player);
                     else player_play(player);
-                } else if (ev->x >= 244 && ev->x < 340) {
+                } else if (ev->x >= 280 && ev->x < 390) {
                     player_next_track(player);
                 }
-            } else if (ev->y >= 100 && ev->y < 280 && ev->x >= 20 && ev->x < 200) {
+            } else if (ev->y >= 120 && ev->y < 360 && ev->x >= 20 && ev->x < 200) {
                 /* tap cover to pause/play too */
                 if (player->state == PLAYER_PLAYING) player_pause(player);
                 else player_play(player);

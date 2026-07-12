@@ -8,6 +8,9 @@
 #include "player.h"
 #include "resume.h"
 #include "touch.h"
+#include <signal.h>
+
+extern volatile sig_atomic_t g_request_exit;
 
 typedef enum {
     UI_SCREEN_HOME = 0,
