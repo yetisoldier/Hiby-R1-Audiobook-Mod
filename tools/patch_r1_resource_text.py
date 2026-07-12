@@ -28,7 +28,6 @@ REPLACEMENTS = {
     },
     "launcher.ini": {
         "book": "Audiobooks",
-        "command": "/usr/bin/r1_audiobook_launch.sh",
     },
 }
 
@@ -53,6 +52,14 @@ NATIVE_HUB_VIEW_BOOK_REPLACEMENTS = {
     "recent": "Folders",
     "no_file": "No audiobooks found",
 }
+
+# NOTE: The <command> field in launcher.ini is NOT read by hiby_player.
+# The launcher callback is a hardcoded function pointer in the binary,
+# not a configurable command string. Inserting it creates a false impression
+# that the launch mechanism is configured. Do not re-enable this.
+# LAUNCHER_INSERTIONS = {
+#     "command": "/usr/bin/r1_audiobook_launch.sh",
+# }
 
 
 def replace_tag(text: str, tag: str, value: str) -> tuple[str, bool]:

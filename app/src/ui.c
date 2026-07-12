@@ -16,15 +16,14 @@
 #define TH_BG_WHITE         0xFFFFu
 #define TH_TEXT_BLACK       0x0001u
 #define TH_TEXT_WHITE       0xFFFFu
-/* HiBy brand blue: 0x1062F2 (RGB888) -> RGB565.
+/* HiBy brand blue: 0x1062F2 (RGB888) -> RGB565 0x131E.
  * R=0x10 -> 0b00010 (5 bits), G=0x62 -> 0b011000 (6 bits), B=0xF2 -> 0b11110 (5 bits).
- * Packed: 0001_0011_0000_1111_0 = 0x130F.
  */
-#define TH_FOCUS_BLUE       0x130Fu
+#define TH_FOCUS_BLUE       0x131Eu
 #define TH_SUBTITLE         0x6B6Du
 #define TH_PROGRESS_BG      0xA534u
-#define TH_PROGRESS_FILL    0x130Fu
-#define TH_HEADER_BG        0x130Fu
+#define TH_PROGRESS_FILL    0x131Eu
+#define TH_HEADER_BG        0x131Eu
 
 #define ICON_SIZE           32
 #define ROW_HEIGHT          92

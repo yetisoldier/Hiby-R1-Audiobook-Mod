@@ -441,6 +441,8 @@ def build(args: argparse.Namespace) -> None:
             include_native_hub_launcher = True
             player_patch_args.append("--audiobook-native-hub-launcher")
         player_patch_args.append("--audiobook-native-hub-view-rows")
+    if args.include_audiobook_system_launcher:
+        player_patch_args.append("--audiobook-system-launcher")
     if args.include_audiobook_title_auto_start_marker:
         player_patch_args.append("--audiobook-title-autostart-marker")
     if args.include_audiobook_explorer_marker:
@@ -533,6 +535,8 @@ def build(args: argparse.Namespace) -> None:
             audiobook_entry_marker = "native-hub-title-folders"
     if args.include_audiobook_native_hub_view_rows:
         audiobook_entry_marker = "native-hub-view-rows"
+    if args.include_audiobook_system_launcher:
+        audiobook_entry_marker = "system-launcher"
 
     boot_adb_marker = "enabled" if args.enable_boot_adb else "disabled"
     batd_logger_marker = "disabled" if args.disable_batd_logger else "enabled"
@@ -822,6 +826,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Add audiobook native hub folder rows to hiby_player")
     parser.add_argument("--include-audiobook-native-hub-view-rows", action="store_true",
                         help="Add audiobook native hub view rows to hiby_player")
+    parser.add_argument("--include-audiobook-system-launcher", action="store_true",
+                        help="Patch Audiobooks tile to call system() with our launch script")
     parser.add_argument("--include-audiobook-title-auto-start-marker", action="store_true",
                         help="Add audiobook title auto-start marker to hiby_player")
     parser.add_argument("--include-audiobook-explorer-marker", action="store_true",

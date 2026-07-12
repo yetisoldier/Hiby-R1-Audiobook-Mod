@@ -196,6 +196,50 @@ static void *player_worker(void *arg) {
             continue;
         }
 
+        /* ── Speed control via frame skip / repeat ──
+         * For speed > 1.0x: skip frames to advance faster.
+         * For speed < 1.0x: repeat frames to slow down.
+         * For speed == 1.0x: no change.
+         * Position tracking (refresh_snapshot_locked) uses decoder.current_frame
+         * which already reflects the actual decoder position, so it advances
+         * correctly when we skip frames (decoder advances, we just don't play all).
+         */
+        float speed = player->speed;
+        if (speed > 1.01f) {
+            /* Fast forward: skip frames proportional to speed ratio.
+             * For 2x: skip every other block. For 1.5x: skip 1 of every 3 blocks. */
+            int skip_mod = (int)(speed + 0.5f);
+            if (skip_mod < 2) skip_mod = 2;
+            player->speed_skip_counter++;
+            if (player->speed_skip_counter % skip_mod == 0) {
+                /* Skip this block — decoder already advanced, just don't play it */
+                pthread_mutex_lock(&player->lock);
+                refresh_snapshot_locked(player);
+                pthread_mutex_unlock(&player->lock);
+                continue;
+            }
+        } else if (speed < 0.99f) {
+            /* Slow down: repeat frames. For 0.5x: play each block twice. */
+            int repeat_count = (int)(1.0f / speed + 0.5f);
+            if (repeat_count < 2) repeat_count = 2;
+            pthread_mutex_unlock(&player->lock);
+            int repeat_failed = 0;
+            for (int rep = 1; rep < repeat_count; rep++) {
+                if (write_stereo_block(player, input, frames * (player->decoder.channels ? player->decoder.channels : 2u), player->decoder.channels) != 0) {
+                    repeat_failed = 1;
+                    break;
+                }
+            }
+            if (repeat_failed) {
+                pthread_mutex_lock(&player->lock);
+                player->state = PLAYER_STOPPED;
+                player->want_playing = false;
+                pthread_mutex_unlock(&player->lock);
+                continue;
+            }
+            pthread_mutex_lock(&player->lock);
+        }
+
         pthread_mutex_lock(&player->lock);
         if (player->stop_thread) break;
         if (write_stereo_block(player, input, frames * (player->decoder.channels ? player->decoder.channels : 2u), player->decoder.channels) != 0) {

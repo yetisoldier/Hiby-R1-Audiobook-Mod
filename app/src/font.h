@@ -5,8 +5,8 @@
 
 #include <stdbool.h>
 
-#define AB_FONT_BODY_PT 18
-#define AB_FONT_FOCUS_PT 22
+#define AB_FONT_BODY_PT 56
+#define AB_FONT_FOCUS_PT 68
 
 typedef struct font_context {
     unsigned char *ttf_data;
@@ -28,4 +28,3 @@ int font_text_width(const font_context *font, const char *text);
 void font_draw_text_focus(fb_context *fb, const font_context *font, int x, int y, uint16_t color, const char *text);
 
 #endif
-

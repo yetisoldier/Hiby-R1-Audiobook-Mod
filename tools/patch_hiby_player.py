@@ -724,6 +724,67 @@ AUDIOBOOK_NATIVE_HUB_LAUNCHER_PATCHES = (
     ),
 )
 
+# ── System launcher: call system("/usr/bin/r1_audiobook_launch.sh &") ──
+# Instead of routing the Audiobooks tile through the stock HiBy hub UI,
+# this patch makes hiby_player call system() with our launch script.
+# The script launches r1_audiobook_app as a standalone process, and
+# system() returns immediately because of the trailing '&' in the command.
+AUDIOBOOK_SYSTEM_LAUNCHER_CAVE_OFFSET = 0x35E000
+AUDIOBOOK_SYSTEM_LAUNCHER_CAVE_ADDR = text_addr(AUDIOBOOK_SYSTEM_LAUNCHER_CAVE_OFFSET)
+AUDIOBOOK_SYSTEM_LAUNCHER_CMD_OFFSET = 0x35E080
+AUDIOBOOK_SYSTEM_LAUNCHER_CMD_ADDR = text_addr(AUDIOBOOK_SYSTEM_LAUNCHER_CMD_OFFSET)
+AUDIOBOOK_SYSTEM_PLT_ADDR = 0x0083AD80
+
+AUDIOBOOK_SYSTEM_LAUNCHER_CMD = b"/usr/bin/r1_audiobook_launch.sh &\x00"
+AUDIOBOOK_SYSTEM_LAUNCHER_CMD_PADDING = AUDIOBOOK_SYSTEM_LAUNCHER_CMD.ljust(0x40, b"\x00")
+
+# MIPS code for the system launcher cave:
+#   addiu   sp, sp, -16        # allocate stack frame
+#   sw      ra, 12(sp)         # save return address
+#   sw      s0, 8(sp)          # save s0
+#   lui     a0, hi(cmd_addr)   # load command string address high
+#   addiu   a0, a0, lo(cmd_addr) # load command string address low
+#   jal     system             # call system()
+#   nop                        # delay slot
+#   lw      s0, 8(sp)          # restore s0
+#   lw      ra, 12(sp)         # restore ra
+#   addiu   sp, sp, 16         # restore stack
+#   jr      ra                 # return to caller
+#   nop                        # delay slot
+_a0_hi, _a0_lo = load_addr_words(4, AUDIOBOOK_SYSTEM_LAUNCHER_CMD_ADDR)
+AUDIOBOOK_SYSTEM_LAUNCHER_CODE = pack_words(
+    ins_addiu(29, 29, -16),       # addiu sp, sp, -16
+    ins_sw(31, 29, 12),           # sw ra, 12(sp)
+    ins_sw(16, 29, 8),            # sw s0, 8(sp)
+    _a0_hi,                       # lui a0, hi(cmd_addr)
+    _a0_lo,                       # addiu a0, a0, lo(cmd_addr)
+    ins_jal(AUDIOBOOK_SYSTEM_PLT_ADDR),  # jal system
+    0,                            # nop (delay slot)
+    ins_lw(16, 29, 8),            # lw s0, 8(sp)
+    ins_lw(31, 29, 12),           # lw ra, 12(sp)
+    ins_addiu(29, 29, 16),        # addiu sp, sp, 16
+    ins_jr(31),                   # jr ra
+    0,                            # nop (delay slot)
+)
+
+AUDIOBOOK_SYSTEM_LAUNCHER_PATCHES = (
+    (
+        AUDIOBOOK_SYSTEM_LAUNCHER_CAVE_OFFSET,
+        b"\x00" * len(AUDIOBOOK_SYSTEM_LAUNCHER_CODE),
+        AUDIOBOOK_SYSTEM_LAUNCHER_CODE,
+    ),
+    (
+        AUDIOBOOK_SYSTEM_LAUNCHER_CMD_OFFSET,
+        b"\x00" * len(AUDIOBOOK_SYSTEM_LAUNCHER_CMD_PADDING),
+        AUDIOBOOK_SYSTEM_LAUNCHER_CMD_PADDING,
+    ),
+    (
+        AUDIOBOOK_LAUNCHER_CALLBACK_OFFSET,
+        bytes.fromhex("ecda7500"),
+        pack_u32(AUDIOBOOK_SYSTEM_LAUNCHER_CAVE_ADDR),
+    ),
+)
+
 
 def digest(path: Path, algorithm: str) -> str:
     h = hashlib.new(algorithm)
@@ -762,6 +823,7 @@ def apply_patches(
     audiobook_native_hub_launcher: bool,
     audiobook_native_hub_folder_rows: bool,
     audiobook_native_hub_view_rows: bool,
+    audiobook_system_launcher: bool,
     audiobook_title_autostart_marker: bool,
     audiobook_explorer_marker: bool,
     select_dispatch: bool,
@@ -792,6 +854,11 @@ def apply_patches(
         raise SystemExit(
             "The Books audio shim and native Audiobooks hub launcher patch both use the same "
             "code cave. Choose only one."
+        )
+    if audiobook_system_launcher and (audiobook_native_hub_launcher or audiobook_native_hub_title_row or audiobook_native_hub_view_rows or audiobook_launcher_genre or book_audio_shim):
+        raise SystemExit(
+            "The system launcher patch and other audiobook launcher patches all use the same "
+            "callback offset (0x482030). Choose only one launcher approach."
         )
     if audiobook_launcher_genre and (audiobook_native_hub_title_row or audiobook_native_hub_view_rows):
         raise SystemExit(
@@ -853,6 +920,11 @@ def apply_patches(
         for offset, expected, replacement in AUDIOBOOK_NATIVE_HUB_VIEW_ROWS_PATCHES:
             patch_bytes(data, offset, expected, replacement, skip_existing=skip_existing)
         applied.append("audiobook-native-hub-view-rows")
+
+    if audiobook_system_launcher:
+        for offset, expected, replacement in AUDIOBOOK_SYSTEM_LAUNCHER_PATCHES:
+            patch_bytes(data, offset, expected, replacement, skip_existing=skip_existing)
+        applied.append("audiobook-system-launcher")
 
     if audiobook_title_autostart_marker:
         for offset, expected, replacement in AUDIOBOOK_TITLE_MARKER_PATCHES:
@@ -961,6 +1033,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--audiobook-system-launcher",
+        action="store_true",
+        help=(
+            "Patch the Audiobooks tile callback to call system() with our launch script, "
+            "starting r1_audiobook_app as a standalone process. Mutually exclusive with "
+            "all other audiobook launcher patches."
+        ),
+    )
+    parser.add_argument(
         "--skip-existing-patches",
         action="store_true",
         help=(
@@ -998,6 +1079,7 @@ def main() -> None:
         audiobook_native_hub_launcher=args.audiobook_native_hub_launcher,
         audiobook_native_hub_folder_rows=args.audiobook_native_hub_folder_rows,
         audiobook_native_hub_view_rows=args.audiobook_native_hub_view_rows,
+        audiobook_system_launcher=args.audiobook_system_launcher,
         audiobook_title_autostart_marker=args.audiobook_title_autostart_marker,
         audiobook_explorer_marker=args.audiobook_explorer_marker,
         select_dispatch=args.select_dispatch_branch,

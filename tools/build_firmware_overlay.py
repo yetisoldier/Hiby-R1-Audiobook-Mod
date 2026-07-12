@@ -129,35 +129,11 @@ if [ "$1" != start ]; then
   fi
 fi
 
-mkdir -p "$BASE/bin" "$BASE/input" "$BASE/resume.d"
+mkdir -p "$BASE/bin" "$BASE/resume.d"
 clear_stock_audiobook_last_file
-cp -f /usr/bin/r1_audiobook_resume_helper "$BASE/bin/r1_audiobook_resume_helper"
-cp -f /usr/bin/r1_audiobook_memscan "$BASE/bin/r1_audiobook_memscan"
-cp -f /usr/bin/r1_audiobook_direct_open "$BASE/bin/r1_audiobook_direct_open"
 cp -f /usr/bin/r1_audiobook_resume_daemon "$BASE/bin/r1_audiobook_resume_daemon"
 cp -f /usr/bin/r1_audiobook_resume_daemon.sh "$BASE/bin/r1_audiobook_resume_daemon.sh"
 cp -f /usr/bin/r1_audiobook_resume_daemon_shell.sh "$BASE/bin/r1_audiobook_resume_daemon_shell.sh"
-cp -f /usr/bin/r1_touch_next_event1.bin "$BASE/input/touch_next_event1.bin"
-cp -f /usr/bin/r1_touch_first_track_event1.bin "$BASE/input/touch_first_track_event1.bin"
-cp -f /usr/bin/r1_touch_first_track_down_event1.bin "$BASE/input/touch_first_track_down_event1.bin"
-cp -f /usr/bin/r1_touch_first_track_move_event1.bin "$BASE/input/touch_first_track_move_event1.bin"
-cp -f /usr/bin/r1_touch_first_track_up_event1.bin "$BASE/input/touch_first_track_up_event1.bin"
-cp -f /usr/bin/r1_touch_back_event1.bin "$BASE/input/touch_back_event1.bin"
-cp -f /usr/bin/r1_touch_track_row1_event1.bin "$BASE/input/touch_track_row1_event1.bin"
-cp -f /usr/bin/r1_touch_track_row2_event1.bin "$BASE/input/touch_track_row2_event1.bin"
-cp -f /usr/bin/r1_touch_track_row3_event1.bin "$BASE/input/touch_track_row3_event1.bin"
-cp -f /usr/bin/r1_touch_track_row4_event1.bin "$BASE/input/touch_track_row4_event1.bin"
-cp -f /usr/bin/r1_touch_track_row5_event1.bin "$BASE/input/touch_track_row5_event1.bin"
-cp -f /usr/bin/r1_touch_track_swipe_down_event1.bin "$BASE/input/touch_track_swipe_down_event1.bin"
-cp -f /usr/bin/r1_touch_track_swipe_move1_event1.bin "$BASE/input/touch_track_swipe_move1_event1.bin"
-cp -f /usr/bin/r1_touch_track_swipe_move2_event1.bin "$BASE/input/touch_track_swipe_move2_event1.bin"
-cp -f /usr/bin/r1_touch_track_swipe_move3_event1.bin "$BASE/input/touch_track_swipe_move3_event1.bin"
-cp -f /usr/bin/r1_touch_track_swipe_move4_event1.bin "$BASE/input/touch_track_swipe_move4_event1.bin"
-cp -f /usr/bin/r1_touch_track_swipe_move5_event1.bin "$BASE/input/touch_track_swipe_move5_event1.bin"
-cp -f /usr/bin/r1_touch_track_swipe_move6_event1.bin "$BASE/input/touch_track_swipe_move6_event1.bin"
-cp -f /usr/bin/r1_touch_track_swipe_up_event1.bin "$BASE/input/touch_track_swipe_up_event1.bin"
-cp -f /usr/bin/r1_key_next_event0.bin "$BASE/input/key_next_event0.bin"
-cp -f /usr/bin/r1_key_prev_event2.bin "$BASE/input/key_prev_event2.bin"
 
 if [ ! -s "$BASE/catalog.tsv" ]; then
   if [ -f /usr/bin/r1_audiobook_catalog.tsv ]; then
@@ -165,12 +141,7 @@ if [ ! -s "$BASE/catalog.tsv" ]; then
   fi
 fi
 
-chmod 755 "$BASE/bin/r1_audiobook_resume_helper" "$BASE/bin/r1_audiobook_memscan" "$BASE/bin/r1_audiobook_direct_open" "$BASE/bin/r1_audiobook_resume_daemon" "$BASE/bin/r1_audiobook_resume_daemon.sh" "$BASE/bin/r1_audiobook_resume_daemon_shell.sh"
-for file in "$BASE/input/"*.bin; do
-  if [ -e "$file" ]; then
-    chmod 644 "$file"
-  fi
-done
+chmod 755 "$BASE/bin/r1_audiobook_resume_daemon" "$BASE/bin/r1_audiobook_resume_daemon.sh" "$BASE/bin/r1_audiobook_resume_daemon_shell.sh"
 
 old_pid=$(cat "$BASE/resume-daemon.pid" 2>/dev/null || true)
 [ -n "$old_pid" ] && kill "$old_pid" 2>/dev/null || true
@@ -600,6 +571,8 @@ def apply_version_marker(
             audiobook_entry_marker = "native-hub-title-folders"
     if args.include_audiobook_native_hub_view_rows:
         audiobook_entry_marker = "native-hub-view-rows"
+    if getattr(args, 'include_audiobook_system_launcher', False):
+        audiobook_entry_marker = "system-launcher"
 
     # Determine OTA site
     ota_info_path = root_tree / "etc" / "ota_info"
@@ -686,10 +659,14 @@ def apply_binary_patches(
             include_native_hub_launcher = True
             player_patch_args.append("--audiobook-native-hub-launcher")
         player_patch_args.append("--audiobook-native-hub-view-rows")
+    if args.include_audiobook_system_launcher:
+        player_patch_args.append("--audiobook-system-launcher")
     if args.include_audiobook_title_auto_start_marker:
         player_patch_args.append("--audiobook-title-autostart-marker")
     if args.include_select_dispatch_branch:
         player_patch_args.append("--select-dispatch-branch")
+    if args.skip_existing_patches:
+        player_patch_args.append("--skip-existing-patches")
 
     log.info("PATCH BINARY: hiby_player")
     run_python("patch_hiby_player.py", player_patch_args)
@@ -960,10 +937,14 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Add audiobook native hub folder rows to hiby_player")
     parser.add_argument("--include-audiobook-native-hub-view-rows", action="store_true",
                         help="Add audiobook native hub view rows to hiby_player")
+    parser.add_argument("--include-audiobook-system-launcher", action="store_true",
+                        help="Patch Audiobooks tile to call system() with our launch script")
     parser.add_argument("--include-audiobook-title-auto-start-marker", action="store_true",
                         help="Add audiobook title auto-start marker to hiby_player")
     parser.add_argument("--include-select-dispatch-branch", action="store_true",
                         help="Add select dispatch branch to hiby_player")
+    parser.add_argument("--skip-existing-patches", action="store_true",
+                        help="Skip patches already applied (for re-patching an already-patched binary)")
     parser.add_argument("--include-audiobook-launcher-icon", action="store_true",
                         help="Generate audiobook launcher icons")
     parser.add_argument("--enable-boot-adb", action="store_true",

@@ -64,6 +64,12 @@
       "source": "tools/r1_audiobook_db_watch.sh",
       "mode": "0755",
       "description": "Database watcher shell script"
+    },
+    {
+      "target": "usr/bin/r1_audiobook_refresh.sh",
+      "source": "tools/r1_audiobook_refresh.sh",
+      "mode": "0755",
+      "description": "Audiobook library refresh script"
     }
   ],
 
@@ -198,6 +204,7 @@
     {"target": "usr/bin/r1_audiobook_resume_daemon_shell.sh", "mode": "0755"},
     {"target": "usr/bin/r1_audiobook_db_maint", "mode": "0755"},
     {"target": "usr/bin/r1_audiobook_db_watch.sh", "mode": "0755"},
+    {"target": "usr/bin/r1_audiobook_refresh.sh", "mode": "0755"},
     {"target": "usr/share/audiobooks/fonts/msyh.ttf", "mode": "0644"},
     {"target": "usr/share/audiobooks/hiby-theme", "mode": "0644"}
   ],
