@@ -10,22 +10,12 @@ killall -9 batd    &>/dev/null
 fi
 
 while true; do
-  # Remove any stale launch flag
-  rm -f /tmp/.r1_audiobook_launch 2>/dev/null
-
-  # Launch hiby_player
+  # Launch hiby_player. When user taps Audiobooks, the binary patch
+  # calls execve() which replaces hiby_player with r1_audiobook_app
+  # instantly. When our app exits, this loop relaunches hiby_player.
   /usr/bin/hiby_player
 
-  # Check if hiby_player exited because user tapped Audiobooks
-  if [ -f /tmp/.r1_audiobook_launch ]; then
-    # User tapped Audiobooks - launch our app
-    rm -f /tmp/.r1_audiobook_launch 2>/dev/null
-    /usr/bin/r1_audiobook_launch.sh 2>/dev/null
-    # When app exits, loop back and relaunch hiby_player
-    continue
-  fi
-
-  # Normal exit - reboot as stock behavior
+  # Normal exit (crash or quit) - reboot as stock behavior
   sleep 1
   reboot
 done

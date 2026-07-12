@@ -724,66 +724,54 @@ AUDIOBOOK_NATIVE_HUB_LAUNCHER_PATCHES = (
     ),
 )
 
-# ── System launcher: open() flag file (no fork, no OOM) ──
+# ── System launcher: execve() syscall (instant, no fork, no delay) ──
 # Instead of routing the Audiobooks tile through the stock HiBy hub UI,
-# this patch makes hiby_player call open() to create a flag file.
-# hiby_player.sh wrapper detects the flag and launches r1_audiobook_app.
-# Using open()/close() instead of system() avoids fork() which OOMs on 56MB RAM.
+# this patch makes hiby_player call execve() via raw syscall to replace
+# itself with r1_audiobook_app instantly. No fork, no exit delay, no wrapper.
+# When our app exits, hiby_player.sh sees the child exited and relaunches.
+#
+# execve syscall number on MIPS Linux = 4011 (0xFAF)
+# Syscall convention: $v0 = syscall number, $a0-$a2 = args, then 'syscall' insn
 AUDIOBOOK_SYSTEM_LAUNCHER_CAVE_OFFSET = 0x35E000
 AUDIOBOOK_SYSTEM_LAUNCHER_CAVE_ADDR = text_addr(AUDIOBOOK_SYSTEM_LAUNCHER_CAVE_OFFSET)
 AUDIOBOOK_SYSTEM_LAUNCHER_CMD_OFFSET = 0x35E080
 AUDIOBOOK_SYSTEM_LAUNCHER_CMD_ADDR = text_addr(AUDIOBOOK_SYSTEM_LAUNCHER_CMD_OFFSET)
-AUDIOBOOK_OPEN_PLT_ADDR = 0x00839E20
-AUDIOBOOK_CLOSE_PLT_ADDR = 0x0083ABE0
-O_CREAT_WRONLY = 0x241   # O_CREAT | O_WRONLY | O_TRUNC
-FILE_MODE_0644 = 0x1A4   # 0644 = rw-r--r--
+# argv array: two pointers {cmd_addr, NULL} stored at 0x35E0C0
+AUDIOBOOK_SYSTEM_LAUNCHER_ARGV_OFFSET = 0x35E0C0
+AUDIOBOOK_SYSTEM_LAUNCHER_ARGV_ADDR = text_addr(AUDIOBOOK_SYSTEM_LAUNCHER_ARGV_OFFSET)
+MIPS_EXECVE_SYSCALL = 4011
 
-AUDIOBOOK_SYSTEM_LAUNCHER_CMD = b"/tmp/.r1_audiobook_launch\x00"
+AUDIOBOOK_SYSTEM_LAUNCHER_CMD = b"/usr/bin/r1_audiobook_app\x00"
 AUDIOBOOK_SYSTEM_LAUNCHER_CMD_PADDING = AUDIOBOOK_SYSTEM_LAUNCHER_CMD.ljust(0x40, b"\x00")
 
-# MIPS code for the open/close launcher cave:
-#   addiu   sp, sp, -24        # allocate stack frame
-#   sw      ra, 20(sp)         # save return address
-#   sw      s0, 16(sp)         # save s0 (fd)
-#   sw      s1, 12(sp)         # save s1
-#   lui     a0, hi(path)       # load file path address
-#   addiu   a0, a0, lo(path)   #
-#   addiu   a1, zero, 0x241    # O_CREAT | O_WRONLY | O_TRUNC
-#   addiu   a2, zero, 0x1A4    # 0644
-#   jal     open               # call open()
-#   nop                        # delay slot
-#   move    s0, v0             # save fd
-#   move    a0, s0             # a0 = fd
-#   jal     close              # call close()
-#   nop                        # delay slot
-#   lw      s1, 12(sp)         # restore s1
-#   lw      s0, 16(sp)         # restore s0
-#   lw      ra, 20(sp)         # restore ra
-#   addiu   sp, sp, 24         # restore stack
-#   jr      ra                 # return to caller
-#   nop                        # delay slot
+# argv array: {pointer_to_cmd, NULL}
+import struct as _struct
+AUDIOBOOK_SYSTEM_LAUNCHER_ARGV = (
+    _struct.pack("<I", AUDIOBOOK_SYSTEM_LAUNCHER_CMD_ADDR) +  # argv[0] = path
+    _struct.pack("<I", 0)                                      # argv[1] = NULL
+)
+AUDIOBOOK_SYSTEM_LAUNCHER_ARGV_PADDING = AUDIOBOOK_SYSTEM_LAUNCHER_ARGV.ljust(0x20, b"\x00")
+
+# MIPS code for the execve syscall cave:
+#   lui     a0, hi(path)       # a0 = "/usr/bin/r1_audiobook_launch.sh"
+#   addiu   a0, a0, lo(path)
+#   lui     a1, hi(argv)       # a1 = argv array {path, NULL}
+#   addiu   a1, a1, lo(argv)
+#   addiu   a2, zero, 0        # a2 = envp = NULL
+#   addiu   v0, zero, 4011     # v0 = SYS_execve
+#   syscall                    # execve(path, argv, NULL) — never returns
+#   nop                        # filler (shouldn't reach here)
 _a0_hi, _a0_lo = load_addr_words(4, AUDIOBOOK_SYSTEM_LAUNCHER_CMD_ADDR)
+_a1_hi, _a1_lo = load_addr_words(5, AUDIOBOOK_SYSTEM_LAUNCHER_ARGV_ADDR)
 AUDIOBOOK_SYSTEM_LAUNCHER_CODE = pack_words(
-    ins_addiu(29, 29, -24),       # addiu sp, sp, -24
-    ins_sw(31, 29, 20),           # sw ra, 20(sp)
-    ins_sw(16, 29, 16),           # sw s0, 16(sp)
-    ins_sw(17, 29, 12),           # sw s1, 12(sp)
     _a0_hi,                       # lui a0, hi(path)
     _a0_lo,                       # addiu a0, a0, lo(path)
-    ins_addiu(5, 0, O_CREAT_WRONLY),  # addiu a1, zero, O_CREAT|O_WRONLY|O_TRUNC
-    ins_addiu(6, 0, FILE_MODE_0644),   # addiu a2, zero, 0644
-    ins_jal(AUDIOBOOK_OPEN_PLT_ADDR),  # jal open
-    0,                            # nop (delay slot)
-    ins_addiu(16, 2, 0),          # move s0, v0 (save fd)
-    ins_addiu(4, 16, 0),          # move a0, s0 (a0 = fd)
-    ins_jal(AUDIOBOOK_CLOSE_PLT_ADDR), # jal close
-    0,                            # nop (delay slot)
-    ins_lw(17, 29, 12),           # lw s1, 12(sp)
-    ins_lw(16, 29, 16),           # lw s0, 16(sp)
-    ins_lw(31, 29, 20),           # lw ra, 20(sp)
-    ins_addiu(29, 29, 24),        # addiu sp, sp, 24
-    ins_jr(31),                   # jr ra
-    0,                            # nop (delay slot)
+    _a1_hi,                       # lui a1, hi(argv)
+    _a1_lo,                       # addiu a1, a1, lo(argv)
+    ins_addiu(6, 0, 0),           # addiu a2, zero, 0 (envp = NULL)
+    ins_addiu(2, 0, MIPS_EXECVE_SYSCALL),  # addiu v0, zero, 4011
+    0x0000000C,                   # syscall
+    0,                            # nop (shouldn't reach here)
 )
 
 AUDIOBOOK_SYSTEM_LAUNCHER_PATCHES = (
@@ -796,6 +784,11 @@ AUDIOBOOK_SYSTEM_LAUNCHER_PATCHES = (
         AUDIOBOOK_SYSTEM_LAUNCHER_CMD_OFFSET,
         b"\x00" * len(AUDIOBOOK_SYSTEM_LAUNCHER_CMD_PADDING),
         AUDIOBOOK_SYSTEM_LAUNCHER_CMD_PADDING,
+    ),
+    (
+        AUDIOBOOK_SYSTEM_LAUNCHER_ARGV_OFFSET,
+        b"\x00" * len(AUDIOBOOK_SYSTEM_LAUNCHER_ARGV_PADDING),
+        AUDIOBOOK_SYSTEM_LAUNCHER_ARGV_PADDING,
     ),
     (
         AUDIOBOOK_LAUNCHER_CALLBACK_OFFSET,
