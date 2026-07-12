@@ -108,7 +108,7 @@ SELECT_DISPATCH_PATCH = (
 )
 
 AUDIOBOOK_LAUNCHER_CAVE_OFFSET = 0x35DAEC
-AUDIOBOOK_LAUNCHER_CALLBACK_OFFSET = 0x482030
+AUDIOBOOK_LAUNCHER_CALLBACK_OFFSET = 0x481FD0
 AUDIOBOOK_TITLE_SOURCE_MAGIC = 0xA0B00515
 AUDIOBOOK_LAUNCHER_CODE = bytes.fromhex(
     "a0fbbd275c04bfaf5804b1af5404b0af5000b08c1800001200000000"
@@ -167,7 +167,7 @@ AUDIOBOOK_LAUNCHER_PATCHES = (
     AUDIOBOOK_BOOK_OPEN_HOOK,
     (
         AUDIOBOOK_LAUNCHER_CALLBACK_OFFSET,
-        bytes.fromhex("20bb5300"),
+        bytes.fromhex("60ae5300"),
         bytes.fromhex("ecda7500"),
     ),
 )
@@ -719,7 +719,7 @@ AUDIOBOOK_NATIVE_HUB_LAUNCHER_PATCHES = (
     ),
     (
         AUDIOBOOK_LAUNCHER_CALLBACK_OFFSET,
-        bytes.fromhex("20bb5300"),
+        bytes.fromhex("60ae5300"),
         pack_u32(0x0075DAEC),
     ),
 )
@@ -826,7 +826,7 @@ AUDIOBOOK_SYSTEM_LAUNCHER_PATCHES = (
     ),
     (
         AUDIOBOOK_LAUNCHER_CALLBACK_OFFSET,
-        bytes.fromhex("ecda7500"),
+        bytes.fromhex("60ae5300"),
         pack_u32(AUDIOBOOK_SYSTEM_LAUNCHER_CAVE_ADDR),
     ),
 )
@@ -904,7 +904,7 @@ def apply_patches(
     if audiobook_system_launcher and (audiobook_native_hub_launcher or audiobook_native_hub_title_row or audiobook_native_hub_view_rows or audiobook_launcher_genre or book_audio_shim):
         raise SystemExit(
             "The system launcher patch and other audiobook launcher patches all use the same "
-            "callback offset (0x482030). Choose only one launcher approach."
+            "callback offset (0x481FD0). Choose only one launcher approach."
         )
     if audiobook_launcher_genre and (audiobook_native_hub_title_row or audiobook_native_hub_view_rows):
         raise SystemExit(
