@@ -724,45 +724,64 @@ AUDIOBOOK_NATIVE_HUB_LAUNCHER_PATCHES = (
     ),
 )
 
-# ── System launcher: call system("/usr/bin/r1_audiobook_launch.sh &") ──
+# ── System launcher: open() flag file (no fork, no OOM) ──
 # Instead of routing the Audiobooks tile through the stock HiBy hub UI,
-# this patch makes hiby_player call system() with our launch script.
-# The script launches r1_audiobook_app as a standalone process, and
-# system() returns immediately because of the trailing '&' in the command.
+# this patch makes hiby_player call open() to create a flag file.
+# hiby_player.sh wrapper detects the flag and launches r1_audiobook_app.
+# Using open()/close() instead of system() avoids fork() which OOMs on 56MB RAM.
 AUDIOBOOK_SYSTEM_LAUNCHER_CAVE_OFFSET = 0x35E000
 AUDIOBOOK_SYSTEM_LAUNCHER_CAVE_ADDR = text_addr(AUDIOBOOK_SYSTEM_LAUNCHER_CAVE_OFFSET)
 AUDIOBOOK_SYSTEM_LAUNCHER_CMD_OFFSET = 0x35E080
 AUDIOBOOK_SYSTEM_LAUNCHER_CMD_ADDR = text_addr(AUDIOBOOK_SYSTEM_LAUNCHER_CMD_OFFSET)
-AUDIOBOOK_SYSTEM_PLT_ADDR = 0x0083AD80
+AUDIOBOOK_OPEN_PLT_ADDR = 0x00839E20
+AUDIOBOOK_CLOSE_PLT_ADDR = 0x0083ABE0
+O_CREAT_WRONLY = 0x241   # O_CREAT | O_WRONLY | O_TRUNC
+FILE_MODE_0644 = 0x1A4   # 0644 = rw-r--r--
 
-AUDIOBOOK_SYSTEM_LAUNCHER_CMD = b"touch /tmp/.r1_audiobook_launch\x00"
+AUDIOBOOK_SYSTEM_LAUNCHER_CMD = b"/tmp/.r1_audiobook_launch\x00"
 AUDIOBOOK_SYSTEM_LAUNCHER_CMD_PADDING = AUDIOBOOK_SYSTEM_LAUNCHER_CMD.ljust(0x40, b"\x00")
 
-# MIPS code for the system launcher cave:
-#   addiu   sp, sp, -16        # allocate stack frame
-#   sw      ra, 12(sp)         # save return address
-#   sw      s0, 8(sp)          # save s0
-#   lui     a0, hi(cmd_addr)   # load command string address high
-#   addiu   a0, a0, lo(cmd_addr) # load command string address low
-#   jal     system             # call system()
+# MIPS code for the open/close launcher cave:
+#   addiu   sp, sp, -24        # allocate stack frame
+#   sw      ra, 20(sp)         # save return address
+#   sw      s0, 16(sp)         # save s0 (fd)
+#   sw      s1, 12(sp)         # save s1
+#   lui     a0, hi(path)       # load file path address
+#   addiu   a0, a0, lo(path)   #
+#   addiu   a1, zero, 0x241    # O_CREAT | O_WRONLY | O_TRUNC
+#   addiu   a2, zero, 0x1A4    # 0644
+#   jal     open               # call open()
 #   nop                        # delay slot
-#   lw      s0, 8(sp)          # restore s0
-#   lw      ra, 12(sp)         # restore ra
-#   addiu   sp, sp, 16         # restore stack
+#   move    s0, v0             # save fd
+#   move    a0, s0             # a0 = fd
+#   jal     close              # call close()
+#   nop                        # delay slot
+#   lw      s1, 12(sp)         # restore s1
+#   lw      s0, 16(sp)         # restore s0
+#   lw      ra, 20(sp)         # restore ra
+#   addiu   sp, sp, 24         # restore stack
 #   jr      ra                 # return to caller
 #   nop                        # delay slot
 _a0_hi, _a0_lo = load_addr_words(4, AUDIOBOOK_SYSTEM_LAUNCHER_CMD_ADDR)
 AUDIOBOOK_SYSTEM_LAUNCHER_CODE = pack_words(
-    ins_addiu(29, 29, -16),       # addiu sp, sp, -16
-    ins_sw(31, 29, 12),           # sw ra, 12(sp)
-    ins_sw(16, 29, 8),            # sw s0, 8(sp)
-    _a0_hi,                       # lui a0, hi(cmd_addr)
-    _a0_lo,                       # addiu a0, a0, lo(cmd_addr)
-    ins_jal(AUDIOBOOK_SYSTEM_PLT_ADDR),  # jal system
+    ins_addiu(29, 29, -24),       # addiu sp, sp, -24
+    ins_sw(31, 29, 20),           # sw ra, 20(sp)
+    ins_sw(16, 29, 16),           # sw s0, 16(sp)
+    ins_sw(17, 29, 12),           # sw s1, 12(sp)
+    _a0_hi,                       # lui a0, hi(path)
+    _a0_lo,                       # addiu a0, a0, lo(path)
+    ins_addiu(5, 0, O_CREAT_WRONLY),  # addiu a1, zero, O_CREAT|O_WRONLY|O_TRUNC
+    ins_addiu(6, 0, FILE_MODE_0644),   # addiu a2, zero, 0644
+    ins_jal(AUDIOBOOK_OPEN_PLT_ADDR),  # jal open
     0,                            # nop (delay slot)
-    ins_lw(16, 29, 8),            # lw s0, 8(sp)
-    ins_lw(31, 29, 12),           # lw ra, 12(sp)
-    ins_addiu(29, 29, 16),        # addiu sp, sp, 16
+    ins_addiu(16, 2, 0),          # move s0, v0 (save fd)
+    ins_addiu(4, 16, 0),          # move a0, s0 (a0 = fd)
+    ins_jal(AUDIOBOOK_CLOSE_PLT_ADDR), # jal close
+    0,                            # nop (delay slot)
+    ins_lw(17, 29, 12),           # lw s1, 12(sp)
+    ins_lw(16, 29, 16),           # lw s0, 16(sp)
+    ins_lw(31, 29, 20),           # lw ra, 20(sp)
+    ins_addiu(29, 29, 24),        # addiu sp, sp, 24
     ins_jr(31),                   # jr ra
     0,                            # nop (delay slot)
 )
