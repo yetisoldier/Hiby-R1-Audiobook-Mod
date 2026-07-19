@@ -1,0 +1,1318 @@
+/* player.c — audio playback engine (MP3 via minimp3_ex, ALSA output).
+ *
+ * Decode->ALSA loop on a dedicated pthread. MP3 decoding uses minimp3_ex
+ * (a self-contained, public-domain single-header MP3 decoder compiled
+ * directly into this .so) and libasound is dlopen'd at runtime for ALSA
+ * output (keeps us dep-free of HiBy's broken libs).
+ *
+ * Why not HiBy's libmp3.so (libmpg123), discovered by on-device probing
+ * (2026-07-17):
+ *  - libmp3.so's file readers are stubs (mpg123_open/_fd return -1), and
+ *    mpg123_format resampling is stripped — those we could work around.
+ *  - BUT its mpg123_read returns GARBLED PCM for 22050 Hz MPEG-2 (LSF)
+ *    audiobook files: L channel = full-scale clipping noise (ZCR ~0.5,
+ *    centroid ~5500Hz), R channel = low-frequency rumble, channels
+ *    uncorrelated (corr ~0.000) — i.e. a broken MPEG-2/stereo decode.
+ *    A real audiobook (mono duplicated to stereo) decodes to centroid
+ *    ~500Hz, ZCR ~0.1, L-R correlation ~1.0. minimp3_ex produces exactly
+ *    that. So we decode MP3 ourselves with minimp3_ex and feed ALSA.
+ *  - We open the file ourselves and install read/seek callbacks via
+ *    mp3dec_ex_open_cb (no reliance on the stubbed file readers).
+ *  - Seek strategy: MP3D_SEEK_TO_BYTE (NOT SEEK_TO_SAMPLE). SEEK_TO_SAMPLE
+ *    builds the FULL frame index on the first non-zero seek (~14.5MB for a
+ *    6.6h file + a 193MB scan), which OOMs this 56MB-RAM device and freezes
+ *    the player. SEEK_TO_BYTE just lseeks to seek_ms*bitrate_kbps/8 and
+ *    syncs to the next frame — instant, ~0 memory, ~26ms accurate.
+ *  - Output at the file's native rate; ALSA plughw:0,0 resamples to the
+ *    hardware's discrete rate set. minimp3 outputs S16 (mp3d_sample_t =
+ *    int16_t), little-endian on MIPS — matches A_FMT_S16_LE.
+ *  - snd_pcm_set_params is flaky here; set hw/sw params manually
+ *    (rate_near + buffer/period_time_near) and start_threshold=1.
+ *
+ * M4B/AAC is not wired here yet (step 4); books whose first track isn't MP3
+ * report player_format_unsupported()=1 so the UI can show a message.
+ */
+
+#define MINIMP3_IMPLEMENTATION
+#include "minimp3_ex.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>
+#include <stdint.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <dlfcn.h>
+#include <time.h>
+#include <sys/stat.h>
+#include <math.h>
+#include "player.h"
+#include "tags.h"          /* audio_file_type / AUDIO_EXT_* */
+#include "mp4_audio.h"     /* M4B/AAC demux (AAC decode via dlopen'd fdk-aac) */
+#include "wsola.h"         /* pitch-preserving time-stretch (speed != 1.0x) */
+
+/* ---- logging ----------------------------------------------------------- */
+static void plog(const char *fmt, ...) {
+    char buf[256];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    int fd = open("/tmp/.audiobook_hook.log",
+                  O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd >= 0) {
+        write(fd, "[player] ", 9);
+        write(fd, buf, strlen(buf));
+        write(fd, "\n", 1);
+        close(fd);
+    }
+}
+
+/* ---- ALSA function pointers (dlopen'd) --------------------------------- */
+/* MP3 decode is handled by minimp3_ex (compiled in, no dlopen). Only ALSA
+ * output is loaded at runtime via dlsym, matching how hiby_player uses it
+ * and keeping our .so free of link-time deps. */
+
+static void *g_alsa_lib = NULL;
+
+/* ALSA */
+static int (*x_snd_pcm_open)(void **, const char *, int, int);
+static int (*x_snd_pcm_close)(void *);
+static long (*x_snd_pcm_writei)(void *, const void *, unsigned long);
+static int (*x_snd_pcm_prepare)(void *);
+static int (*x_snd_pcm_drop)(void *);
+static int (*x_snd_pcm_recover)(void *, int, int);
+/* manual hw_params */
+static int (*x_snd_pcm_hw_params_malloc)(void **);
+static void (*x_snd_pcm_hw_params_free)(void *);
+static int (*x_snd_pcm_hw_params_any)(void *, void *);
+static int (*x_snd_pcm_hw_params_set_access)(void *, void *, int);
+static int (*x_snd_pcm_hw_params_set_format)(void *, void *, int);
+static int (*x_snd_pcm_hw_params_set_channels)(void *, void *, unsigned int);
+static int (*x_snd_pcm_hw_params_set_rate_near)(void *, void *, unsigned int *, int *);
+static int (*x_snd_pcm_hw_params_set_buffer_time_near)(void *, void *, unsigned int *, int *);
+static int (*x_snd_pcm_hw_params_set_period_time_near)(void *, void *, unsigned int *, int *);
+static int (*x_snd_pcm_hw_params_get_period_size)(void *, unsigned long *, int *);
+static int (*x_snd_pcm_hw_params)(void *, void *);
+/* manual sw_params */
+static int (*x_snd_pcm_sw_params_malloc)(void **);
+static void (*x_snd_pcm_sw_params_free)(void *);
+static int (*x_snd_pcm_sw_params_current)(void *, void *);
+static int (*x_snd_pcm_sw_params_set_start_threshold)(void *, void *, unsigned long);
+static int (*x_snd_pcm_sw_params_set_avail_min)(void *, void *, unsigned long);
+static int (*x_snd_pcm_sw_params)(void *, void *);
+/* ALSA mixer (DAC hardware volume) */
+static void *(*x_snd_mixer_open)(void **, int);
+static int (*x_snd_mixer_attach)(void *, const char *);
+static int (*x_snd_mixer_load)(void *);
+static void (*x_snd_mixer_close)(void *);
+static int (*x_snd_mixer_selem_register)(void *, void *, void **);
+static void *(*x_snd_mixer_first_elem)(void *);
+static void *(*x_snd_mixer_elem_next)(void *);
+static const char *(*x_snd_mixer_selem_get_name)(void *);
+static int (*x_snd_mixer_selem_has_playback_volume)(void *);
+static int (*x_snd_mixer_selem_set_playback_volume_all)(void *, long);
+static int (*x_snd_mixer_selem_get_playback_volume_range)(void *, long *, long *);
+
+/* ---- fdk-aac function pointers (dlopen'd, OPTIONAL) --------------------- */
+/* AAC decode for M4B/M4A. Loaded at runtime like ALSA; if the lib is absent,
+ * M4B books report player_format_unsupported()=1 (MP3 unaffected). API verified
+ * on-device against libfdk-aac.so.2.0.1 (probe_aac.c). */
+typedef void *HANDLE_AACDECODER;
+typedef int   AAC_DECODER_ERROR;
+/* Prefix of fdk-aac's CStreamInfo — only the three INT fields we read. */
+typedef struct {
+    int sampleRate;
+    int frameSize;
+    int numChannels;
+    void *pChannelType;
+    void *pChannelIndices;
+} CStreamInfo;
+
+static void *g_fdkaac_lib = NULL;
+static HANDLE_AACDECODER (*x_aac_Open)(int, int);
+static AAC_DECODER_ERROR (*x_aac_ConfigRaw)(HANDLE_AACDECODER, uint8_t **, const unsigned int *);
+static AAC_DECODER_ERROR (*x_aac_Fill)(HANDLE_AACDECODER, uint8_t **, const unsigned int *, unsigned int *);
+static AAC_DECODER_ERROR (*x_aac_DecodeFrame)(HANDLE_AACDECODER, int16_t *, const int, const unsigned int);
+static CStreamInfo *(*x_aac_GetStreamInfo)(HANDLE_AACDECODER);
+static void (*x_aac_Close)(HANDLE_AACDECODER);
+
+#define AAC_TT_MP4_RAW 0   /* "as is" access units, no sync layer */
+#define AACDEC_INTR    1u  /* flag: signal a clean restart on next decode */
+
+/* ALSA constants (stable across alsa-lib) */
+#define A_STREAM_PLAYBACK 0
+#define A_FMT_S16_LE       2
+#define A_ACCESS_RW_INT    3
+
+/* SYM: pass the literal symbol name explicitly (the pointer is x_-prefixed
+ * to avoid any name clash; the macro must NOT stringify the pointer name). */
+#define SYM(h, ptr, sym, type) ptr = (type)dlsym(h, sym)
+
+static int load_libs(void) {
+    /* MP3 decode is via minimp3_ex (compiled in) — nothing to dlopen for it.
+     * Only ALSA output is loaded at runtime. */
+    g_alsa_lib = dlopen("libasound.so", RTLD_LAZY);
+    if (!g_alsa_lib) g_alsa_lib = dlopen("libasound.so.2", RTLD_LAZY);
+    if (!g_alsa_lib) { plog("dlopen libasound failed: %s", dlerror()); return -1; }
+
+    SYM(g_alsa_lib, x_snd_pcm_open, "snd_pcm_open", int (*)(void **, const char *, int, int));
+    SYM(g_alsa_lib, x_snd_pcm_close, "snd_pcm_close", int (*)(void *));
+    SYM(g_alsa_lib, x_snd_pcm_writei, "snd_pcm_writei", long (*)(void *, const void *, unsigned long));
+    SYM(g_alsa_lib, x_snd_pcm_prepare, "snd_pcm_prepare", int (*)(void *));
+    SYM(g_alsa_lib, x_snd_pcm_drop, "snd_pcm_drop", int (*)(void *));
+    SYM(g_alsa_lib, x_snd_pcm_recover, "snd_pcm_recover", int (*)(void *, int, int));
+    SYM(g_alsa_lib, x_snd_pcm_hw_params_malloc, "snd_pcm_hw_params_malloc", int (*)(void **));
+    SYM(g_alsa_lib, x_snd_pcm_hw_params_free, "snd_pcm_hw_params_free", void (*)(void *));
+    SYM(g_alsa_lib, x_snd_pcm_hw_params_any, "snd_pcm_hw_params_any", int (*)(void *, void *));
+    SYM(g_alsa_lib, x_snd_pcm_hw_params_set_access, "snd_pcm_hw_params_set_access", int (*)(void *, void *, int));
+    SYM(g_alsa_lib, x_snd_pcm_hw_params_set_format, "snd_pcm_hw_params_set_format", int (*)(void *, void *, int));
+    SYM(g_alsa_lib, x_snd_pcm_hw_params_set_channels, "snd_pcm_hw_params_set_channels", int (*)(void *, void *, unsigned int));
+    SYM(g_alsa_lib, x_snd_pcm_hw_params_set_rate_near, "snd_pcm_hw_params_set_rate_near", int (*)(void *, void *, unsigned int *, int *));
+    SYM(g_alsa_lib, x_snd_pcm_hw_params_set_buffer_time_near, "snd_pcm_hw_params_set_buffer_time_near", int (*)(void *, void *, unsigned int *, int *));
+    SYM(g_alsa_lib, x_snd_pcm_hw_params_set_period_time_near, "snd_pcm_hw_params_set_period_time_near", int (*)(void *, void *, unsigned int *, int *));
+    SYM(g_alsa_lib, x_snd_pcm_hw_params_get_period_size, "snd_pcm_hw_params_get_period_size", int (*)(void *, unsigned long *, int *));
+    SYM(g_alsa_lib, x_snd_pcm_hw_params, "snd_pcm_hw_params", int (*)(void *, void *));
+    SYM(g_alsa_lib, x_snd_pcm_sw_params_malloc, "snd_pcm_sw_params_malloc", int (*)(void **));
+    SYM(g_alsa_lib, x_snd_pcm_sw_params_free, "snd_pcm_sw_params_free", void (*)(void *));
+    SYM(g_alsa_lib, x_snd_pcm_sw_params_current, "snd_pcm_sw_params_current", int (*)(void *, void *));
+    SYM(g_alsa_lib, x_snd_pcm_sw_params_set_start_threshold, "snd_pcm_sw_params_set_start_threshold", int (*)(void *, void *, unsigned long));
+    SYM(g_alsa_lib, x_snd_pcm_sw_params_set_avail_min, "snd_pcm_sw_params_set_avail_min", int (*)(void *, void *, unsigned long));
+    SYM(g_alsa_lib, x_snd_pcm_sw_params, "snd_pcm_sw_params", int (*)(void *, void *));
+    /* Mixer syms are optional (volume buttons degrade gracefully if absent). */
+    SYM(g_alsa_lib, x_snd_mixer_open, "snd_mixer_open", void *(*)(void **, int));
+    SYM(g_alsa_lib, x_snd_mixer_attach, "snd_mixer_attach", int (*)(void *, const char *));
+    SYM(g_alsa_lib, x_snd_mixer_load, "snd_mixer_load", int (*)(void *));
+    SYM(g_alsa_lib, x_snd_mixer_close, "snd_mixer_close", void (*)(void *));
+    SYM(g_alsa_lib, x_snd_mixer_selem_register, "snd_mixer_selem_register", int (*)(void *, void *, void **));
+    SYM(g_alsa_lib, x_snd_mixer_first_elem, "snd_mixer_first_elem", void *(*)(void *));
+    SYM(g_alsa_lib, x_snd_mixer_elem_next, "snd_mixer_elem_next", void *(*)(void *));
+    SYM(g_alsa_lib, x_snd_mixer_selem_get_name, "snd_mixer_selem_get_name", const char *(*)(void *));
+    SYM(g_alsa_lib, x_snd_mixer_selem_has_playback_volume, "snd_mixer_selem_has_playback_volume", int (*)(void *));
+    SYM(g_alsa_lib, x_snd_mixer_selem_set_playback_volume_all, "snd_mixer_selem_set_playback_volume_all", int (*)(void *, long));
+    SYM(g_alsa_lib, x_snd_mixer_selem_get_playback_volume_range, "snd_mixer_selem_get_playback_volume_range", int (*)(void *, long *, long *));
+    if (!x_snd_pcm_open || !x_snd_pcm_hw_params || !x_snd_pcm_writei) {
+        plog("missing alsa symbols"); return -1;
+    }
+
+    /* fdk-aac is OPTIONAL (M4B support). Missing lib => M4B->fmt_unsupported,
+     * MP3 unaffected. Try the symlink first, then the versioned soname. */
+    g_fdkaac_lib = dlopen("libfdk-aac.so", RTLD_LAZY);
+    if (!g_fdkaac_lib) g_fdkaac_lib = dlopen("libfdk-aac.so.2", RTLD_LAZY);
+    if (g_fdkaac_lib) {
+        SYM(g_fdkaac_lib, x_aac_Open,          "aacDecoder_Open",          HANDLE_AACDECODER (*)(int, int));
+        SYM(g_fdkaac_lib, x_aac_ConfigRaw,     "aacDecoder_ConfigRaw",     AAC_DECODER_ERROR (*)(HANDLE_AACDECODER, uint8_t **, const unsigned int *));
+        SYM(g_fdkaac_lib, x_aac_Fill,          "aacDecoder_Fill",          AAC_DECODER_ERROR (*)(HANDLE_AACDECODER, uint8_t **, const unsigned int *, unsigned int *));
+        SYM(g_fdkaac_lib, x_aac_DecodeFrame,   "aacDecoder_DecodeFrame",   AAC_DECODER_ERROR (*)(HANDLE_AACDECODER, int16_t *, const int, const unsigned int));
+        SYM(g_fdkaac_lib, x_aac_GetStreamInfo, "aacDecoder_GetStreamInfo", CStreamInfo *(*)(HANDLE_AACDECODER));
+        SYM(g_fdkaac_lib, x_aac_Close,         "aacDecoder_Close",         void (*)(HANDLE_AACDECODER));
+        if (!x_aac_Open || !x_aac_DecodeFrame || !x_aac_ConfigRaw || !x_aac_Fill) {
+            plog("fdk-aac present but missing core symbols — AAC disabled");
+            dlclose(g_fdkaac_lib); g_fdkaac_lib = NULL;
+        } else {
+            plog("fdk-aac loaded (AAC enabled)");
+        }
+    } else {
+        plog("fdk-aac not found (M4B will report unsupported): %s", dlerror());
+    }
+
+    plog("libs loaded (minimp3_ex + alsa)");
+    return 0;
+}
+
+/* ---- engine state ------------------------------------------------------- */
+
+typedef struct {
+    int track_id;
+    int ordinal;
+    char path[512];
+    char title[256];
+    int64_t duration_ms;
+} ptrack_t;
+
+enum {
+    CMD_NONE = 0, CMD_PLAY, CMD_RESUME, CMD_PAUSE, CMD_STOP, CMD_SEEK,
+    CMD_NEXT, CMD_PREV, CMD_QUIT,
+};
+enum { DEC_MP3 = 0, DEC_AAC = 1 };
+
+static struct {
+    sqlite3 *db;
+    pthread_t thread;
+    pthread_mutex_t mu;
+    int thread_alive;
+    int running;
+
+    int cmd;
+    int cmd_book_id;
+    int64_t cmd_seek_ms;
+    int64_t cmd_start_ms;   /* CMD_PLAY: -1 = resume from saved, >=0 = absolute book ms */
+
+    volatile player_state_t state;
+    volatile int book_id;
+    volatile int fmt_unsupported;
+    volatile int64_t position_ms;   /* book-elapsed */
+    volatile int64_t total_ms;
+    volatile int track_idx;
+
+    int last_book;     /* last loaded book, for toggle-resume */
+
+    ptrack_t tracks[256];
+    int track_count;
+    int64_t track_base_ms;   /* sum durations before track_idx */
+    int64_t track_pos_ms;     /* within current track */
+
+    mp3dec_ex_t dec;        /* minimp3_ex streaming decoder (open while a track is loaded) */
+    mp3dec_io_t io;         /* read/seek callbacks wired to track_fd */
+    int dec_open;           /* dec is open for the current track (MP3 path) */
+    int track_fd;           /* fd we opened for the current track (we own it; MP3 path) */
+    void *pcm;
+    long rate;
+    int channels;
+
+    /* Format dispatch: DEC_MP3 uses the minimp3 fields above; DEC_AAC uses the
+     * mp4/fdk-aac fields below. track_open is the format-agnostic "a track is
+     * loaded" flag (replaces dec_open in the thread loop / cmd_stop). */
+    int dec_fmt;            /* DEC_MP3 or DEC_AAC */
+    int track_open;         /* a track is loaded (either format) */
+    mp4_audio_t mp4;        /* M4B demux state (AAC path; owns its own fd) */
+    void *aac;              /* aacDecoder handle (AAC path) */
+    uint32_t aac_sample;    /* next AAC frame index to read */
+    int aac_frame_size;     /* samples per decoded frame (from GetStreamInfo) */
+    int aac_need_intr;      /* first decode_step should signal AACDEC_INTR */
+    int16_t aac_pcm[8192];  /* decoded PCM (up to 4096 frames * 2ch) */
+    uint8_t aac_frame[8192];/* one raw AAC access unit */
+
+    uint64_t last_save_ms;
+    char cur_title[256];
+
+    int64_t sleep_deadline_ms;   /* monotonic ms deadline, 0 = no sleep timer */
+
+    volatile int speed_permille; /* playback speed, 1000 = 1.0x. Read by the
+                                  * decode loop each chunk; set via
+                                  * player_set_speed (int read = atomic on MIPS,
+                                  * no torn-double worry). */
+
+    /* WSOLA time-stretch state (pitch-preserving speed). Engaged only when
+     * speed_permille != 1000; at 1.0x the decode loop passes PCM straight
+     * through. Re-inited on track open and on speed change (~48 KB, no malloc). */
+    wsola_t wsola;
+
+    /* ALSA mixer (DAC hardware volume). volume_pct is 0..100 (100 = loudest).
+     * The CS43131 DAC uses register value 0 = 0 dB (max) and 255 = most
+     * attenuated (quietest), so the mixer value is the ATTENUATION, i.e.
+     * inverted from the percent. VOL_AT_ZERO_IS_MAX encodes that polarity;
+     * flip it if a hardware probe shows the opposite. */
+    void *mixer;
+    void *mix_left;          /* snd_mixer_elem_t* for "Left Playback Volume" */
+    void *mix_right;         /* snd_mixer_elem_t* for "Right Playback Volume" */
+    long mix_min, mix_max;   /* mixer value range (0..255) */
+    int volume_pct;          /* 0..100, 100 = loudest */
+    int mixer_ok;
+} g_pl;
+
+/* ---- minimp3_ex I/O callbacks (wired to g_pl.track_fd) ------------------ */
+/* minimp3_ex reads the file through these; we own the fd. Defined after g_pl
+ * so it's in scope. Signature:
+ *   size_t read(void *buf, size_t size, void *user_data);
+ *   int     seek(uint64_t position, void *user_data);  (absolute SEEK_SET) */
+static size_t mp3_io_read(void *buf, size_t size, void *user_data) {
+    (void)user_data;
+    ssize_t n = read(g_pl.track_fd, buf, size);
+    if (n < 0) return 0;
+    return (size_t)n;
+}
+static int mp3_io_seek(uint64_t position, void *user_data) {
+    (void)user_data;
+    off_t r = lseek(g_pl.track_fd, (off_t)position, SEEK_SET);
+    return (r < 0) ? -1 : 0;
+}
+
+/* ---- ALSA mixer (hardware volume) -------------------------------------- */
+
+/* CS43131 DAC: mixer value 0 = 0 dB (loudest), 255 = most attenuated (quiet).
+ * i.e. the raw value is attenuation, inverted from "percent loud".
+ * VOL_AT_ZERO_IS_MAX encodes that polarity; flip to 0 if a hardware probe
+ * shows the opposite (higher value = louder). */
+#define VOL_AT_ZERO_IS_MAX 1
+
+static long pct_to_mix(int pct) {
+    if (pct < 0) pct = 0; if (pct > 100) pct = 100;
+    long range = g_pl.mix_max - g_pl.mix_min;
+#if VOL_AT_ZERO_IS_MAX
+    /* 100% -> mix_min (0 = loud), 0% -> mix_max (255 = quiet) */
+    return g_pl.mix_min + (long)((100 - pct) * range / 100);
+#else
+    /* 100% -> mix_max (loud), 0% -> mix_min (quiet) */
+    return g_pl.mix_min + (long)(pct * range / 100);
+#endif
+}
+
+/* Persist volume so it survives app restarts. */
+#define VOL_FILE "/usr/data/.audiobook_volume"
+static int vol_load_saved(void) {
+    int fd = open(VOL_FILE, O_RDONLY);
+    if (fd < 0) return -1;
+    char b[16]; ssize_t n = read(fd, b, sizeof(b) - 1); close(fd);
+    if (n <= 0) return -1;
+    b[n] = '\0';
+    int v = atoi(b);
+    if (v < 0 || v > 100) return -1;
+    return v;
+}
+static void vol_save(int pct) {
+    int fd = open(VOL_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return;
+    char b[16]; int len = snprintf(b, sizeof(b), "%d\n", pct);
+    write(fd, b, len); close(fd);
+}
+
+static void mix_apply(void) {
+    if (!g_pl.mixer_ok) return;
+    long v = pct_to_mix(g_pl.volume_pct);
+    if (g_pl.mix_left)  x_snd_mixer_selem_set_playback_volume_all(g_pl.mix_left, v);
+    if (g_pl.mix_right) x_snd_mixer_selem_set_playback_volume_all(g_pl.mix_right, v);
+}
+
+/* Open the mixer and locate the Left/Right playback volume elements. Called
+ * once from player_init. Best-effort: volume buttons no-op if this fails. */
+static void mixer_init(void) {
+    g_pl.mixer_ok = 0;
+    if (!x_snd_mixer_open || !x_snd_mixer_attach || !x_snd_mixer_load) return;
+    if (x_snd_mixer_open(&g_pl.mixer, 0) < 0) { g_pl.mixer = NULL; return; }
+    if (x_snd_mixer_attach(g_pl.mixer, "default") < 0 ||
+        x_snd_mixer_selem_register(g_pl.mixer, NULL, NULL) < 0 ||
+        x_snd_mixer_load(g_pl.mixer) < 0) {
+        x_snd_mixer_close(g_pl.mixer); g_pl.mixer = NULL; return;
+    }
+    g_pl.mix_min = 0; g_pl.mix_max = 255;
+    for (void *el = x_snd_mixer_first_elem(g_pl.mixer); el;
+         el = x_snd_mixer_elem_next(el)) {
+        if (!x_snd_mixer_selem_has_playback_volume(el)) continue;
+        const char *nm = x_snd_mixer_selem_get_name(el);
+        long lo = 0, hi = 0;
+        if (x_snd_mixer_selem_get_playback_volume_range)
+            x_snd_mixer_selem_get_playback_volume_range(el, &lo, &hi);
+        if (!strcmp(nm, "Left"))  { g_pl.mix_left = el;  g_pl.mix_min = lo; g_pl.mix_max = hi; }
+        else if (!strcmp(nm, "Right")) { g_pl.mix_right = el; }
+    }
+    if (!g_pl.mix_left && !g_pl.mix_right) {
+        x_snd_mixer_close(g_pl.mixer); g_pl.mixer = NULL; return;
+    }
+    int sv = vol_load_saved();
+    g_pl.volume_pct = (sv >= 0) ? sv : 60;   /* sane default if never set */
+    g_pl.mixer_ok = 1;
+    mix_apply();
+    plog("mixer ok: Left=%p Right=%p range=%ld..%ld vol=%d%%",
+         g_pl.mix_left, g_pl.mix_right, g_pl.mix_min, g_pl.mix_max, g_pl.volume_pct);
+}
+
+void player_volume_set(int vol) {
+    if (vol < 0) vol = 0; if (vol > 100) vol = 100;
+    g_pl.volume_pct = vol;
+    mix_apply();
+    vol_save(vol);
+}
+
+void player_volume_step(int dir) {
+    /* Step in RAW MIXER UNITS for fine, gradual control. The CS43131 DAC
+     * volume register (mix_min..mix_max, 0=loudest) is the actual attenuation
+     * control; the old 10%-per-press stepped it ~25 codes at once (~12 dB if
+     * the register is 0.5 dB/code) — the "jumps are pretty large" complaint.
+     * Stepping the register by a small fixed count gives even, gradual changes
+     * whether the register is dB- or amplitude-linear. ~5 units/press
+     * (~51 steps end-to-end; ~2-2.5 dB/press at 0.5 dB/code). The UI also acts
+     * on key-repeat (value==2) for the volume keys, so holding the button
+     * ramps through these fine steps for larger changes. */
+    const long MIX_STEP = 5;
+    long cur_mix = pct_to_mix(g_pl.volume_pct);
+    long range = g_pl.mix_max - g_pl.mix_min;
+    if (range <= 0) range = 255;
+    /* up (louder) = DEcrease the register (0=loudest); down = increase it */
+    long new_mix = cur_mix + ((dir > 0) ? -MIX_STEP : MIX_STEP);
+    if (new_mix < g_pl.mix_min) new_mix = g_pl.mix_min;
+    if (new_mix > g_pl.mix_max) new_mix = g_pl.mix_max;
+    /* derive pct back (linear reverse of pct_to_mix) for save/display */
+#if VOL_AT_ZERO_IS_MAX
+    int new_pct = (int)(100 - (new_mix - g_pl.mix_min) * 100 / range);
+#else
+    int new_pct = (int)((new_mix - g_pl.mix_min) * 100 / range);
+#endif
+    if (new_pct < 0) new_pct = 0;
+    if (new_pct > 100) new_pct = 100;
+    player_volume_set(new_pct);
+}
+
+int player_volume(void) {
+    return g_pl.mixer_ok ? g_pl.volume_pct : -1;
+}
+
+static uint64_t mono_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/* ---- track listing ----------------------------------------------------- */
+
+static int track_collect_cb(const audiobook_track_t *t, void *ctx) {
+    int *n = (int *)ctx;
+    if (*n >= 256) return 1;
+    ptrack_t *p = &g_pl.tracks[*n];
+    p->track_id = t->track_id;
+    p->ordinal = t->ordinal;
+    strncpy(p->path, t->path, sizeof(p->path) - 1); p->path[sizeof(p->path)-1] = '\0';
+    strncpy(p->title, t->title[0] ? t->title : "Track", sizeof(p->title) - 1);
+    p->title[sizeof(p->title)-1] = '\0';
+    p->duration_ms = t->duration_ms;
+    (*n)++;
+    return 0;
+}
+
+static int load_book_tracks(int book_id) {
+    g_pl.track_count = 0;
+    audiobook_get_tracks(g_pl.db, book_id, track_collect_cb, &g_pl.track_count);
+    return g_pl.track_count;
+}
+
+/* ---- progress persistence ---------------------------------------------- */
+
+static void save_progress(int completed) {
+    if (!g_pl.db || g_pl.book_id <= 0 || g_pl.track_count == 0) return;
+    int idx = g_pl.track_idx;
+    if (idx < 0 || idx >= g_pl.track_count) idx = 0;
+    audiobook_progress_t p;
+    memset(&p, 0, sizeof(p));
+    p.book_id = g_pl.book_id;
+    p.track_id = g_pl.tracks[idx].track_id;
+    p.track_ordinal = g_pl.tracks[idx].ordinal;
+    p.position_ms = g_pl.track_pos_ms;
+    p.total_book_elapsed_ms = g_pl.position_ms;
+    p.playback_speed = 1.0;
+    p.last_played_at = (int)time(NULL);
+    p.completed = completed;
+    p.completed_at = completed ? (int)time(NULL) : 0;
+    p.last_saved_at = (int)time(NULL);
+    audiobook_save_progress(g_pl.db, &p);
+}
+
+/* Add a bookmark at the current playback position. Uses the same track + book
+ * math as save_progress. Called from the Now Playing "Mark" button. */
+int player_add_bookmark(const char *label) {
+    if (!g_pl.db || g_pl.book_id <= 0 || g_pl.track_count == 0) return -1;
+    int idx = g_pl.track_idx;
+    if (idx < 0 || idx >= g_pl.track_count) idx = 0;
+    int track_id = g_pl.tracks[idx].track_id;
+    int64_t track_pos = g_pl.track_pos_ms;
+    int64_t book_pos = g_pl.position_ms;
+    const char *lab = (label && label[0]) ? label : "Bookmark";
+    plog("add bookmark book=%d track=%d pos=%lld bookpos=%lld",
+         g_pl.book_id, track_id, (long long)track_pos, (long long)book_pos);
+    return audiobook_add_bookmark(g_pl.db, g_pl.book_id, track_id,
+                                  track_pos, book_pos, lab);
+}
+
+/* ---- minimp3_ex / ALSA helpers ----------------------------------------- */
+
+static void close_mh(void) {
+    if (g_pl.dec_fmt == DEC_AAC) {
+        if (g_pl.aac) { x_aac_Close(g_pl.aac); g_pl.aac = NULL; }
+        mp4_audio_close(&g_pl.mp4);
+    } else {
+        if (g_pl.dec_open) { mp3dec_ex_close(&g_pl.dec); g_pl.dec_open = 0; }
+        if (g_pl.track_fd >= 0) { close(g_pl.track_fd); g_pl.track_fd = -1; }
+    }
+    g_pl.track_open = 0;
+}
+static void close_pcm(void) {
+    if (g_pl.pcm) { x_snd_pcm_drop(g_pl.pcm); x_snd_pcm_close(g_pl.pcm); g_pl.pcm = NULL; }
+}
+
+/* Configure ALSA for (rate, channels). Opens plughw:0,0 once; reconfigures
+ * on each track. Returns 0 on success. */
+static int setup_alsa(long rate, int channels) {
+    if (!g_pl.pcm) {
+        /* The PCM is sometimes transiently busy at audiobook-mode entry (a
+         * prior holder hasn't released it yet). Retry for ~1s before giving up
+         * so a single Play tap reliably opens the device instead of failing. */
+        const char *devs[] = { "plughw:0,0", "hw:0,0" };
+        int opened = 0;
+        for (int d = 0; d < 2 && !opened; d++) {
+            for (int attempt = 0; attempt < 5; attempt++) {
+                if (x_snd_pcm_open(&g_pl.pcm, devs[d], A_STREAM_PLAYBACK, 0) >= 0) {
+                    opened = 1; break;
+                }
+                if (attempt < 4) usleep(200000);  /* 200ms x4 = up to 0.8s per device */
+            }
+            if (!opened) plog("snd_pcm_open %s failed after retries, trying next", devs[d]);
+        }
+        if (!opened) { plog("snd_pcm_open failed (all devices)"); return -1; }
+        plog("alsa pcm opened");
+    } else {
+        x_snd_pcm_drop(g_pl.pcm);
+    }
+
+    void *hw = NULL;
+    x_snd_pcm_hw_params_malloc(&hw);
+    x_snd_pcm_hw_params_any(g_pl.pcm, hw);
+    x_snd_pcm_hw_params_set_access(g_pl.pcm, hw, A_ACCESS_RW_INT);
+    x_snd_pcm_hw_params_set_format(g_pl.pcm, hw, A_FMT_S16_LE);
+    x_snd_pcm_hw_params_set_channels(g_pl.pcm, hw, (unsigned int)channels);
+    unsigned int want_rate = (unsigned int)rate; int dir = 0;
+    x_snd_pcm_hw_params_set_rate_near(g_pl.pcm, hw, &want_rate, &dir);
+    unsigned int btime = 500000, bdir = 0;   /* 500ms buffer */
+    x_snd_pcm_hw_params_set_buffer_time_near(g_pl.pcm, hw, &btime, (int *)&bdir);
+    unsigned int ptime = 100000, pdir = 0;   /* 100ms period */
+    x_snd_pcm_hw_params_set_period_time_near(g_pl.pcm, hw, &ptime, (int *)&pdir);
+    int r = x_snd_pcm_hw_params(g_pl.pcm, hw);
+    if (r < 0) { plog("snd_pcm_hw_params failed: %d", r); x_snd_pcm_hw_params_free(hw); return -1; }
+    unsigned long period = 0; int gpdir = 0;
+    x_snd_pcm_hw_params_get_period_size(hw, &period, &gpdir);
+    x_snd_pcm_hw_params_free(hw);
+
+    void *sw = NULL;
+    x_snd_pcm_sw_params_malloc(&sw);
+    x_snd_pcm_sw_params_current(g_pl.pcm, sw);
+    x_snd_pcm_sw_params_set_start_threshold(g_pl.pcm, sw, 1);   /* start on first write */
+    x_snd_pcm_sw_params_set_avail_min(g_pl.pcm, sw, period);
+    r = x_snd_pcm_sw_params(g_pl.pcm, sw);
+    if (r < 0) plog("snd_pcm_sw_params failed: %d (non-fatal)", r);
+    x_snd_pcm_sw_params_free(sw);
+
+    x_snd_pcm_prepare(g_pl.pcm);
+    g_pl.rate = want_rate;
+    g_pl.channels = channels;
+    return 0;
+}
+
+/* Compute a byte offset for a resume position (used with MP3D_SEEK_TO_BYTE).
+ * We never use SEEK_TO_SAMPLE: it builds the FULL frame index (~14.5MB for a
+ * 6.6h file + a 193MB scan) → OOM on this 56MB-RAM device.
+ *
+ * For VBR files with a VBR (Xing/Info) tag, minimp3 sets dec.samples to the
+ * TRUE total even with MP3D_DO_NOT_SCAN, so byte = seek_ms * file_size /
+ * real_duration_ms is accurate — it uses the file's true average bitrate. The
+ * first frame's bitrate_kbps undershoots VBR (this file: 56 kbps first-frame
+ * vs ~128 kbps avg) and resumed ~47s early; the file-size/duration estimate
+ * fixes that. For CBR / no VBR tag (dec.samples==0), fall back to the first
+ * frame's bitrate (byte = seek_ms * bitrate_kbps/8), which is exact for CBR.
+ * mp3dec_ex_seek(SEEK_TO_BYTE) then syncs to the next frame after the byte
+ * (~26ms accurate) — fine for audiobook resume. */
+static uint64_t seek_byte_target(int64_t seek_ms) {
+    if (seek_ms <= 0) return 0;
+    if (g_pl.dec.samples > 0 && g_pl.channels > 0 && g_pl.rate > 0) {
+        struct stat st;
+        if (fstat(g_pl.track_fd, &st) == 0 && st.st_size > 0) {
+            double real_dur_ms = (double)g_pl.dec.samples
+                                 / (double)g_pl.channels
+                                 / (double)g_pl.rate * 1000.0;
+            if (real_dur_ms > 0)
+                return (uint64_t)((double)seek_ms
+                                  * (double)st.st_size / real_dur_ms);
+        }
+    }
+    /* CBR / no VBR tag: first-frame bitrate (bytes/ms = bitrate_kbps / 8). */
+    return (uint64_t)((double)seek_ms * g_pl.dec.info.bitrate_kbps / 8.0);
+}
+
+/* Open an M4B/AAC track: mp4 demux + fdk-aac. Priming-decodes frame 0 to read
+ * the true OUTPUT rate/ch from GetStreamInfo (HE-AAC/SBR can double the ASC
+ * base rate), then sets up ALSA and positions aac_sample at the resume frame.
+ * AAC seek = mp4_audio_seek_sample (stts ms->frame) — no per-sample index, so
+ * no OOM risk (unlike the MP3 SEEK_TO_SAMPLE trap). */
+static int open_track_aac(int idx, int64_t seek_ms) {
+    /* Fast path: same track already demuxed -> reset the decoder + re-seek.
+     * (Re-seeking fdk-aac internally is fiddly; reopening the handle is cheap
+     * and keeps the moov parsed in g_pl.mp4, so no ~3MB moov re-read.) */
+    if (g_pl.track_open && g_pl.aac && g_pl.track_idx == idx) {
+        x_aac_Close(g_pl.aac);
+        g_pl.aac = x_aac_Open(AAC_TT_MP4_RAW, 1);
+        if (!g_pl.aac) { plog("aac reopen failed"); close_mh(); return -1; }
+        uint8_t *asc[1] = { g_pl.mp4.asc };
+        unsigned int ascLen[1] = { (unsigned)g_pl.mp4.asc_len };
+        x_aac_ConfigRaw(g_pl.aac, asc, ascLen);
+        g_pl.aac_sample = (seek_ms > 0) ? mp4_audio_seek_sample(&g_pl.mp4, seek_ms) : 0;
+        g_pl.aac_need_intr = 1;  /* fresh decoder: first decode signals restart */
+        if (g_pl.pcm) { x_snd_pcm_drop(g_pl.pcm); x_snd_pcm_prepare(g_pl.pcm); }
+        int64_t base = 0;
+        for (int i = 0; i < idx; i++) base += g_pl.tracks[i].duration_ms;
+        g_pl.track_base_ms = base;
+        g_pl.track_pos_ms = seek_ms;
+        g_pl.position_ms = base + seek_ms;
+        plog("re-seek aac track %d @%lld -> sample %u", idx, (long long)seek_ms, g_pl.aac_sample);
+        return 0;
+    }
+
+    close_mh();
+    if (mp4_audio_open(g_pl.tracks[idx].path, &g_pl.mp4)) {
+        plog("mp4_audio_open failed: %s", g_pl.tracks[idx].path);
+        return -1;
+    }
+    g_pl.aac = x_aac_Open(AAC_TT_MP4_RAW, 1);
+    if (!g_pl.aac) { plog("aacDecoder_Open failed"); mp4_audio_close(&g_pl.mp4); return -1; }
+    uint8_t *asc[1] = { g_pl.mp4.asc };
+    unsigned int ascLen[1] = { (unsigned)g_pl.mp4.asc_len };
+    x_aac_ConfigRaw(g_pl.aac, asc, ascLen);
+
+    /* Priming: decode up to a few frames until GetStreamInfo returns valid
+     * rate/ch. The FIRST decode of a fresh handle (AACDEC_INTR) errors once
+     * (priming); GetStreamInfo is only populated after the first SUCCESSFUL
+     * decode — so a single priming decode is not enough (that was the
+     * "streaminfo invalid" failure on the first flashed build). The loop reads
+     * frames 0,1,2,... (intr on the first) and stops once rate/ch are known. */
+    long rate = 0; int ch = 0, frameSize = 1024;
+    for (int prim = 0; prim < 4 && (rate <= 0 || ch <= 0); prim++) {
+        int fsz = mp4_audio_read_sample(&g_pl.mp4, (uint32_t)prim,
+                                        g_pl.aac_frame, sizeof(g_pl.aac_frame));
+        if (fsz <= 0) break;
+        uint8_t *pBuf[1] = { g_pl.aac_frame };
+        unsigned int pSize[1] = { (unsigned)fsz };
+        unsigned int bv = (unsigned)fsz;
+        x_aac_Fill(g_pl.aac, pBuf, pSize, &bv);
+        unsigned int flags = (prim == 0) ? AACDEC_INTR : 0u;
+        x_aac_DecodeFrame(g_pl.aac, g_pl.aac_pcm,
+                          (int)(sizeof(g_pl.aac_pcm) / sizeof(int16_t)), flags);
+        CStreamInfo *si = x_aac_GetStreamInfo(g_pl.aac);
+        if (si) { rate = si->sampleRate; ch = si->numChannels; frameSize = si->frameSize; }
+    }
+    if (rate <= 0 || ch <= 0) { plog("aac streaminfo invalid (rate/ch)"); close_mh(); return -1; }
+    if (frameSize <= 0) frameSize = 1024;
+    g_pl.rate = rate; g_pl.channels = ch; g_pl.aac_frame_size = frameSize;
+
+    if (setup_alsa(rate, ch) < 0) { plog("setup_alsa failed (aac)"); close_mh(); close_pcm(); return -1; }
+
+    /* (Re)init WSOLA for this track's rate/channels + current speed. At 1.0x it
+     * stays unused (decode_step_aac passes PCM through), but init is cheap and
+     * keeps it ready for a mid-track speed change. */
+    wsola_init(&g_pl.wsola, rate, ch, g_pl.speed_permille);
+
+    /* Priming decoded frames 0,1 into the handle to discover streaminfo, leaving
+     * a dirty bitreservoir. Re-open a FRESH handle for actual decode so frame 0
+     * (or the seek target) starts from a clean state — matches the on-device
+     * probe, which used a fresh handle for its seek test. aac_need_intr=1 makes
+     * decode_step's first DecodeFrame signal AACDEC_INTR (clean restart). */
+    x_aac_Close(g_pl.aac);
+    g_pl.aac = x_aac_Open(AAC_TT_MP4_RAW, 1);
+    if (!g_pl.aac) { plog("aacDecoder_Open(2nd) failed"); close_mh(); close_pcm(); return -1; }
+    {
+        uint8_t *a2[1] = { g_pl.mp4.asc };
+        unsigned int al2[1] = { (unsigned)g_pl.mp4.asc_len };
+        x_aac_ConfigRaw(g_pl.aac, a2, al2);
+    }
+
+    g_pl.aac_sample = (seek_ms > 0) ? mp4_audio_seek_sample(&g_pl.mp4, seek_ms) : 0;
+    g_pl.aac_need_intr = 1;  /* fresh decoder: first real decode signals restart */
+    g_pl.track_open = 1;
+    g_pl.track_idx = idx;
+    g_pl.track_pos_ms = seek_ms;
+    int64_t base = 0;
+    for (int i = 0; i < idx; i++) base += g_pl.tracks[i].duration_ms;
+    g_pl.track_base_ms = base;
+    g_pl.position_ms = base + seek_ms;
+    strncpy(g_pl.cur_title, g_pl.tracks[idx].title, sizeof(g_pl.cur_title) - 1);
+    g_pl.cur_title[sizeof(g_pl.cur_title) - 1] = '\0';
+    plog("opened aac track %d (%s) hz=%ld ch=%d frameSize=%d frames=%u seek=%lld",
+         idx, g_pl.tracks[idx].title, rate, ch, frameSize, g_pl.mp4.sample_count,
+         (long long)seek_ms);
+    return 0;
+}
+
+/* Open track idx and seek seek_ms into it. Returns 0 on success. */
+static int open_track(int idx, int64_t seek_ms) {
+    if (g_pl.dec_fmt == DEC_AAC) return open_track_aac(idx, seek_ms);
+    /* Fast path: same track already open -> just re-seek the live decoder.
+     * Byte-level seek (SEEK_TO_BYTE): no frame index, instant, ~0 memory. */
+    if (g_pl.dec_open && g_pl.track_fd >= 0 && g_pl.track_idx == idx) {
+        uint64_t target = seek_byte_target(seek_ms);
+        int sr = mp3dec_ex_seek(&g_pl.dec, target);
+        if (g_pl.pcm) { x_snd_pcm_drop(g_pl.pcm); x_snd_pcm_prepare(g_pl.pcm); }
+        int64_t base = 0;
+        for (int i = 0; i < idx; i++) base += g_pl.tracks[i].duration_ms;
+        g_pl.track_base_ms = base;
+        g_pl.track_pos_ms = seek_ms;
+        g_pl.position_ms = base + seek_ms;
+        plog("re-seek track %d @%lld -> %d (rescan skipped)", idx, (long long)seek_ms, sr);
+        return 0;
+    }
+
+    close_mh();
+    g_pl.track_fd = open(g_pl.tracks[idx].path, O_RDONLY);
+    if (g_pl.track_fd < 0) { plog("open failed: %s", g_pl.tracks[idx].path); return -1; }
+    memset(&g_pl.dec, 0, sizeof(g_pl.dec));
+    memset(&g_pl.io, 0, sizeof(g_pl.io));
+    g_pl.io.read = mp3_io_read;
+    g_pl.io.seek = mp3_io_seek;
+    /* SEEK_TO_BYTE: byte-level seek (NO frame index). SEEK_TO_SAMPLE would
+     * build the FULL frame index on the first non-zero seek — ~14.5MB for a
+     * 6.6h file (910K frames × 16B) plus a full 193MB scan — which OOMs this
+     * 56MB-RAM device (~20MB free, hiby_player ~15MB RSS) and freezes the
+     * player. SEEK_TO_BYTE just lseeks to an estimated offset and syncs to
+     * the next frame: instant, ~0 memory, ~26ms accurate (fine for resume).
+     * DO_NOT_SCAN keeps open fast (duration comes from the tag scanner). */
+    int flags = MP3D_SEEK_TO_BYTE | MP3D_DO_NOT_SCAN;
+    int r = mp3dec_ex_open_cb(&g_pl.dec, &g_pl.io, flags);
+    if (r) { plog("mp3dec_ex_open_cb failed: %d", r); close(g_pl.track_fd); g_pl.track_fd = -1; return -1; }
+    long rate = (long)g_pl.dec.info.hz;
+    int ch = g_pl.dec.info.channels;
+    if (rate <= 0 || ch <= 0) { plog("minimp3 bad format hz=%ld ch=%d", rate, ch); close_mh(); return -1; }
+    g_pl.rate = rate; g_pl.channels = ch; g_pl.dec_open = 1; g_pl.track_open = 1;
+
+    if (setup_alsa(rate, ch) < 0) { plog("setup_alsa failed"); close_mh(); close_pcm(); return -1; }
+
+    /* (Re)init WSOLA for this track's rate/channels + current speed (see AAC). */
+    wsola_init(&g_pl.wsola, rate, ch, g_pl.speed_permille);
+
+    /* seek to resume position as a byte offset (no index build). */
+    if (seek_ms > 0) {
+        uint64_t target = seek_byte_target(seek_ms);
+        int sr = mp3dec_ex_seek(&g_pl.dec, target);
+        plog("seek track %d @%lldms -> byte %llu (dur_via=%s) -> %d",
+             idx, (long long)seek_ms, (unsigned long long)target,
+             (g_pl.dec.samples > 0 ? "vbr-tag" : "bitrate"), sr);
+    }
+    g_pl.track_idx = idx;
+    g_pl.track_pos_ms = seek_ms;
+    int64_t base = 0;
+    for (int i = 0; i < idx; i++) base += g_pl.tracks[i].duration_ms;
+    g_pl.track_base_ms = base;
+    g_pl.position_ms = base + seek_ms;
+    strncpy(g_pl.cur_title, g_pl.tracks[idx].title, sizeof(g_pl.cur_title)-1);
+    g_pl.cur_title[sizeof(g_pl.cur_title)-1] = '\0';
+    plog("opened track %d (%s) hz=%ld ch=%d seek=%lld",
+         idx, g_pl.tracks[idx].title, rate, ch, (long long)seek_ms);
+    return 0;
+}
+
+/* ---- command handling -------------------------------------------------- */
+
+static int book_is_playable(int book_id) {
+    if (g_pl.track_count == 0 || g_pl.book_id != book_id) {
+        if (load_book_tracks(book_id) <= 0) return 0;
+    }
+    if (g_pl.track_count == 0) return 0;
+    int t = audio_file_type(g_pl.tracks[0].path);
+    if (t == AUDIO_EXT_MP3) { g_pl.dec_fmt = DEC_MP3; return 1; }
+    /* M4B/M4A are MP4 containers → mp4_audio demux + fdk-aac. (Raw .aac ADTS
+     * is NOT handled by the MP4 demux.) Requires the optional fdk-aac lib. */
+    if ((t == AUDIO_EXT_M4B || t == AUDIO_EXT_M4A) && g_fdkaac_lib) {
+        g_pl.dec_fmt = DEC_AAC; return 1;
+    }
+    return 0;
+}
+
+/* Smart rewind on resume: seek this many ms before the saved position so the
+ * listener eases back into context. Only applies to a resume from saved
+ * progress (not bookmark/chapter jumps, which are absolute). Clamped at the
+ * start of the saved track (no cross-track back-walk; M4B is one long track and
+ * MP3 files are long, so this rarely matters). */
+#define RESUME_REWIND_MS 5000
+
+static void cmd_play(int book_id, int64_t start_ms) {
+    g_pl.book_id = book_id;
+    g_pl.last_book = book_id;
+    g_pl.fmt_unsupported = 0;
+    if (load_book_tracks(book_id) <= 0) { plog("no tracks for book %d", book_id); g_pl.state = PLAYER_STOPPED; return; }
+    if (!book_is_playable(book_id)) {
+        plog("book %d format unsupported (no fdk-aac or unknown type)", book_id);
+        g_pl.fmt_unsupported = 1;
+        g_pl.state = PLAYER_STOPPED;
+        return;
+    }
+    audiobook_book_t b;
+    g_pl.total_ms = (audiobook_get_book(g_pl.db, book_id, &b) > 0) ? b.total_duration_ms : 0;
+
+    int start_idx = 0;
+    int64_t into = 0;
+    if (start_ms < 0) {
+        /* resume from saved progress */
+        audiobook_progress_t p;
+        if (audiobook_get_progress(g_pl.db, book_id, &p) > 0) {
+            start_idx = p.track_ordinal - 1;
+            if (start_idx < 0) start_idx = 0;
+            if (start_idx >= g_pl.track_count) start_idx = g_pl.track_count - 1;
+            into = p.position_ms;
+            if (into < 0) into = 0;
+            /* Smart rewind: ease back in a few seconds before the saved spot. */
+            if (into > RESUME_REWIND_MS) into -= RESUME_REWIND_MS; else into = 0;
+            plog("resume book %d track %d @%lldms (rewound %dms)",
+                 book_id, start_idx, (long long)into, RESUME_REWIND_MS);
+        }
+    } else {
+        /* absolute book position: find the track containing it */
+        int64_t acc = 0;
+        for (int i = 0; i < g_pl.track_count; i++) {
+            int64_t d = g_pl.tracks[i].duration_ms;
+            if (start_ms < acc + d || i == g_pl.track_count - 1) {
+                start_idx = i; into = start_ms - acc;
+                if (into < 0) into = 0;
+                break;
+            }
+            acc += d;
+        }
+    }
+    if (start_idx >= g_pl.track_count) start_idx = 0;
+
+    if (open_track(start_idx, into) < 0) { g_pl.state = PLAYER_STOPPED; return; }
+    g_pl.state = PLAYER_PLAYING;
+    g_pl.last_save_ms = mono_ms();
+    plog("PLAY book %d @%lld total=%lldms", book_id, (long long)start_ms, (long long)g_pl.total_ms);
+}
+
+static void cmd_resume(void) {
+    if (g_pl.state != PLAYER_PAUSED) return;
+    if (g_pl.pcm) x_snd_pcm_prepare(g_pl.pcm);
+    g_pl.state = PLAYER_PLAYING;
+    g_pl.last_save_ms = mono_ms();
+    plog("RESUME @%lldms", (long long)g_pl.position_ms);
+}
+
+static void cmd_pause(void) {
+    if (g_pl.state != PLAYER_PLAYING) return;
+    if (g_pl.pcm) x_snd_pcm_drop(g_pl.pcm);
+    g_pl.state = PLAYER_PAUSED;
+    save_progress(0);
+    plog("PAUSE @%lldms", (long long)g_pl.position_ms);
+}
+
+static void cmd_stop(void) {
+    if ((g_pl.track_open || g_pl.pcm) && g_pl.book_id > 0) save_progress(0);
+    close_mh(); close_pcm();
+    g_pl.state = PLAYER_STOPPED;
+    plog("STOP");
+}
+
+static void cmd_seek(int64_t ms) {
+    if (g_pl.track_count == 0 || ms < 0) return;
+    int64_t acc = 0; int idx = 0; int64_t into = 0;
+    for (int i = 0; i < g_pl.track_count; i++) {
+        int64_t d = g_pl.tracks[i].duration_ms;
+        if (ms < acc + d || i == g_pl.track_count - 1) { idx = i; into = ms - acc; if (into < 0) into = 0; break; }
+        acc += d;
+    }
+    if (open_track(idx, into) < 0) { g_pl.state = PLAYER_STOPPED; return; }
+    g_pl.state = PLAYER_PLAYING;
+    plog("SEEK %lldms -> track %d @%lld", (long long)ms, idx, (long long)into);
+}
+
+static void cmd_next(int dir) {
+    if (g_pl.track_count == 0) return;
+    int idx = g_pl.track_idx + dir;
+    if (idx < 0) idx = 0;
+    if (idx >= g_pl.track_count) { cmd_stop(); return; }
+    if (open_track(idx, 0) < 0) { g_pl.state = PLAYER_STOPPED; return; }
+    g_pl.state = PLAYER_PLAYING;
+    plog("NEXT/PREV -> track %d", idx);
+}
+
+/* ---- decode one chunk -------------------------------------------------- */
+
+/* mp3d_sample_t is int16_t (S16). Buffer holds PCM samples (interleaved
+ * across channels); ALSA writei takes frames = samples / channels. */
+#define PCM_BUF_SAMPLES 16384
+
+/* NO SOFTWARE GAIN — clean passthrough (PROVEN 2026-07-18).
+ *
+ * History: audiobooks are mastered ~10-14 dB quieter than music, and this
+ * device's DAC mixer ("Left/Right Playback Volume", 0=loudest) can only
+ * ATTENUATE, so the no-gain decode is "very quiet" at hw max. Three attempts
+ * to add loudness in software ALL produced "too-loud" distortion that got
+ * WORSE with more gain (tanh +11 dB -> brick-wall limiter +11 dB -> parabolic
+ * speech-level boost AB_GAIN 4.5). The distortion scaling with gain, audible
+ * as clipping, is the device's ANALOG output stage railing — the quiet source
+ * sits ~-18 dBFS (probe RMS 3852); pushing the average level up drives the amp
+ * past its rail. No digital nonlinearity fixes that. The Output Port Switch
+ * (numid=7, 0-5) gives NO extra clean headroom: only port 0 produces sound,
+ * ports 1-5 are silent. So the only CLEAN path is to NOT push the level:
+ * passthrough, accept "very quiet", use max hardware volume. The no-gain
+ * build (d4c7ee3d) was confirmed clean (user: "very quiet", no distortion).
+ * This build = that clean passthrough + the accurate VBR resume fix
+ * (seek_byte_target) the no-gain backup lacked. If louder is ever required,
+ * the fix must be analog (a higher-gain output / external amp), not software.
+ *
+ * IMPORTANT: do NOT change the Output Port Switch (numid=7) during playback —
+ * it drops the CS43131's I2S lock and returning to 0 does NOT re-lock it (the
+ * open PCM stream never restarts). Recovery = pause then resume (re-prepares
+ * the ALSA stream) or stop+play (re-opens it). */
+
+/* ---- playback speed (WSOLA time-stretch, pitch preserved) --------------- */
+
+void player_set_speed(int permille) {
+    if (permille < 800) permille = 800;
+    if (permille > 2000) permille = 2000;
+    pthread_mutex_lock(&g_pl.mu);
+    g_pl.speed_permille = permille;
+    pthread_mutex_unlock(&g_pl.mu);
+    plog("speed set %d.%03dx", permille / 1000, permille % 1000);
+    /* A speed change changes the WSOLA analysis hop (Ha = Hs*speed), so re-init
+     * the time-stretch state if a track is open. This flushes ~40 ms (a tiny,
+     * occasional glitch) but guarantees the new rate is exact from the next
+     * chunk. If no track is open, the next open_track inits it. */
+    if (g_pl.track_open && g_pl.rate > 0 && g_pl.channels > 0)
+        wsola_init(&g_pl.wsola, g_pl.rate, g_pl.channels, permille);
+    if (g_pl.db) {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%d", permille);
+        audiobook_set_setting(g_pl.db, "playback_speed", buf);
+    }
+}
+
+int player_get_speed(void) {
+    int s;
+    pthread_mutex_lock(&g_pl.mu);
+    s = g_pl.speed_permille;
+    pthread_mutex_unlock(&g_pl.mu);
+    return s ? s : 1000;
+}
+
+static void decode_step_aac(void) {
+    if (g_pl.aac_sample >= g_pl.mp4.sample_count) {
+        int idx = g_pl.track_idx + 1;
+        if (idx >= g_pl.track_count) {
+            plog("book finished (aac)");
+            save_progress(1);
+            close_mh(); close_pcm();
+            g_pl.state = PLAYER_STOPPED;
+            return;
+        }
+        if (open_track(idx, 0) < 0) g_pl.state = PLAYER_STOPPED;
+        return;
+    }
+    int fsz = mp4_audio_read_sample(&g_pl.mp4, g_pl.aac_sample,
+                                    g_pl.aac_frame, sizeof(g_pl.aac_frame));
+    if (fsz <= 0) {
+        /* read error / short read -> treat as end of track */
+        plog("aac read_sample(%u) -> %d", g_pl.aac_sample, fsz);
+        int idx = g_pl.track_idx + 1;
+        if (idx >= g_pl.track_count) {
+            save_progress(1); close_mh(); close_pcm();
+            g_pl.state = PLAYER_STOPPED; return;
+        }
+        if (open_track(idx, 0) < 0) g_pl.state = PLAYER_STOPPED;
+        return;
+    }
+    uint8_t *pBuf[1] = { g_pl.aac_frame };
+    unsigned int pSize[1] = { (unsigned)fsz };
+    unsigned int bv = (unsigned)fsz;
+    x_aac_Fill(g_pl.aac, pBuf, pSize, &bv);
+    unsigned int flags = g_pl.aac_need_intr ? AACDEC_INTR : 0u;
+    AAC_DECODER_ERROR e = x_aac_DecodeFrame(g_pl.aac, g_pl.aac_pcm,
+                                            (int)(sizeof(g_pl.aac_pcm) / sizeof(int16_t)), flags);
+    g_pl.aac_need_intr = 0;
+    g_pl.aac_sample++;
+    if (e) return;  /* priming/sync error: skip, no ALSA write, no position advance */
+
+    int frameSize = g_pl.aac_frame_size;
+    if (frameSize <= 0) frameSize = 1024;
+    int ch = g_pl.channels; if (ch < 1) ch = 1;
+    int spd = g_pl.speed_permille;
+
+    /* Speed: at 1.0x, clean passthrough (no gain — see the analog-clipping note
+     * above decode_step). At other speeds, WSOLA time-stretches (pitch
+     * PRESERVED, unlike the old linear resampler): feed the decoded frame, then
+     * drain time-stretched PCM to ALSA in a loop. Position advances by CONTENT
+     * time (output written * speed), so book-elapsed position stays correct at
+     * any speed. The decode thread outruns realtime while WSOLA primes (~2
+     * frames), so the ~40 ms latency does not underrun ALSA. */
+    long wr_total = 0;
+    if (spd && spd != 1000) {
+        static short rsbuf[8192];
+        wsola_feed(&g_pl.wsola, g_pl.aac_pcm, frameSize);
+        for (;;) {
+            int of = wsola_drain(&g_pl.wsola, rsbuf,
+                                 (int)(sizeof(rsbuf) / sizeof(short) / ch));
+            if (of <= 0) break;
+            long wr = x_snd_pcm_writei(g_pl.pcm, rsbuf, (unsigned long)of);
+            if (wr < 0) {
+                if (x_snd_pcm_recover) x_snd_pcm_recover(g_pl.pcm, (int)wr, 1);
+                else x_snd_pcm_prepare(g_pl.pcm);
+                plog("alsa writei %ld -> recover (aac)", wr);
+                wr = x_snd_pcm_writei(g_pl.pcm, rsbuf, (unsigned long)of);
+            }
+            if (wr > 0) wr_total += wr;
+        }
+    } else {
+        long wr = x_snd_pcm_writei(g_pl.pcm, g_pl.aac_pcm, (unsigned long)frameSize);
+        if (wr < 0) {
+            if (x_snd_pcm_recover) x_snd_pcm_recover(g_pl.pcm, (int)wr, 1);
+            else x_snd_pcm_prepare(g_pl.pcm);
+            plog("alsa writei %ld -> recover (aac)", wr);
+            wr = x_snd_pcm_writei(g_pl.pcm, g_pl.aac_pcm, (unsigned long)frameSize);
+        }
+        if (wr > 0) wr_total = wr;
+    }
+    if (wr_total > 0) {
+        double speed = (spd && spd != 1000) ? (double)spd / 1000.0 : 1.0;
+        int64_t content_frames = (int64_t)((double)wr_total * speed + 0.5);
+        int64_t advanced = content_frames * 1000 / g_pl.rate;
+        g_pl.track_pos_ms += advanced;
+        g_pl.position_ms = g_pl.track_base_ms + g_pl.track_pos_ms;
+    }
+    uint64_t now = mono_ms();
+    if (now - g_pl.last_save_ms > 5000) { save_progress(0); g_pl.last_save_ms = now; }
+}
+
+static void decode_step(void) {
+    if (g_pl.dec_fmt == DEC_AAC) { decode_step_aac(); return; }
+    /* MP3 path */
+    static short buf[PCM_BUF_SAMPLES];
+    size_t got = mp3dec_ex_read(&g_pl.dec, buf, PCM_BUF_SAMPLES);
+    if (got == 0) {
+        /* track ended -> next */
+        int idx = g_pl.track_idx + 1;
+        if (idx >= g_pl.track_count) {
+            plog("book finished");
+            save_progress(1);
+            close_mh(); close_pcm();
+            g_pl.state = PLAYER_STOPPED;
+            return;
+        }
+        if (open_track(idx, 0) < 0) { g_pl.state = PLAYER_STOPPED; }
+        return;
+    }
+
+    int ch = g_pl.channels;
+    unsigned long frames = (ch > 0) ? (unsigned long)(got / ch) : 0;
+    if (frames == 0) return;
+    int spd = g_pl.speed_permille;
+
+    /* Clean passthrough at 1.0x: write the decoded S16 straight to ALSA. No
+     * gain, no limiting — see the comment above decode_step for why any digital
+     * gain clips the analog output stage. buf is int16 from minimp3 (already in
+     * [-32768,32767], no overflow possible).
+     *
+     * Speed != 1.0x: WSOLA time-stretches (pitch PRESERVED, unlike the old
+     * linear resampler) — feed the decoded chunk, drain to ALSA in a loop.
+     * Position advances by CONTENT time (output written * speed), so
+     * book-elapsed position is correct at any speed. */
+    long wr_total = 0;
+    if (spd && spd != 1000) {
+        static short rsbuf[PCM_BUF_SAMPLES];
+        /* Feed the decoded chunk in sub-chunks, draining after each, so the
+         * WSOLA input ring never has to hold a whole 16K-sample MP3 chunk at
+         * once. Feeding the whole chunk in one wsola_feed would overflow the
+         * ring and drop content (audible as cut-off speech at 1.5x). SUB is
+         * well under the ring capacity minus the max `need` look-ahead. */
+        const int SUB = 4096;
+        int fed = 0;
+        while (fed < (int)frames) {
+            int n = (int)frames - fed;
+            if (n > SUB) n = SUB;
+            wsola_feed(&g_pl.wsola, buf + fed * ch, n);
+            fed += n;
+            for (;;) {
+                int of = wsola_drain(&g_pl.wsola, rsbuf,
+                                     (int)(sizeof(rsbuf) / sizeof(short) / ch));
+                if (of <= 0) break;
+                long wr = x_snd_pcm_writei(g_pl.pcm, rsbuf, (unsigned long)of);
+                if (wr < 0) {
+                    if (x_snd_pcm_recover) x_snd_pcm_recover(g_pl.pcm, (int)wr, 1);
+                    else x_snd_pcm_prepare(g_pl.pcm);
+                    plog("alsa writei %ld -> recover", wr);
+                    wr = x_snd_pcm_writei(g_pl.pcm, rsbuf, (unsigned long)of);
+                }
+                if (wr > 0) wr_total += wr;
+            }
+        }
+    } else {
+        long wr = x_snd_pcm_writei(g_pl.pcm, buf, frames);
+        if (wr < 0) {
+            if (x_snd_pcm_recover) x_snd_pcm_recover(g_pl.pcm, (int)wr, 1);
+            else x_snd_pcm_prepare(g_pl.pcm);
+            plog("alsa writei %ld -> recover", wr);
+            wr = x_snd_pcm_writei(g_pl.pcm, buf, frames);
+        }
+        if (wr > 0) wr_total = wr;
+    }
+    if (wr_total > 0) {
+        double speed = (spd && spd != 1000) ? (double)spd / 1000.0 : 1.0;
+        int64_t content_frames = (int64_t)((double)wr_total * speed + 0.5);
+        int64_t advanced = content_frames * 1000 / g_pl.rate;
+        g_pl.track_pos_ms += advanced;
+        g_pl.position_ms = g_pl.track_base_ms + g_pl.track_pos_ms;
+    }
+
+    /* throttle progress saves to ~every 5s */
+    uint64_t now = mono_ms();
+    if (now - g_pl.last_save_ms > 5000) {
+        save_progress(0);
+        g_pl.last_save_ms = now;
+    }
+}
+
+/* ---- thread ------------------------------------------------------------ */
+
+static void *player_thread(void *arg) {
+    (void)arg;
+    plog("thread start");
+    while (g_pl.running) {
+        int cmd; int book_id; int64_t seek_ms;
+        pthread_mutex_lock(&g_pl.mu);
+        cmd = g_pl.cmd; book_id = g_pl.cmd_book_id; seek_ms = g_pl.cmd_seek_ms;
+        g_pl.cmd = CMD_NONE;
+        pthread_mutex_unlock(&g_pl.mu);
+
+        switch (cmd) {
+            case CMD_PLAY:   cmd_play(book_id, g_pl.cmd_start_ms); break;
+            case CMD_RESUME: cmd_resume(); break;
+            case CMD_PAUSE:  cmd_pause(); break;
+            case CMD_STOP:   cmd_stop(); break;
+            case CMD_SEEK:   cmd_seek(seek_ms); break;
+            case CMD_NEXT:   cmd_next(1); break;
+            case CMD_PREV:   cmd_next(-1); break;
+            case CMD_QUIT:   g_pl.running = 0; break;
+        }
+
+        if (g_pl.state == PLAYER_PLAYING && g_pl.track_open && g_pl.pcm) {
+            /* Sleep timer: if armed and the deadline has passed, pause and
+             * clear. Checked/cleared under the mutex (UI may re-arm concurrently). */
+            int sleep_fire = 0;
+            pthread_mutex_lock(&g_pl.mu);
+            if (g_pl.sleep_deadline_ms > 0 &&
+                (int64_t)mono_ms() >= g_pl.sleep_deadline_ms) {
+                g_pl.sleep_deadline_ms = 0;
+                sleep_fire = 1;
+            }
+            pthread_mutex_unlock(&g_pl.mu);
+            if (sleep_fire) {
+                plog("sleep timer expired -> pause");
+                cmd_pause();
+                save_progress(0);
+            } else {
+                decode_step();
+            }
+        } else {
+            usleep(20000);
+        }
+    }
+    cmd_stop();
+    plog("thread exit");
+    return NULL;
+}
+
+static void submit(int cmd, int book_id, int64_t seek_ms) {
+    pthread_mutex_lock(&g_pl.mu);
+    g_pl.cmd = cmd;
+    g_pl.cmd_book_id = book_id;
+    g_pl.cmd_seek_ms = seek_ms;
+    g_pl.cmd_start_ms = 0;
+    pthread_mutex_unlock(&g_pl.mu);
+}
+
+static void submit_play(int book_id, int64_t start_ms) {
+    pthread_mutex_lock(&g_pl.mu);
+    g_pl.cmd = CMD_PLAY;
+    g_pl.cmd_book_id = book_id;
+    g_pl.cmd_start_ms = start_ms;   /* -1 = resume, >=0 = absolute */
+    g_pl.cmd_seek_ms = 0;
+    pthread_mutex_unlock(&g_pl.mu);
+}
+
+/* ---- public API -------------------------------------------------------- */
+
+int player_init(sqlite3 *db) {
+    if (g_pl.thread_alive) return 0;
+    memset(&g_pl, 0, sizeof(g_pl));
+    g_pl.db = db;
+    g_pl.track_fd = -1;
+    g_pl.speed_permille = 1000;
+    /* Restore last-used playback speed (persisted by player_set_speed). */
+    {
+        char sbuf[16];
+        if (audiobook_get_setting(db, "playback_speed", sbuf, sizeof(sbuf)) == 0) {
+            int v = atoi(sbuf);
+            if (v >= 800 && v <= 2000) g_pl.speed_permille = v;
+        }
+    }
+    if (load_libs() < 0) return -1;
+    mixer_init();  /* best-effort; volume buttons no-op if this fails */
+    pthread_mutex_init(&g_pl.mu, NULL);
+    g_pl.running = 1;
+    if (pthread_create(&g_pl.thread, NULL, player_thread, NULL) != 0) {
+        plog("pthread_create failed");
+        return -1;
+    }
+    g_pl.thread_alive = 1;
+    return 0;
+}
+
+void player_shutdown(void) {
+    if (!g_pl.thread_alive) return;
+    submit(CMD_QUIT, 0, 0);
+    pthread_join(g_pl.thread, NULL);
+    g_pl.thread_alive = 0;
+    if (g_pl.mixer) { x_snd_mixer_close(g_pl.mixer); g_pl.mixer = NULL; }
+    if (g_alsa_lib) dlclose(g_alsa_lib);
+    g_alsa_lib = NULL;
+    if (g_fdkaac_lib) dlclose(g_fdkaac_lib);
+    g_fdkaac_lib = NULL;
+}
+
+int player_play_book(int book_id, int resume) {
+    if (!g_pl.thread_alive) return -1;
+    submit_play(book_id, resume ? -1 : 0);
+    return 0;
+}
+
+int player_play_book_from(int book_id, int64_t book_ms) {
+    if (!g_pl.thread_alive) return -1;
+    submit_play(book_id, book_ms);
+    return 0;
+}
+
+void player_toggle(void) {
+    if (!g_pl.thread_alive) return;
+    if (g_pl.state == PLAYER_PLAYING) submit(CMD_PAUSE, 0, 0);
+    else if (g_pl.state == PLAYER_PAUSED) submit(CMD_RESUME, 0, 0);
+    else if (g_pl.last_book > 0) submit_play(g_pl.last_book, 0);  /* resume saved */
+}
+
+void player_pause(void) {
+    if (g_pl.state == PLAYER_PLAYING) submit(CMD_PAUSE, 0, 0);
+}
+
+void player_stop(void) {
+    submit(CMD_STOP, 0, 0);
+}
+
+void player_seek_book_ms(int64_t ms) {
+    if (g_pl.book_id > 0) submit(CMD_SEEK, g_pl.book_id, ms);
+}
+
+int player_next(void) {
+    if (g_pl.track_count > 0) { submit(CMD_NEXT, 0, 0); return 0; }
+    return -1;
+}
+
+int player_prev(void) {
+    if (g_pl.track_count > 0) { submit(CMD_PREV, 0, 0); return 0; }
+    return -1;
+}
+
+void player_set_sleep_minutes(int minutes) {
+    pthread_mutex_lock(&g_pl.mu);
+    g_pl.sleep_deadline_ms = (minutes > 0)
+        ? (int64_t)mono_ms() + (int64_t)minutes * 60000
+        : 0;
+    pthread_mutex_unlock(&g_pl.mu);
+    plog("sleep timer set: %d min (deadline=%lld)", minutes,
+         (long long)g_pl.sleep_deadline_ms);
+}
+
+int64_t player_sleep_remaining_ms(void) {
+    int64_t dl;
+    pthread_mutex_lock(&g_pl.mu);
+    dl = g_pl.sleep_deadline_ms;
+    pthread_mutex_unlock(&g_pl.mu);
+    if (dl <= 0) return -1;
+    int64_t rem = dl - (int64_t)mono_ms();
+    return rem < 0 ? 0 : rem;
+}
+
+player_state_t player_state(void) { return g_pl.state; }
+int player_current_book(void) { return g_pl.book_id; }
+int64_t player_position_ms(void) { return g_pl.position_ms; }
+int64_t player_total_ms(void) { return g_pl.total_ms; }
+const char *player_current_track_title(void) { return g_pl.cur_title; }
+int player_format_unsupported(void) { return g_pl.fmt_unsupported; }
