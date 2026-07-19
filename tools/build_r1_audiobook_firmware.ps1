@@ -35,6 +35,11 @@ param(
 
     [switch]$IncludeAudiobookTitleAutoStartMarker,
 
+    [switch]$IncludeAudiobookNativeApp,
+
+    [Parameter(Mandatory=$false)]
+    [string]$AudiobookNativeApp = "work\native-app\r1_audiobook_smoke",
+
     [switch]$IncludeSelectDispatchBranch,
 
     [switch]$IncludeAudiobookLauncherIcon,
@@ -48,6 +53,21 @@ param(
     [switch]$EnableBluetoothSbcXq,
 
     [switch]$UnlockUsbDacMode,
+
+    # --- bidhata/Hiby-R1-Mod community carry-overs -------------------------------
+    # Config/init tweaks (config.json volume + fcn0 flags, set_functions.json,
+    # mount_ubifs.sh noatime, axp2101.sh battery params, inittab serial shell,
+    # S95bidhata_tweaks SD read-ahead + vfs_cache_pressure). See
+    # tools/patch_r1_bidhata_tweaks.py.
+    [switch]$IncludeBidhataTweaks,
+
+    # Binary patches to stock hiby_player (signature-guarded; see
+    # tools/patch_hiby_player.py). Brightness raises the low-end floor so the
+    # dimmest setting is usable; file-limit raises the 50000-file scan cap to
+    # 65000 for large SD libraries.
+    [switch]$BidhataBrightnessClamp,
+
+    [switch]$BidhataFileLimit,
 
     [switch]$IncludeAudiobookResumeRuntime,
 
@@ -112,6 +132,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Resolve Python: on Windows, the "python" stub in WindowsApps may not work.
+# Use the py launcher (which finds the real install) as a fallback.
+$_pyOk = $true
+try { $_pyVer = & python --version 2>&1; if ($LASTEXITCODE -ne 0) { $_pyOk = $false } } catch { $_pyOk = $false }
+if (-not $_pyOk) {
+    function python { & py -3 @args }
+}
+
 if ($OtaVersion -lt 0) {
     throw "OtaVersion must be non-negative"
 }
@@ -133,6 +161,9 @@ if ($IncludeAudiobookNativeHubTitleRow -and !$AllowUnsafeNativeHubTitleRow) {
 }
 if ($IncludeAudiobookNativeHubViewRows -and $IncludeAudiobookLauncherGenre) {
     throw "IncludeAudiobookNativeHubViewRows and IncludeAudiobookLauncherGenre are alternative audiobook entry paths. Choose only one."
+}
+if ($IncludeAudiobookNativeApp -and ($IncludeExperimentalBookAudioShim -or $IncludeAudiobookLauncherGenre -or $IncludeAudiobookPrivateDirectRoute -or $IncludeAudiobookNativeHubTitleRow -or $IncludeAudiobookNativeHubLauncher -or $IncludeAudiobookNativeHubFolderRows -or $IncludeAudiobookNativeHubViewRows -or $IncludeAudiobookTitleAutoStartMarker -or $IncludeAudiobookResumeRuntime -or $IncludeAudiobookDbMaintenance)) {
+    throw "IncludeAudiobookNativeApp is the pivot replacement for the legacy audiobook patches (book-audio-shim, launcher-genre, private-direct, native-hub, title-autostart-marker, resume-runtime, db-maintenance). Do not combine them."
 }
 
 if (Test-Path -LiteralPath $OutDir) {
@@ -184,8 +215,17 @@ if ($IncludeAudiobookNativeHubViewRows) {
 if ($IncludeAudiobookTitleAutoStartMarker) {
     $playerPatchArgs += "--audiobook-title-autostart-marker"
 }
+if ($IncludeAudiobookNativeApp) {
+    $playerPatchArgs += "--audiobook-native-app-launcher"
+}
 if ($IncludeSelectDispatchBranch) {
     $playerPatchArgs += "--select-dispatch-branch"
+}
+if ($BidhataBrightnessClamp) {
+    $playerPatchArgs += "--bidhata-brightness"
+}
+if ($BidhataFileLimit) {
+    $playerPatchArgs += "--bidhata-file-limit"
 }
 
 python tools\patch_hiby_player.py @playerPatchArgs
@@ -245,6 +285,14 @@ if ($audioUnlockArgs.Count -gt 1) {
     }
 }
 
+# --- bidhata config/init community tweaks ------------------------------------
+if ($IncludeBidhataTweaks) {
+    python tools\patch_r1_bidhata_tweaks.py $rootTree
+    if ($LASTEXITCODE -ne 0) {
+        throw "failed to apply bidhata config/init tweaks"
+    }
+}
+
 $customVersionMarker = Join-Path $rootTree "etc\r1_audiobook_version"
 $audiobookEntryMarker = "stock-book"
 if ($IncludeAudiobookLauncherGenre) {
@@ -275,6 +323,9 @@ $launcherIconMarker = if ($IncludeAudiobookLauncherIcon) { "audiobook" } else { 
 $nativeDsdMarker = if ($UnlockNativeDsd) { "enabled" } else { "stock" }
 $sbcXqMarker = if ($EnableBluetoothSbcXq) { "enabled" } else { "stock" }
 $usbDacMarker = if ($UnlockUsbDacMode) { "enabled" } else { "stock" }
+$bidhataTweaksMarker = if ($IncludeBidhataTweaks) { "enabled" } else { "stock" }
+$bidhataBrightnessMarker = if ($BidhataBrightnessClamp) { "enabled" } else { "stock" }
+$bidhataFileLimitMarker = if ($BidhataFileLimit) { "enabled" } else { "stock" }
 $nativeHubLauncherMarker = if ($IncludeAudiobookNativeHubLauncher) { "enabled" } else { "disabled" }
 $nativeHubFolderRowsMarker = if ($IncludeAudiobookNativeHubFolderRows) { "enabled" } else { "disabled" }
 $nativeHubViewRowsMarker = if ($IncludeAudiobookNativeHubViewRows) { "enabled" } else { "disabled" }
@@ -293,6 +344,9 @@ launcher_icon=$launcherIconMarker
 native_dsd=$nativeDsdMarker
 bluetooth_sbc_xq=$sbcXqMarker
 usb_dac_mode=$usbDacMarker
+bidhata_tweaks=$bidhataTweaksMarker
+bidhata_brightness=$bidhataBrightnessMarker
+bidhata_file_limit=$bidhataFileLimitMarker
 native_hub_launcher=$nativeHubLauncherMarker
 native_hub_folder_rows=$nativeHubFolderRowsMarker
 native_hub_view_rows=$nativeHubViewRowsMarker
@@ -326,6 +380,38 @@ fi
         throw "batd SD logger command still present in $playerLaunchScript"
     }
     [System.IO.File]::WriteAllText($playerLaunchScript, $launchText, [System.Text.Encoding]::ASCII)
+}
+
+# --- Native audiobook app pivot -------------------------------------------------
+# Replace the stock hiby_player.sh watchdog with the supervisor that watches
+# /tmp/.r1_audiobook_launch and swaps hiby_player <-> the native app. Install
+# the native app binary at /usr/bin/r1_audiobook_app. For Phase 1 this is the
+# smoke binary; the real app replaces it in later phases.
+if ($IncludeAudiobookNativeApp) {
+    $supervisorSource = "audiobook_app\r1_player_supervisor.sh"
+    if (!(Test-Path -LiteralPath $supervisorSource)) {
+        throw "Missing supervisor: $supervisorSource (run from the repo root)"
+    }
+    $playerLaunchScript = Join-Path $rootTree "usr\bin\hiby_player.sh"
+    Copy-Item -Force -LiteralPath $supervisorSource -Destination $playerLaunchScript
+    # Ensure LF line endings (Copy-Item from a file written on Windows may carry CRLF).
+    $launchText = (Get-Content -Raw -LiteralPath $playerLaunchScript) -replace "`r`n", "`n" -replace "`r", "`n"
+    [System.IO.File]::WriteAllText($playerLaunchScript, $launchText, [System.Text.Encoding]::ASCII)
+
+    $nativeAppSource = Resolve-PathStrict $AudiobookNativeApp
+    $nativeAppDest = Join-Path $rootTree "usr\bin\r1_audiobook_app"
+    Copy-Item -Force -LiteralPath $nativeAppSource -Destination $nativeAppDest
+    Write-Host ("Installed native app: {0} ({1} bytes)" -f $nativeAppDest, (Get-Item -LiteralPath $nativeAppSource).Length)
+
+    # Install the LD_PRELOAD hook library for in-process audiobook UI.
+    $hookLibSource = "work\native-app\libaudiobook_hook.so"
+    if (Test-Path -LiteralPath $hookLibSource) {
+        $hookLibDest = Join-Path $rootTree "usr\lib\libaudiobook_hook.so"
+        Copy-Item -Force -LiteralPath $hookLibSource -Destination $hookLibDest
+        Write-Host ("Installed hook lib: {0} ({1} bytes)" -f $hookLibDest, (Get-Item -LiteralPath $hookLibSource).Length)
+    } else {
+        Write-Host ("WARNING: hook lib not found at {0} - supervisor will run without LD_PRELOAD" -f $hookLibSource)
+    }
 }
 
 # Stock firmware ships the ADB startup helper as T90adb, but rcS only runs
@@ -813,6 +899,16 @@ if ($LASTEXITCODE -ne 0) {
 $newFileModeOverrides = @()
 if ($EnableBootAdb) {
     $newFileModeOverrides += @{ Path = "etc\init.d\S90adb"; Mode = "0755" }
+}
+if ($IncludeBidhataTweaks) {
+    $newFileModeOverrides += @{ Path = "etc\init.d\S95bidhata_tweaks"; Mode = "0755" }
+}
+if ($IncludeAudiobookNativeApp) {
+    $newFileModeOverrides += @(
+        @{ Path = "usr\bin\hiby_player.sh"; Mode = "0755" },
+        @{ Path = "usr\bin\r1_audiobook_app"; Mode = "0755" },
+        @{ Path = "usr\lib\libaudiobook_hook.so"; Mode = "0644" }
+    )
 }
 $newFileModeOverrides += @(
     @{ Path = "etc\init.d\S91audiobook_resume.sh"; Mode = "0755" },

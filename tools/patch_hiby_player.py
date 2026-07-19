@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import re
 import shutil
 from pathlib import Path
 
@@ -105,6 +106,30 @@ SELECT_DISPATCH_PATCH = (
     0x3EF24,
     bytes.fromhex("0c004310"),
     bytes.fromhex("0c000010"),
+)
+
+# ---- bidhata/Hiby-R1-Mod community tweaks --------------------------------
+# Brightness floor: the stock player clamps brightness 1..4 up to 5. The clamp
+# is `sltiu v1,v1,4` (immediate 4) inside the idiom:
+#   addiu v1,v0,-1   ff ff 43 24
+#   sltiu v1,v1,4    04 00 63 2c   <-- patch immediate 4 -> 0 (clamp never fires)
+#   jal   <write>    ?? ?? ?? 0c
+#   movz  a1,v0,v1   0a 28 43 00   (delay slot)
+# Found by signature (works across stock + community variants); verified on our
+# stock-1.6 binary at the "sorting variant" offset 0x67440 (the primary 0x7C900
+# is a different build). See bidhata Old_New_Mods/patch_brightness.py.
+BRIGHTNESS_CLAMP_SIG = re.compile(
+    rb"\xff\xff\x43\x24\x04\x00\x63\x2c...\x0c\x0a\x28\x43\x00", re.DOTALL
+)
+
+# File/track limit 50,000 -> 65,000. Four ORI rt,$zero,50000 (imm 0xC350) -> 65000
+# (imm 0xFDE8). Offsets verified against stock-1.6 hiby_player. See bidhata README
+# "File Limit Patch (50,000 -> 65,000 Tracks)".
+BIDHATA_FILE_LIMIT_PATCHES = (
+    (0xEDF74, bytes.fromhex("50c30234"), bytes.fromhex("e8fd0234")),
+    (0x2DE3B0, bytes.fromhex("50c30234"), bytes.fromhex("e8fd0234")),
+    (0x2DFEA0, bytes.fromhex("50c30434"), bytes.fromhex("e8fd0434")),
+    (0x2E937C, bytes.fromhex("50c30434"), bytes.fromhex("e8fd0434")),
 )
 
 AUDIOBOOK_LAUNCHER_CAVE_OFFSET = 0x35DAEC
@@ -751,6 +776,64 @@ AUDIOBOOK_NATIVE_HUB_LAUNCHER_PATCHES = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Native audiobook app launcher (the pivot).
+#
+# The Audiobooks launcher tile callback (at AUDIOBOOK_LAUNCHER_CALLBACK_OFFSET,
+# a function pointer in .data) is repointed to a code cave that runs
+#   system(": >/tmp/.r1_audiobook_launch")
+# via the stock system() PLT. The supervisor (r1_player_supervisor.sh, which
+# replaces /usr/bin/hiby_player.sh) watches for that flag file, kills
+# hiby_player, clears the framebuffer, and execs /usr/bin/r1_audiobook_app.
+# This retires the genre/private-direct/native-hub launcher patches: the
+# native app owns the Audiobooks experience entirely.
+#
+# Cave layout (9 instructions + command string):
+#   addiu $sp,$sp,-0x18 ; sw $ra,0x14($sp)
+#   lui $a0,hi(cmd) ; addiu $a0,$a0,lo(cmd)
+#   jal system(0x0083AD80) ; nop
+#   lw $ra,0x14($sp) ; jr $ra ; addiu $sp,$sp,0x18
+#   ": >/tmp/.r1_audiobook_launch\0"
+AUDIOBOOK_NATIVE_APP_LAUNCHER_CAVE_OFFSET = AUDIOBOOK_LAUNCHER_CAVE_OFFSET  # 0x35DAEC
+AUDIOBOOK_NATIVE_APP_LAUNCHER_CAVE_VADDR = 0x0075DAEC
+AUDIOBOOK_NATIVE_APP_LAUNCHER_SYSTEM_PLT = 0x0083AD80
+AUDIOBOOK_NATIVE_APP_LAUNCHER_CMD = b": >/tmp/.r1_audiobook_launch\x00"
+AUDIOBOOK_NATIVE_APP_LAUNCHER_CMD_VADDR = (
+    AUDIOBOOK_NATIVE_APP_LAUNCHER_CAVE_VADDR + 0x24  # after 9 words of code
+)
+
+
+def native_app_launcher_cave() -> bytes:
+    a0_hi, a0_lo = load_addr_words(4, AUDIOBOOK_NATIVE_APP_LAUNCHER_CMD_VADDR)
+    code = pack_words(
+        ins_addiu(29, 29, -0x18),                          # addiu $sp,$sp,-0x18
+        ins_sw(31, 29, 0x14),                              # sw $ra,0x14($sp)
+        a0_hi,                                             # lui $a0,hi(cmd)
+        a0_lo,                                             # addiu $a0,$a0,lo(cmd)
+        ins_jal(AUDIOBOOK_NATIVE_APP_LAUNCHER_SYSTEM_PLT), # jal system
+        0,                                                 # nop (delay slot)
+        ins_lw(31, 29, 0x14),                              # lw $ra,0x14($sp)
+        ins_jr(31),                                        # jr $ra
+        ins_addiu(29, 29, 0x18),                           # addiu $sp,$sp,0x18 (delay slot)
+    )
+    return code + AUDIOBOOK_NATIVE_APP_LAUNCHER_CMD
+
+
+AUDIOBOOK_NATIVE_APP_LAUNCHER_CODE = native_app_launcher_cave()
+AUDIOBOOK_NATIVE_APP_LAUNCHER_PATCHES = (
+    (
+        AUDIOBOOK_NATIVE_APP_LAUNCHER_CAVE_OFFSET,
+        b"\x00" * len(AUDIOBOOK_NATIVE_APP_LAUNCHER_CODE),
+        AUDIOBOOK_NATIVE_APP_LAUNCHER_CODE,
+    ),
+    (
+        AUDIOBOOK_LAUNCHER_CALLBACK_OFFSET,
+        bytes.fromhex("20bb5300"),
+        pack_u32(0x0075DAEC),
+    ),
+)
+
+
 def digest(path: Path, algorithm: str) -> str:
     h = hashlib.new(algorithm)
     with path.open("rb") as f:
@@ -768,6 +851,30 @@ def patch_bytes(data: bytearray, offset: int, expected: bytes, replacement: byte
     data[offset : offset + len(replacement)] = replacement
 
 
+def patch_brightness_clamp(data: bytearray) -> int:
+    """Lower the min-brightness clamp from 5 to 1 by signature match.
+
+    Matches the `addiu v1,v0,-1; sltiu v1,v1,4; jal; movz a1,v0,v1` idiom and
+    rewrites the sltiu immediate 4 -> 0 so the clamp (values 1..4 forced to 5)
+    never triggers. Returns the patched sltiu offset. Refuses if the signature
+    is absent or ambiguous (safe: no change on incompatible binaries)."""
+    hits = [m.start() for m in BRIGHTNESS_CLAMP_SIG.finditer(bytes(data))]
+    if len(hits) == 0:
+        raise SystemExit("Brightness clamp signature not found - incompatible binary")
+    if len(hits) > 1:
+        raise SystemExit(
+            f"Brightness clamp signature found {len(hits)} times at "
+            f"{[hex(h) for h in hits]} - ambiguous, refusing to patch"
+        )
+    sltiu_off = hits[0] + 4  # skip the addiu, point at the sltiu immediate byte
+    if data[sltiu_off] != 0x04:
+        raise SystemExit(
+            f"Unexpected byte {data[sltiu_off]:#x} at sltiu offset {sltiu_off:#x}"
+        )
+    data[sltiu_off] = 0x00  # immediate 4 -> 0
+    return sltiu_off
+
+
 def apply_patches(
     input_path: Path,
     output_path: Path,
@@ -781,7 +888,10 @@ def apply_patches(
     audiobook_native_hub_folder_rows: bool,
     audiobook_native_hub_view_rows: bool,
     audiobook_title_autostart_marker: bool,
+    audiobook_native_app_launcher: bool,
     select_dispatch: bool,
+    bidhata_brightness: bool,
+    bidhata_file_limit: bool,
 ) -> None:
     md5 = digest(input_path, "md5")
     sha256 = digest(input_path, "sha256")
@@ -828,6 +938,22 @@ def apply_patches(
             "The native Audiobooks hub folder rows require --audiobook-native-hub-title-row "
             "so the launcher uses the native hub entry path."
         )
+    # The native-app launcher shares the launcher cave (0x35DAEC) and the
+    # launcher callback pointer (0x482030) with the genre/private-direct/
+    # native-hub launcher variants. It is the pivot replacement for all of
+    # them, so it is mutually exclusive with each.
+    if audiobook_native_app_launcher and (
+        book_audio_shim
+        or audiobook_launcher_genre
+        or audiobook_private_direct_route
+        or audiobook_native_hub_launcher
+    ):
+        raise SystemExit(
+            "--audiobook-native-app-launcher replaces the book-audio-shim, "
+            "audiobook-launcher-genre, audiobook-private-direct-route, and "
+            "audiobook-native-hub-launcher patches (shared code cave). Choose "
+            "either the native-app launcher or the legacy patches, not both."
+        )
 
     if scan_skip:
         patch_bytes(data, SCAN_SKIP_OFFSET, SCAN_SKIP_ORIGINAL, SCAN_SKIP_PATCHED)
@@ -849,6 +975,11 @@ def apply_patches(
             applied.append("audiobook-private-direct-route")
     elif audiobook_private_direct_route:
         raise SystemExit("--audiobook-private-direct-route requires --audiobook-launcher-genre")
+
+    if audiobook_native_app_launcher:
+        for offset, expected, replacement in AUDIOBOOK_NATIVE_APP_LAUNCHER_PATCHES:
+            patch_bytes(data, offset, expected, replacement)
+        applied.append("audiobook-native-app-launcher")
 
     if audiobook_native_hub_title_row:
         for offset, expected, replacement in AUDIOBOOK_NATIVE_HUB_TITLE_ROW_PATCHES:
@@ -878,6 +1009,15 @@ def apply_patches(
     if select_dispatch:
         patch_bytes(data, *SELECT_DISPATCH_PATCH)
         applied.append("select-dispatch-branch")
+
+    if bidhata_brightness:
+        off = patch_brightness_clamp(data)
+        applied.append(f"bidhata-brightness-clamp@{off:#x}")
+
+    if bidhata_file_limit:
+        for offset, expected, replacement in BIDHATA_FILE_LIMIT_PATCHES:
+            patch_bytes(data, offset, expected, replacement)
+        applied.append("bidhata-file-limit-50000-to-65000")
 
     output_path.write_bytes(data)
     print(f"input:  {input_path}")
@@ -979,6 +1119,34 @@ def main() -> None:
             "daemon can auto-start audiobook title taps. Experimental and off by default."
         ),
     )
+    parser.add_argument(
+        "--audiobook-native-app-launcher",
+        action="store_true",
+        help=(
+            "Pivot build: repoint the Audiobooks launcher tile to a code cave that runs "
+            "system(': >/tmp/.r1_audiobook_launch'). The supervisor "
+            "(r1_player_supervisor.sh) watches that flag, swaps to the native "
+            "r1_audiobook_app, and restarts hiby_player on exit. Replaces the "
+            "genre/private-direct/native-hub launcher patches."
+        ),
+    )
+    parser.add_argument(
+        "--bidhata-brightness",
+        action="store_true",
+        help=(
+            "Community tweak (bidhata/Hiby-R1-Mod): lower the min-brightness clamp from "
+            "5 to 1 by signature match. Dimmer night screen. Independent of the "
+            "audiobook patches."
+        ),
+    )
+    parser.add_argument(
+        "--bidhata-file-limit",
+        action="store_true",
+        help=(
+            "Community tweak (bidhata/Hiby-R1-Mod): raise the track limit from 50,000 to "
+            "65,000 via four ORI immediate patches. Independent of the audiobook patches."
+        ),
+    )
     args = parser.parse_args()
 
     apply_patches(
@@ -993,7 +1161,10 @@ def main() -> None:
         audiobook_native_hub_folder_rows=args.audiobook_native_hub_folder_rows,
         audiobook_native_hub_view_rows=args.audiobook_native_hub_view_rows,
         audiobook_title_autostart_marker=args.audiobook_title_autostart_marker,
+        audiobook_native_app_launcher=args.audiobook_native_app_launcher,
         select_dispatch=args.select_dispatch_branch,
+        bidhata_brightness=args.bidhata_brightness,
+        bidhata_file_limit=args.bidhata_file_limit,
     )
 
 
