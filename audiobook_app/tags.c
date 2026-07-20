@@ -195,6 +195,119 @@ int64_t audio_estimate_mp3_duration(int64_t file_size, int bitrate) {
     return (file_size * 8000) / bitrate;
 }
 
+/* Find the first valid MPEG frame header in buf[start..end). Returns the
+ * index of the 4-byte frame header, or -1. Validates version/layer/bitrate/
+ * samplerate against the reserved values so a random 0xFFE? inside an ID3
+ * payload doesn't trip a false sync. */
+static int find_first_mpeg_frame(const uint8_t *buf, int start, int end) {
+    for (int i = start; i + 4 <= end; i++) {
+        if ((buf[i] & 0xFF) != 0xFF) continue;
+        if ((buf[i+1] & 0xE0) != 0xE0) continue;
+        int ver = (buf[i+1] >> 3) & 0x03;
+        int layer = (buf[i+1] >> 1) & 0x03;
+        int br_idx = (buf[i+2] >> 4) & 0x0F;
+        int sr_idx = (buf[i+2] >> 2) & 0x03;
+        if (ver == 1) continue;        /* reserved MPEG version */
+        if (layer == 0) continue;      /* reserved layer */
+        if (br_idx == 0 || br_idx == 15) continue;
+        if (sr_idx == 3) continue;     /* reserved samplerate */
+        return i;
+    }
+    return -1;
+}
+
+/* Parse an MP3 file's true duration. Seeks past any ID3v2 tag (a large
+ * embedded cover can push the first MPEG frame well past the old 64 KB read),
+ * finds the first MPEG frame, and uses the Xing/Info or VBRI VBR header for
+ * an exact frame-count duration. For CBR / no VBR tag, falls back to the
+ * first frame's bitrate (exact for CBR). Returns duration_ms, or 0 if no
+ * frame could be parsed. */
+static int64_t parse_mp3_duration(const char *path, int64_t file_size) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+
+    /* ID3v2 size is syncsafe in the first 10 bytes; seek past it (+ a little
+     * slack for a footer / padding) so we reach the first MPEG frame. */
+    int64_t frame_off = 0;
+    uint8_t id3[10];
+    if (fread(id3, 1, 10, f) == 10 && id3[0] == 'I' && id3[1] == 'D' &&
+        id3[2] == '3') {
+        int64_t id3_size = ((int64_t)(id3[6] & 0x7f) << 21) |
+                           ((int64_t)(id3[7] & 0x7f) << 14) |
+                           ((int64_t)(id3[8] & 0x7f) << 7) |
+                           (id3[9] & 0x7f);
+        frame_off = 10 + id3_size;
+    }
+    if (frame_off < 0) frame_off = 0;
+
+    /* Read a chunk that comfortably holds the first frame + its VBR header
+     * (the Xing/Info header sits at 4 + side-info, <= 36 bytes in). */
+    if (fseeko(f, (off_t)frame_off, SEEK_SET) != 0) { fclose(f); return 0; }
+    uint8_t buf[8192];
+    int n = (int)fread(buf, 1, sizeof(buf), f);
+    fclose(f);
+    if (n < 4) return 0;
+
+    int fi = find_first_mpeg_frame(buf, 0, n);
+    if (fi < 0) return 0;
+
+    int ver = (buf[fi+1] >> 3) & 0x03;     /* 3=MPEG-1, 2=MPEG-2, 0=MPEG-2.5 */
+    int layer = (buf[fi+1] >> 1) & 0x03;  /* 3=LI, 2=LII, 1=LIII */
+    int sr_idx = (buf[fi+2] >> 2) & 0x03;
+    int ch_mode = (buf[fi+3] >> 6) & 0x03;
+    int mono = (ch_mode == 3);
+
+    static const int sr_mpeg1[4]  = {44100, 48000, 32000, 0};
+    static const int sr_mpeg2[4]  = {22050, 24000, 16000, 0};
+    static const int sr_mpeg25[4] = {11025, 12000, 8000, 0};
+    int sr = 0;
+    if (ver == 3) sr = sr_mpeg1[sr_idx];
+    else if (ver == 2) sr = sr_mpeg2[sr_idx];
+    else if (ver == 0) sr = sr_mpeg25[sr_idx];
+    if (sr <= 0) return 0;
+
+    /* Samples per frame by MPEG version + layer. */
+    int spf;
+    if (layer == 3) spf = 384;           /* Layer I */
+    else if (layer == 2) spf = 1152;       /* Layer II */
+    else spf = (ver == 3) ? 1152 : 576;    /* Layer III: 1152 (MPEG-1), 576 (2/2.5) */
+
+    /* Xing/Info header offset = 4 (header) + side info.
+     * MPEG-1: 32 stereo / 17 mono; MPEG-2/2.5: 17 stereo / 9 mono. */
+    int sideinfo = (ver == 3) ? (mono ? 17 : 32) : (mono ? 9 : 17);
+    int xo = fi + 4 + sideinfo;
+    if (xo + 12 <= n &&
+        (memcmp(buf + xo, "Xing", 4) == 0 || memcmp(buf + xo, "Info", 4) == 0)) {
+        uint32_t flags = ((uint32_t)buf[xo+4] << 24) | ((uint32_t)buf[xo+5] << 16) |
+                         ((uint32_t)buf[xo+6] << 8) | (uint32_t)buf[xo+7];
+        if (flags & 0x01) {  /* frame count present */
+            uint32_t frames = ((uint32_t)buf[xo+8] << 24) |
+                              ((uint32_t)buf[xo+9] << 16) |
+                              ((uint32_t)buf[xo+10] << 8) |
+                              (uint32_t)buf[xo+11];
+            if (frames > 0)
+                return (int64_t)frames * spf * 1000 / sr;
+        }
+    }
+
+    /* Fraunhofer VBRI: fixed at 4 + 32 (MPEG-1 stereo side info). Layout:
+     * "VBRI" + version(2) + delay(2) + quality(2) + bytes(4) + frames(4). */
+    int vo = fi + 4 + 32;
+    if (vo + 18 <= n && memcmp(buf + vo, "VBRI", 4) == 0) {
+        uint32_t frames = ((uint32_t)buf[vo+14] << 24) |
+                          ((uint32_t)buf[vo+15] << 16) |
+                          ((uint32_t)buf[vo+16] << 8) |
+                          (uint32_t)buf[vo+17];
+        if (frames > 0)
+            return (int64_t)frames * spf * 1000 / sr;
+    }
+
+    /* No VBR tag: estimate from the first frame's bitrate (exact for CBR). */
+    int bitrate = find_mp3_bitrate(buf, n);
+    if (bitrate <= 0) bitrate = 128000;
+    return (file_size * 8000) / bitrate;
+}
+
 /* ---- M4B/M4A (QuickTime) parsing ---------------------------------------- */
 
 /* Read a 32-bit big-endian value */
@@ -207,100 +320,82 @@ static uint64_t qt_read64(const uint8_t *p) {
     return ((uint64_t)qt_read32(p) << 32) | (uint64_t)qt_read32(p + 4);
 }
 
-/* Parse QuickTime atoms recursively to find mvhd (duration) and count
- * chapter tracks. depth-limited to prevent infinite recursion. */
-static void parse_qt_atoms(const uint8_t *buf, int buf_len, int offset,
-                          int end, audio_tags_t *out, int depth) {
-    if (depth > 6 || offset >= end) return;
-
-    while (offset + 8 <= end) {
-        uint32_t atom_size = qt_read32(buf + offset);
-        uint32_t atom_type = qt_read32(buf + offset + 4);
-
-        /* Handle 64-bit extended size */
-        int header_size = 8;
-        if (atom_size == 1 && offset + 16 <= end) {
-            /* 64-bit size follows — but we'll just cap at end */
-            header_size = 16;
-        }
-        if (atom_size == 0) atom_size = end - offset; /* extends to end */
-        if (atom_size < 8 || offset + atom_size > end) break;
-
-        int body_offset = offset + header_size;
-        int body_end = offset + atom_size;
-        char type_str[5] = {0};
-        memcpy(type_str, buf + offset + 4, 4);
-
-        if (atom_type == 0x6d766864 /* 'mvhd' */) {
-            /* Movie header: version(1) + flags(3) + creation(4) + mod(4)
-             * + timescale(4) + duration(4 or 8) */
-            if (body_offset + 24 <= body_end) {
-                int version = buf[body_offset];
-                uint32_t timescale = qt_read32(buf + body_offset + 12);
-                uint64_t duration = 0;
-                if (version == 0) {
-                    duration = qt_read32(buf + body_offset + 16);
-                } else {
-                    if (body_offset + 24 <= body_end)
-                        duration = qt_read64(buf + body_offset + 20);
-                }
-                if (timescale > 0)
-                    out->duration_ms = (int64_t)(duration * 1000 / timescale);
-            }
-        } else if (atom_type == 0x7472616b /* 'trak' */) {
-            /* Track: check if it's a chapter track by looking for 'chap'
-             * reference. Count tracks with audio media. */
-            parse_qt_atoms(buf, body_end, body_offset, body_end, out, depth + 1);
-
-            /* Check for chapter track reference (elst or chap atom) */
-            /* Simple heuristic: count trak atoms at depth 1 as chapters
-             * if there's more than one trak and the first has audio. */
-            if (depth == 0) {
-                out->embedded_chapters++;
-            }
-        } else if (atom_type == 0x6d6f6f76 /* 'moov' */ ||
-                   atom_type == 0x6d646961 /* 'mdia' */ ||
-                   atom_type == 0x6d696e66 /* 'minf' */ ||
-                   atom_type == 0x7374626c /* 'stbl' */ ||
-                   atom_type == 0x75647461 /* 'udta' */) {
-            parse_qt_atoms(buf, body_end, body_offset, body_end, out, depth + 1);
-        }
-
-        offset += atom_size;
-    }
-}
+/* Forward declarations: parse_m4b (below) needs these, but they are defined
+ * later in the file. read_moov mmaps the moov atom regardless of its file
+ * position (so moov-at-end works) and returns its full body; parse_m4b reads
+ * mvhd + counts traks from that body instead of recursing with a fixed-size
+ * read buffer. The old parse_qt_atoms recursed into containers using the
+ * atom's declared end, which for a moov larger than the 256 KB read buffer
+ * walked past the allocation and overwrote the real mvhd duration with
+ * garbage, leaving every long M4B on a 128 kbps size-estimate fallback. */
+static uint8_t *read_moov(const char *path, int64_t *out_len,
+                          uint8_t **out_map, size_t *out_map_len);
+static int qt_find_child(const uint8_t *buf, int start, int end, uint32_t type,
+                         int *body_off, int *body_end);
 
 static void parse_m4b(const char *path, audio_tags_t *out) {
-    /* Read the first 256KB — enough for the moov atom in most audiobooks.
-     * For very large M4B files with moov at the end, we won't get duration,
-     * but that's acceptable for a minimal scanner. */
-    int read_len = 262144;
-    FILE *f = fopen(path, "rb");
-    if (!f) return;
-    uint8_t *buf = malloc(read_len);
-    if (!buf) { fclose(f); return; }
-    int n = fread(buf, 1, read_len, f);
-    fclose(f);
-    if (n < 8) { free(buf); return; }
+    /* Read the real moov via the mmap helper: it walks top-level atoms so
+     * moov-at-end works, and it maps the whole moov so mvhd is parsed from
+     * the true atom body (no fixed 256 KB read that over-reads past the
+     * buffer on large moovs and corrupts the duration). Falls back to a
+     * rough 128 kbps size estimate only if the moov genuinely cannot be
+     * read. */
+    int64_t moov_len = 0;
+    uint8_t *map = NULL;
+    size_t map_len = 0;
+    uint8_t *moov = read_moov(path, &moov_len, &map, &map_len);
 
-    out->embedded_chapters = 0;
-    parse_qt_atoms(buf, n, 0, n, out, 0);
+    if (moov) {
+        /* mvhd is a direct child of moov and carries the movie duration. */
+        int mvhd_b, mvhd_e;
+        if (qt_find_child(moov, 0, (int)moov_len, 0x6d766864 /* 'mvhd' */,
+                          &mvhd_b, &mvhd_e) &&
+            mvhd_e - mvhd_b >= 20) {
+            int version = moov[mvhd_b];
+            uint32_t timescale = qt_read32(moov + mvhd_b + 12);
+            uint64_t duration = 0;
+            if (version == 0) {
+                duration = qt_read32(moov + mvhd_b + 16);
+            } else if (mvhd_e - mvhd_b >= 24) {
+                duration = qt_read64(moov + mvhd_b + 20);
+            }
+            if (timescale > 0)
+                out->duration_ms = (int64_t)(duration * 1000 / timescale);
+        }
 
-    /* If we found trak atoms but no mvhd (moov might be at end of file),
-     * estimate duration from file size — rough M4B ~1MB/min at 128kbps */
+        /* Count trak atoms (direct children of moov): audio + chapter tracks. */
+        int off = 0;
+        while (off + 8 <= (int)moov_len) {
+            uint32_t size = qt_read32(moov + off);
+            uint32_t atype = qt_read32(moov + off + 4);
+            int64_t asize = (int64_t)size;
+            int hs = 8;
+            if (size == 1 && off + 16 <= (int)moov_len) {
+                asize = (int64_t)qt_read64(moov + off + 8);
+                hs = 16;
+            } else if (size == 0) {
+                asize = (int)moov_len - off;
+            }
+            if (asize < hs || off + asize > (int)moov_len) break;
+            if (atype == 0x7472616b /* 'trak' */) out->embedded_chapters++;
+            off += (int)asize;
+        }
+
+        if (map) munmap(map, map_len);
+        else free(moov);
+    }
+
+    /* Fallback: rough M4B ~1MB/min at 128kbps, only if moov/duration absent. */
     if (out->duration_ms == 0) {
         out->duration_ms = (out->file_size * 8000) / 128000;
     }
 
-    /* If more than 1 trak was found, first one is usually the audio track
-     * and the rest are chapter markers. Adjust count. */
+    /* >1 trak = audio + chapter tracks; first trak is the audio track. */
     if (out->embedded_chapters > 1) {
-        out->embedded_chapters--;  /* first trak is audio, not chapter */
+        out->embedded_chapters--;
     } else {
         out->embedded_chapters = 0;
     }
-
-    free(buf);
 }
 
 /* ---- M4B chapter parsing (Nero chpl + QuickTime chapter track) ---------- */
@@ -1027,16 +1122,16 @@ int audio_read_tags(const char *path, audio_tags_t *out) {
     if (type == 0) return -1;
 
     if (type == AUDIO_EXT_MP3) {
+        /* ID3 text tags (TIT2/TPE1/...) live in the first few KB of the tag,
+         * so the 64 KB read covers them. Duration is parsed separately by
+         * seeking past the ID3 tag to the first MPEG frame and reading the
+         * Xing/Info/VBRI header: a large embedded cover can push the first
+         * frame past 64 KB, and a VBR file's real duration is the frame
+         * count, not one frame's bitrate. */
         uint8_t buf[65536];
         int n = read_file_header(path, buf, sizeof(buf));
-        if (n > 10) {
-            parse_id3v2(buf, n, out);
-            if (out->duration_ms == 0) {
-                int bitrate = find_mp3_bitrate(buf, n);
-                out->duration_ms = audio_estimate_mp3_duration(out->file_size,
-                                                                bitrate);
-            }
-        }
+        if (n > 10) parse_id3v2(buf, n, out);
+        out->duration_ms = parse_mp3_duration(path, out->file_size);
     } else if (type == AUDIO_EXT_M4B || type == AUDIO_EXT_M4A) {
         parse_m4b(path, out);
     } else {
