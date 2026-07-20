@@ -1,10 +1,10 @@
 /* cover.h — cached cover-art loader for the Now Playing screen.
  *
  * Loads a book's external cover.jpg/png (path stored in books.cover_path),
- * decodes it with stb_image (single-header, compiled in cover_impl.c), downscales
- * to a small square, and converts to RGB565 for a fast scaled blit by the
- * renderer. One cover is cached at a time (the current book); the cache is
- * freed on book change or cover_shutdown. Decode failure / no cover → NULL
+ * decodes it with libjpeg (dlopen'd, JPEG) or pngdec (libz dlopen'd, PNG),
+ * downscales to a small square, and converts to RGB565 for a fast scaled blit
+ * by the renderer. One cover is cached at a time (the current book); the cache
+ * is freed on book change or cover_shutdown. Decode failure / no cover → NULL
  * (the UI then skips the cover and draws the existing layout, no gap).
  *
  * RAM-frugal: the decode buffer (full-res RGB8) is freed immediately after

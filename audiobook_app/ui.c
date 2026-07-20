@@ -5,7 +5,8 @@
  *
  * The home screen shows: Continue Listening, Titles, Authors, Series,
  * Folders, Finished, Refresh, Back. Touch items navigate to list/detail
- * screens. Back returns to the launcher.
+ * screens. Back returns to the launcher. (ADB is always on at boot via the
+ * firmware's S90adb init script when System -> USB working mode = Device.)
  */
 
 #include <stdio.h>
@@ -181,6 +182,51 @@ static int dup_hiby_input_fd(const char *devpath) {
     return out;
 }
 
+/* Find the Bluetooth AVRCP input device by scanning /sys/class/input for a
+ * device named "<something> (AVRCP)", and return its /dev/input/eventN path in
+ * `out` (size out_sz). Returns 1 if found, 0 if none (no BT remote connected).
+ * The device is created dynamically by BlueZ when a BT A2DP sink connects, so
+ * it may not exist at app start. */
+static int find_avrcp_dev(char *out, size_t out_sz) {
+    DIR *d = opendir("/sys/class/input");
+    if (!d) return 0;
+    struct dirent *de;
+    int found = 0;
+    while ((de = readdir(d)) != NULL) {
+        if (strncmp(de->d_name, "event", 5) != 0) continue;
+        char p[128];
+        snprintf(p, sizeof(p), "/sys/class/input/%s/device/name", de->d_name);
+        int fd = open(p, O_RDONLY);
+        if (fd < 0) continue;
+        char nm[96] = {0};
+        ssize_t n = read(fd, nm, sizeof(nm) - 1);
+        close(fd);
+        if (n <= 0) continue;
+        if (n && nm[n-1] == '\n') nm[n-1] = '\0';
+        if (strstr(nm, "(AVRCP)")) {
+            snprintf(out, out_sz, "/dev/input/%s", de->d_name);
+            found = 1;
+            break;
+        }
+    }
+    closedir(d);
+    return found;
+}
+
+/* (Re)open the AVRCP remote fd if not already open and the BT link is up.
+ * Idempotent; safe to call from the event loop. */
+static void avrcp_open(ui_state_t *ui) {
+    if (ui->avrcp_fd >= 0) return;
+    char dev[64];
+    if (!find_avrcp_dev(dev, sizeof(dev))) return;
+    int fd = dup_hiby_input_fd(dev);   /* in case hiby_player grabbed it */
+    if (fd < 0) fd = open(dev, O_RDONLY | O_NONBLOCK);
+    if (fd >= 0) {
+        ui->avrcp_fd = fd;
+        ui_log("[ui] AVRCP remote fd=%d (%s)\n", fd, dev);
+    }
+}
+
 static int open_input(ui_state_t *ui) {
     ui->input_fd = open("/dev/input/event1", O_RDONLY | O_NONBLOCK);
     if (ui->input_fd < 0) {
@@ -214,6 +260,8 @@ static int open_input(ui_state_t *ui) {
         }
     }
     ui->key_fd = -1;  /* legacy field unused */
+    ui->avrcp_fd = -1;
+    avrcp_open(ui);   /* BT remote may already be connected at app start */
     return ui->input_fd >= 0 ? 0 : -1;
 }
 
@@ -226,6 +274,7 @@ static void close_input(ui_state_t *ui) {
         if (ui->key_fds[i] >= 0) close(ui->key_fds[i]);
     ui->n_key_fds = 0;
     if (ui->key_fd >= 0) close(ui->key_fd);
+    if (ui->avrcp_fd >= 0) { close(ui->avrcp_fd); ui->avrcp_fd = -1; }
 }
 
 /* ---- Screen blank (power button) --------------------------------------- */
@@ -527,6 +576,19 @@ int ui_run(uint16_t *fb, int fb_fd) {
                 if (ui->key_fds[i] > maxfd) maxfd = ui->key_fds[i];
             }
         }
+        /* AVRCP remote: (re)open if the BT link came up since last tick, and
+         * include it in the select set. */
+        if (ui->avrcp_fd < 0) {
+            uint64_t now = now_ms();
+            if (now >= ui->avrcp_next_open_ms) {
+                avrcp_open(ui);
+                ui->avrcp_next_open_ms = now + 2000;  /* retry every 2s */
+            }
+        }
+        if (ui->avrcp_fd >= 0) {
+            FD_SET(ui->avrcp_fd, &rfds);
+            if (ui->avrcp_fd > maxfd) maxfd = ui->avrcp_fd;
+        }
         struct timeval timeout;
         timeout.tv_sec = 0;
         timeout.tv_usec = 20000;  /* 20ms — short so we can pan promptly */
@@ -608,6 +670,30 @@ int ui_run(uint16_t *fb, int fb_fd) {
                                 break;
                         }
                     }
+                }
+            }
+            /* Bluetooth AVRCP remote (BT speaker's play/pause button). The one
+             * button alternates KEY_PLAYCD(200)/KEY_PAUSECD(201) per press; we
+             * treat both (and the generic KEY_PLAYPAUSE if a remote sends it)
+             * as a single toggle, so each press flips play/pause regardless of
+             * the remote's internal state guess. */
+            if (ui->avrcp_fd >= 0 && FD_ISSET(ui->avrcp_fd, &rfds)) {
+                struct input_event ev;
+                ssize_t r;
+                while ((r = read(ui->avrcp_fd, &ev, sizeof(ev))) == sizeof(ev)) {
+                    if (ev.type != EV_KEY || ev.value != 1) continue;
+                    ui_log("[ui] AVRCP key code=%d (0x%x)\n", ev.code, ev.code);
+                    if (ev.code == KEY_PLAYCD      /* 200 */
+                        || ev.code == KEY_PAUSECD  /* 201 */
+                        || ev.code == KEY_PLAYPAUSE /* 164 (some remotes) */
+                        || ev.code == KEY_PLAY      /* 200 alias */ ) {
+                        player_toggle();
+                    }
+                }
+                if (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                    /* Link gone (BT disconnected) — close so we reopen later. */
+                    ui_log("[ui] AVRCP read err (%s); closing\n", strerror(errno));
+                    close(ui->avrcp_fd); ui->avrcp_fd = -1;
                 }
             }
         }

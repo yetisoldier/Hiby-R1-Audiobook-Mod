@@ -1,29 +1,36 @@
 /* cover.c — cached cover-art loader using libjpeg (dlopen'd) with
- * downscale-on-decode.
+ * downscale-on-decode, plus a streaming PNG path (pngdec.c, over dlopen'd
+ * libz) for .png covers.
  *
- * The device's covers are large JPEGs (2400x2400 is typical). Decoding one at
+ * The device's covers are large images (2400x2400 is typical). Decoding one at
  * full resolution needs a ~17 MB buffer (w*h*3), but the device has only ~16 MB
  * free while hiby_player runs — that OOMs (stb_image, which decodes 1:1, hit
  * exactly this: "outofmem"). libjpeg's scale_num/scale_denom decodes the JPEG
  * directly to 1/8 (or 1/4 / 1/2) size by skipping DCT coefficients, so the
  * decode buffer stays tiny (300x300x3 ≈ 270 KB; on-device probe measured
  * ~436 kB peak RSS for the whole decode). We then downscale to COVER_PX
- * (180x180) RGB565 and cache that.
+ * (180x180) RGB565 and cache that. PNG covers have no scale-on-decode in any
+ * library, so pngdec.c streams the IDAT over dlopen'd libz and downsamples
+ * row-by-row (~150 KB peak) — same memory discipline as the JPEG path.
  *
- * libjpeg is dlopen'd OPTIONAL (same pattern as fdk-aac / ALSA): missing →
- * covers just don't render (no crash). PNG covers aren't supported by this
- * path (libjpeg is JPEG-only); cover_get returns NULL for them and the UI
- * skips the cover with no gap. All books on this device use cover.jpg.
+ * libjpeg + libz are both dlopen'd OPTIONAL (same pattern as fdk-aac / ALSA):
+ * missing → covers just don't render (no crash). Unsupported PNG variants
+ * (interlaced, palette, non-8-bit) bail to "no cover", and progressive JPEGs
+ * too big for free RAM bail via the memory cap (small/medium progressive JPEGs
+ * decode fine) — cover_get returns NULL and the UI skips the cover with no gap.
  *
  * RAM: only the 64.5 KB RGB565 cover is retained (one-book cache); the
  * full-res decode is row-streamed + freed immediately.
  */
 #include "cover.h"
 
+#include "pngdec.h"    /* streaming PNG -> RGB565 (libz dlopen'd) */
+
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <setjmp.h>
 #include <dlfcn.h>
 
@@ -103,6 +110,23 @@ static void my_error_exit(j_common_ptr cinfo) {
     longjmp(g_jmp, 1);
 }
 
+/* Current free RAM in kB (MemAvailable from /proc/meminfo). Used to cap how
+ * much memory libjpeg may allocate when decoding a cover, so a progressive
+ * JPEG — which must buffer ALL DCT coefficients (no streaming downscale) and
+ * can need ~11 MB for a 2400x2400 cover — never trips the kernel OOM-killer
+ * (which would freeze the whole device). Returns a moderate fallback if the
+ * file can't be read. */
+static long read_mem_avail_kb(void) {
+    FILE *f = fopen("/proc/meminfo", "r");
+    if (!f) return 8192;
+    char line[128]; long v = -1;
+    while (fgets(line, sizeof line, f)) {
+        if (!strncmp(line, "MemAvailable:", 13)) { v = atol(line + 13); break; }
+    }
+    fclose(f);
+    return v > 0 ? v : 8192;
+}
+
 /* Pick the largest scale_denom (1/2/4/8) whose output is still >= px on the
  * image's larger axis — keeps the decode buffer minimal without blurring
  * (covers smaller than 2*px decode 1:1, then we downscale). */
@@ -138,17 +162,28 @@ static int decode_cover_to(const char *cover_path, int px, uint16_t *out) {
     x_stdio_src(&cinfo, fp);
     x_read_header(&cinfo, TRUE);
 
-    /* Progressive JPEG guard. IJG libjpeg (the device's libjpeg 9.x — NOT
-     * libjpeg-turbo) must buffer ALL DCT coefficients to decode a progressive
-     * JPEG, even with scale_denom downscale. For a 2400x2400 cover that's a
-     * ~16 MB coefficient buffer (vs ~300 KB for a baseline JPEG's single-pass
-     * DCT scaling). On this 56 MB / ~12 MB-available-while-running device that
-     * allocation trips the kernel OOM-killer → hiby_player killed → hard freeze
-     * (confirmed on-device: a progressive cover decode under 8 MB pressure
-     * crashed the whole device; baseline covers stayed flat). Bail BEFORE
-     * start_decompress (which is where the buffer is allocated) — the cover
-     * just won't render (graceful, no gap), same as a missing/non-JPEG cover. */
-    if (cinfo.progressive_mode) longjmp(g_jmp, 1);
+    /* Memory cap instead of an unconditional progressive bail. IJG libjpeg
+     * (the device's libjpeg 9.x — NOT libjpeg-turbo) must buffer ALL DCT
+     * coefficients to decode a progressive JPEG, even with scale_denom
+     * downscale. A 2400x2400 cover needs ~11 MB of coefficients; on this 56 MB
+     * / ~handful-of-MB-free device that allocation trips the kernel OOM-killer
+     * → hiby_player killed → hard freeze. The earlier fix bailed on ALL
+     * progressive JPEGs, but most covers are small (300..1000px) and decode
+     * fine — that bail dropped covers for ~half the library. Instead, cap
+     * libjpeg's own tracked memory to (free RAM - 3 MB margin), clamped to a
+     * hard ceiling. libjpeg checks the cap when allocating the coefficient
+     * buffer and refuses it (→ our longjmp) BEFORE touching the pages, so a
+     * too-big progressive is rejected with no allocation and no OOM-kill. A
+     * progressive that fits under the cap renders normally; baseline JPEGs
+     * use only a tiny single-pass buffer and are unaffected. Verified
+     * on-device: 2400² progressive bails gracefully (avail unchanged), while
+     * 300²/500²/1000² progressive and all baseline covers render. */
+    {
+        long cap = read_mem_avail_kb() - 3072;  /* leave 3 MB for app/player/UI */
+        if (cap > 8192) cap = 8192;             /* hard ceiling */
+        if (cap < 1024) cap = 1024;             /* always allow small/baseline */
+        cinfo.mem->max_memory_to_use = cap * 1024;
+    }
 
     cinfo.scale_num = 1;
     cinfo.scale_denom = pick_denom((int)cinfo.image_width, (int)cinfo.image_height, px);
@@ -186,7 +221,8 @@ static int decode_cover_to(const char *cover_path, int px, uint16_t *out) {
 
 /* ---- persistent on-SD RGB565 cache -------------------------------------- *
  * The first time a cover is needed we decode it (libjpeg, ~300 kB transient
- * for a baseline JPEG; progressive JPEGs bail safely via the guard above) and
+ * for a baseline JPEG; progressive JPEGs that fit under the memory cap decode
+ * too, and ones too big for free RAM bail gracefully via the longjmp above) and
  * write the small px*px RGB565 next to the source as "<cover>.NN.r565".
  * Every later request — across reboots — just reads that file: no libjpeg, no
  * decode transient, no OOM risk, instant. The in-RAM cache (cover_get / thumb
@@ -238,8 +274,12 @@ static uint16_t *load_or_decode(const char *cover_path, int px) {
 
     if (load_r565(rpath, px, out)) return out;   /* cache hit on SD */
 
-    /* Miss: decode, persist, return. */
-    if (!decode_cover_to(cover_path, px, out)) { free(out); return NULL; }
+    /* Miss: decode (JPEG via libjpeg, PNG via pngdec), persist, return. */
+    const char *dote = strrchr(cover_path, '.');
+    int is_png = dote && (!strcmp(dote, ".png") || !strcmp(dote, ".PNG"));
+    int ok = is_png ? png_decode_to_rgb565(cover_path, px, out)
+                    : decode_cover_to(cover_path, px, out);
+    if (!ok) { free(out); return NULL; }
     save_r565(rpath, px, out);
     return out;
 }
@@ -257,12 +297,14 @@ const uint16_t *cover_get(sqlite3 *db, int book_id) {
     if (audiobook_get_book(db, book_id, &b) <= 0) return NULL;
     if (!b.cover_path[0]) return NULL;
 
-    /* Only attempt JPEG covers (libjpeg is JPEG-only). A .png/.jpeg check here
-     * keeps a PNG cover from wasting a dlopen + failed fopen-jpeg cycle. */
+    /* Only attempt image covers we can decode: JPEG (libjpeg) or PNG
+     * (pngdec/libz). The extension check keeps an unknown format from wasting
+     * a dlopen + failed-decode cycle. */
     const char *dot = strrchr(b.cover_path, '.');
     if (!dot) return NULL;
     if (strcmp(dot, ".jpg") != 0 && strcmp(dot, ".JPG") != 0 &&
-        strcmp(dot, ".jpeg") != 0 && strcmp(dot, ".JPEG") != 0)
+        strcmp(dot, ".jpeg") != 0 && strcmp(dot, ".JPEG") != 0 &&
+        strcmp(dot, ".png") != 0 && strcmp(dot, ".PNG") != 0)
         return NULL;
 
     s_cache_buf = load_or_decode(b.cover_path, COVER_PX);
@@ -312,7 +354,8 @@ int cover_thumb_prewarm(sqlite3 *db, int book_id) {
     const char *dot = strrchr(b.cover_path, '.');
     if (!dot) return 0;
     if (strcmp(dot, ".jpg") != 0 && strcmp(dot, ".JPG") != 0 &&
-        strcmp(dot, ".jpeg") != 0 && strcmp(dot, ".JPEG") != 0)
+        strcmp(dot, ".jpeg") != 0 && strcmp(dot, ".JPEG") != 0 &&
+        strcmp(dot, ".png") != 0 && strcmp(dot, ".PNG") != 0)
         return 0;
 
     uint16_t *buf = load_or_decode(b.cover_path, COVER_THUMB_PX);

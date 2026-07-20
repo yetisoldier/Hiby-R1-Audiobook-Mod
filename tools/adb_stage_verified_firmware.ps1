@@ -52,6 +52,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Resolve Python: on Windows, the "python" stub in WindowsApps may not work.
+$_pyOk = $true
+try { $_pyVer = & python --version 2>&1; if ($LASTEXITCODE -ne 0) { $_pyOk = $false } } catch { $_pyOk = $false }
+if (-not $_pyOk) {
+    function python { & py -3 @args }
+}
+
 $KnownBadMd5 = @(
     # Flashed on 2026-06-09; rootfs repack left hiby_player non-executable.
     "2dc1152f096e84b3b8b52f809fc30e59",

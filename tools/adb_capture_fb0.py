@@ -73,12 +73,33 @@ def rgb565_to_png(raw: bytes) -> bytes:
     )
 
 
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+def validate_png(path: Path) -> None:
+    """Verify the file starts with valid PNG magic bytes.
+
+    Raises RuntimeError if validation fails so callers can catch it before
+    the bad file ever reaches an API or image viewer.
+    """
+    data = path.read_bytes()
+    if len(data) < len(PNG_MAGIC):
+        raise RuntimeError(f"PNG validation failed: {path} is only {len(data)} bytes")
+    if not data.startswith(PNG_MAGIC):
+        raise RuntimeError(
+            f"PNG validation failed: {path} does not start with PNG magic bytes "
+            f"(expected {PNG_MAGIC.hex()}, got {data[:len(PNG_MAGIC)].hex()})"
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--adb", default=DEFAULT_ADB)
     parser.add_argument("--output", type=Path, default=Path("work/fb0_capture.png"))
     parser.add_argument("--raw-output", type=Path)
     parser.add_argument("--remote-raw", default="/usr/data/fb0-codex-capture.raw")
+    parser.add_argument("--verify", action="store_true", default=True, help="Validate PNG magic bytes after capture (default: on)")
+    parser.add_argument("--no-verify", action="store_true", help="Skip PNG validation")
     args = parser.parse_args()
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -96,8 +117,15 @@ def main() -> int:
     raw = raw_output.read_bytes()
     png = rgb565_to_png(raw)
     args.output.write_bytes(png)
+
+    do_verify = args.verify and not args.no_verify
+    if do_verify:
+        validate_png(args.output)
+        print(f"png: {args.output} ({len(png)} bytes) [validated OK]")
+    else:
+        print(f"png: {args.output} ({len(png)} bytes) [validation skipped]")
+
     print(f"raw: {raw_output} ({len(raw)} bytes)")
-    print(f"png: {args.output} ({len(png)} bytes)")
     return 0
 
 

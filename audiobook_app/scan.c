@@ -16,8 +16,10 @@
 #include <unistd.h>
 #include <errno.h>
 #include <time.h>
+#include <stdint.h>
 #include "scan.h"
 #include "tags.h"
+#include "posstore.h"      /* pos_remove_sd: drop stale SD .pos for pruned books */
 
 /* ---- Limits ------------------------------------------------------------- */
 
@@ -589,6 +591,21 @@ static void find_cover_art(const char *dir_path, char *out, int out_len) {
     }
 }
 
+/* Hash a book_key to a 16-char hex name for the embedded-cover cache file.
+ * A long book_path can sanitize to a book_key longer than MAX_PATH_LEN once
+ * prefixed with the cache dir; the hash keeps cache filenames short and
+ * fixed-width regardless. FNV-1a 64-bit is deterministic, so a re-scan reuses
+ * the same cache file (idempotent overwrites via "wb"). Collisions across a
+ * realistic library are negligible. */
+static void cover_cache_name(const char *book_key, char *out, int out_len) {
+    uint64_t h = 1469598103934665603ULL;  /* FNV-1a offset basis */
+    for (const char *p = book_key; *p; p++) {
+        h ^= (uint8_t)*p;
+        h *= 1099511628211ULL;
+    }
+    snprintf(out, out_len, "%016llx", (unsigned long long)h);
+}
+
 /* ---- Main scan ---------------------------------------------------------- */
 
 int audiobook_scan_library(sqlite3 *db, const char *root_path,
@@ -627,6 +644,14 @@ int audiobook_scan_library(sqlite3 *db, const char *root_path,
     find_book_dirs(root_path, root_path, &books, &book_count, &capacity);
 
     if (progress) progress(1, 0, book_count, "found books", ctx);
+
+    /* Ensure the embedded-cover cache dir exists on the SD card (next to the
+     * library root). Embedded covers extracted from audio metadata (M4B covr
+     * / MP3 APIC) are written here as <hash>.jpg; the cover decoder then reads
+     * them through its normal JPEG + .r565 cache path. Best-effort: ignore
+     * EEXIST; if the dir can't be created, embedded-cover extraction below
+     * simply fails to write and those books show no cover (non-fatal). */
+    mkdir(AUDIOBOOK_LIBRARY_ROOT "/.covercache", 0755);
 
     /* Ensure library_roots entry exists */
     sqlite3_stmt *lr_stmt = NULL;
@@ -667,9 +692,27 @@ int audiobook_scan_library(sqlite3 *db, const char *root_path,
         char sort_title[512];
         audiobook_derive_sort_title(title, sort_title, sizeof(sort_title));
 
-        /* Find cover art */
+        /* Find cover art. First a separate cover image in the book folder
+         * (cover.jpg/folder.jpg/...); if none, fall back to the embedded cover
+         * art in the primary track's metadata (M4B covr atom / MP3 APIC frame),
+         * extracted to the shared .covercache dir on the SD card as a .jpg or
+         * .png depending on the embedded type. The cover decoder then reads
+         * that image through its normal libjpeg/pngdec + .r565 cache path,
+         * identical to a separate cover file. */
         char cover_path[MAX_PATH_LEN];
         find_cover_art(bd->path, cover_path, sizeof(cover_path));
+        if (!cover_path[0] && bd->file_count > 0) {
+            char cname[24];
+            cover_cache_name(book_key, cname, sizeof(cname));
+            char cache_base[MAX_PATH_LEN], cache_path[MAX_PATH_LEN];
+            snprintf(cache_base, sizeof(cache_base),
+                     AUDIOBOOK_LIBRARY_ROOT "/.covercache/%s", cname);
+            if (audio_extract_cover(bd->files[0].path, cache_base,
+                                    cache_path, sizeof(cache_path)) == 1) {
+                strncpy(cover_path, cache_path, sizeof(cover_path) - 1);
+                cover_path[sizeof(cover_path) - 1] = '\0';
+            }
+        }
 
         /* Derive author/series from the path convention
          * /Audiobooks/<Author>/<Series>/<leaf>/. */
@@ -900,6 +943,9 @@ int audiobook_cleanup_orphans(sqlite3 *db, scan_progress_cb progress,
             sqlite3_step(del);
             sqlite3_finalize(del);
         }
+        /* Drop the SD position file too so stale .pos don't accumulate for
+         * books whose folder is gone. */
+        pos_remove_sd(dead_ids[i]);
         removed++;
     }
 

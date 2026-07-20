@@ -56,4 +56,15 @@ typedef int (*chapter_cb)(int ordinal, const char *title,
  * none found (caller should fall back to a placeholder). */
 int audio_read_chapters(const char *path, chapter_cb cb, void *ctx);
 
+/* Extract the embedded cover art from a file's metadata and write it as a
+ * JPEG (<out_base>.jpg) or PNG (<out_base>.png) depending on the detected
+ * image type, copying the actual path written into out_path. M4B/M4A: the
+ * moov/udta/meta/ilst/covr 'data' atom (iTunes type flag 0x0d = JPEG, 0x0e =
+ * PNG; confirmed against the byte signature). MP3: an ID3v2 APIC frame (the
+ * image bytes after the encoding/MIME/pic-type/description prefix). Unsupported
+ * formats are skipped. Returns 1 if an image was written, 0 if no supported
+ * embedded cover was found or the write failed. */
+int audio_extract_cover(const char *track_path, const char *out_base,
+                        char *out_path, size_t out_path_len);
+
 #endif /* AUDIOBOOK_TAGS_H */

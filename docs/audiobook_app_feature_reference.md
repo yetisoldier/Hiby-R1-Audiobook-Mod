@@ -3,6 +3,41 @@
 This note maps common audiobook-player features to practical R1 firmware work.
 It is a planning document, not release behavior.
 
+> **STALE — predates the NativeApp pivot (2026-07-17).** This document was
+> written 2026-06-11 about the *resume-daemon / stock-route* approach. The
+> device now runs the **NativeApp pivot** (`-IncludeAudiobookNativeApp`), a
+> self-contained in-process audiobook app (`audiobook_app/`, LD_PRELOAD hook
+> into `hiby_player`). Many items listed below as "Hard Or Risky" or "Good Next
+> Candidates" are now **implemented** — see the "Already Covered (NativeApp)"
+> section below and the per-feature memory files in
+> `C:\Users\yetis\.claude\projects\C--Users-yetis\memory\` (e.g.
+> `Hiby-R1-wsola-speed-findings.md`, `Hiby-R1-m4b-chapters-fix.md`,
+> `Hiby-R1-cover-art-findings.md`, `Hiby-R1-thumbprewarm-starvation.md`).
+> Treat the resume-daemon sections as historical context only.
+
+## Already Covered (NativeApp pivot — current)
+
+These are implemented and confirmed on-device in the NativeApp build, on top of
+the original resume/sequential-playback foundation:
+
+- Offline local playback; per-book + multipart resume across reboot/switch.
+- Now Playing screen with cover art (IJG libjpeg, scale-on-decode, progressive
+  skip), title/author/duration, draggable progress handle (scrub seek).
+- Hardware buttons: power (backlight toggle), play/pause, prev/next, vol±
+  (fine-stepped + hold-to-ramp).
+- **Playback speed 1.0/1.1/1.25/1.5× via WSOLA time-stretch** (pitch
+  preserved; 1.0× exact passthrough). Persists via `playback_speed` setting.
+- **Sleep timer** (Off/15/30/60 min, live countdown, auto-pause + save).
+- **Bookmarks**: add from Now Playing ("Mark"), tap to jump, long-press to
+  delete.
+- **M4B/AAC playback** (dlopen'd `libfdk-aac`, self-contained `mp4_audio.c`).
+- **M4B embedded chapters**: parsed from Nero `chpl` or QuickTime chapter track
+  (stsc-based sample resolution — handles multi-sample chunks); re-read at
+  scan time (Home → Refresh). MP3 books get one synthesized chapter per track.
+- Library lists (Titles/Authors/Series/Folders/Finished) with on-demand
+  thumbnails (progressive-JPEG-guarded pre-warm).
+- Swipe left → Now Playing.
+
 Sources checked on 2026-06-11:
 
 - Audible Google Play listing:
@@ -39,13 +74,18 @@ organization. On the R1, the realistic split is:
 
 ## Hard Or Risky
 
-- Playback speed: likely requires deeper stock player/audio pipeline support.
-  Do not assume the resume daemon can implement this cleanly.
-- Notes/bookmarks UI: storing bookmarks is easy; creating a usable on-device UI
-  to add/select them is the hard part.
-- True chapter list for M4B metadata: the current practical chapter model is
-  one file per chapter/part. Parsing embedded M4B chapters would need a deeper
-  metadata path.
+> Most of the items below were "hard" under the old resume-daemon/stock-route
+> model. Under the NativeApp pivot they are now DONE — annotations marked
+> **[DONE]**. Kept for history.
+
+- **[DONE]** Playback speed: WSOLA time-stretch in the NativeApp (pitch
+  preserved). See `Hiby-R1-wsola-speed-findings.md`.
+- **[DONE]** Notes/bookmarks UI: add/jump/hold-to-delete in the NativeApp.
+  See `Hiby-R1-...` bookmarks memory.
+- **[DONE]** True chapter list for M4B metadata: embedded M4B chapters parsed
+  (Nero `chpl` + QuickTime chapter track via stsc). See
+  `Hiby-R1-m4b-chapters-fix.md`.
+- **[DONE]** Sleep timer: Off/15/30/60 min in the NativeApp.
 - Car Mode or lock-screen style UI: not a good fit for the R1 screen/UI stack.
 
 ## Suggested Order

@@ -30,6 +30,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
 #include <unistd.h>
@@ -314,6 +315,15 @@ static void crash_handler(int sig, siginfo_t *info, void *ctx) {
 }
 
 /* ---- Constructor (runs before hiby_player main) ------------------------- */
+
+/* ADB is now always-on at boot via the firmware's /etc/init.d/S90adb script
+ * (enabled in the build with -EnableBootAdb). S90adb runs from rcS at boot and
+ * calls the stock T90adb helper, but only when System -> USB working mode is
+ * "Device" (mode 1) — so it stays out of the way of USB-DAC and other USB
+ * modes. ADB and USB-DAC share the single USB gadget controller and are thus
+ * mutually exclusive by design; the USB working mode setting picks one. The
+ * old audiobook-app "ADB (durable)" toggle and its hook-side poll are removed
+ * — there is no longer any marker file or hook involvement in ADB. */
 
 __attribute__((constructor))
 static void hook_init(void) {

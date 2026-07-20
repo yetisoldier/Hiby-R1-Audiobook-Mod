@@ -26,7 +26,6 @@ typedef enum {
     SCREEN_NOW_PLAYING,
     SCREEN_BOOKMARKS,
     SCREEN_CHAPTERS,
-    SCREEN_SETTINGS,
 } ui_screen_t;
 
 /* List view modes (what SCREEN_LIST shows) */
@@ -55,6 +54,16 @@ typedef struct {
     int key_fd;              /* legacy: /dev/input/event2 fresh open or -1 */
     int key_fds[4];
     int n_key_fds;
+
+    /* Bluetooth AVRCP remote (e.g. a BT speaker's play/pause button). The
+     * speaker registers a virtual input device "/dev/input/event<n>" named
+     * "<device> (AVRCP)" when connected; it appears/disappears with the BT
+     * link, so we (re)open it lazily and retry periodically. Not EVIOCGRABbed
+     * by hiby_player (it didn't exist at its startup), so a fresh open works.
+     * Codes seen on a Sony SRS-XB43: KEY_PLAYCD=200 / KEY_PAUSECD=201 (the one
+     * play/pause button alternates between them). We treat both as a toggle. */
+    int avrcp_fd;
+    uint64_t avrcp_next_open_ms;
 
     /* Screen blank (power button). Lightweight: backlight off only — we keep
      * panning so the touch IC stays alive (enables double-tap wake) and the

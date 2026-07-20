@@ -47,11 +47,16 @@
 #include <dlfcn.h>
 #include <time.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <dirent.h>
+#include <ctype.h>
 #include <math.h>
 #include "player.h"
 #include "tags.h"          /* audio_file_type / AUDIO_EXT_* */
 #include "mp4_audio.h"     /* M4B/AAC demux (AAC decode via dlopen'd fdk-aac) */
 #include "wsola.h"         /* pitch-preserving time-stretch (speed != 1.0x) */
+#include "posstore.h"      /* SD-primary position store (never lost to full /usr/data) */
 
 /* ---- logging ----------------------------------------------------------- */
 static void plog(const char *fmt, ...) {
@@ -238,6 +243,15 @@ enum {
 };
 enum { DEC_MP3 = 0, DEC_AAC = 1 };
 
+/* Audio output sink. WIRED = the CS43131 wired DAC (plughw:0,0/hw:0,0); BT =
+ * BlueALSA A2DP (the predefined `pcm.bluealsa` plug device, auto rate/format
+ * conversion). Auto-detect per track-open: BT when an A2DP sink is connected,
+ * else wired. force_wired is set by the mid-playback fallback so the rest of
+ * the current track stays wired; cleared at the next track-open so detection
+ * re-runs. bt_fell_back guards one fallback per track (no close/reopen loop). */
+#define OUT_WIRED 0
+#define OUT_BT    1
+
 static struct {
     sqlite3 *db;
     pthread_t thread;
@@ -311,6 +325,19 @@ static struct {
     long mix_min, mix_max;   /* mixer value range (0..255) */
     int volume_pct;          /* 0..100, 100 = loudest */
     int mixer_ok;
+
+    /* Bluetooth output (BlueALSA A2DP). output selects the active sink; the
+     * BT mixer (ctl.bluealsa) is opened lazily on first BT output and closed
+     * when we switch back to wired. bt_pcm_path is the org.bluealsa PCM path
+     * from `bluealsa-cli list-pcms` (logging only; we open the predefined
+     * `bluealsa` plug device, which auto-selects the most-recent BT sink). */
+    int output;              /* OUT_WIRED or OUT_BT */
+    int force_wired;         /* sticky: stay wired for the rest of this track */
+    int bt_fell_back;        /* one fallback per track (no close/reopen loop) */
+    char bt_pcm_path[128];
+    void *bt_mixer;          /* snd_mixer_t* for ctl.bluealsa (NULL if none) */
+    void *bt_mix_elem;       /* first playback-volume element in bt_mixer */
+    long bt_mix_min, bt_mix_max;
 } g_pl;
 
 /* ---- minimp3_ex I/O callbacks (wired to g_pl.track_fd) ------------------ */
@@ -370,6 +397,16 @@ static void vol_save(int pct) {
 }
 
 static void mix_apply(void) {
+    if (g_pl.output == OUT_BT) {
+        /* BlueALSA A2DP volume is linear 0=silent..max=loud (NOT inverted like
+         * the CS43131 DAC). If the BT mixer couldn't be opened, no-op (matches
+         * the "missing lib/ctl -> no-op" discipline). */
+        if (!g_pl.bt_mixer || !g_pl.bt_mix_elem) return;
+        long range = g_pl.bt_mix_max - g_pl.bt_mix_min;
+        long v = g_pl.bt_mix_min + (long)(g_pl.volume_pct * range / 100);
+        x_snd_mixer_selem_set_playback_volume_all(g_pl.bt_mix_elem, v);
+        return;
+    }
     if (!g_pl.mixer_ok) return;
     long v = pct_to_mix(g_pl.volume_pct);
     if (g_pl.mix_left)  x_snd_mixer_selem_set_playback_volume_all(g_pl.mix_left, v);
@@ -477,6 +514,65 @@ static int load_book_tracks(int book_id) {
     return g_pl.track_count;
 }
 
+/* ---- SD-primary position store (see posstore.h) ----------------------- */
+
+static void pos_dir_ensure(void) {
+    /* Idempotent: ignore the EEXIST case (mkdir returns -1 either way, we
+     * don't care which). If the SD is gone or read-only, the open() in
+     * pos_save_sd simply fails and position falls back to the library.db
+     * mirror — never silently lost mid-save. */
+    (void)mkdir(POS_DIR, 0777);
+}
+
+void pos_save_sd(int book_id, int track_ordinal, int64_t track_pos_ms,
+                 int64_t book_elapsed_ms, int completed) {
+    if (book_id <= 0) return;
+    pos_dir_ensure();
+    char path[160], tmp[160];
+    snprintf(path, sizeof path, "%s/%d.pos", POS_DIR, book_id);
+    snprintf(tmp,  sizeof tmp,  "%s/%d.pos.tmp", POS_DIR, book_id);
+    FILE *f = fopen(tmp, "w");
+    if (!f) return;
+    /* track_ordinal (1-based) + within-track pos + book-elapsed + completed +
+     * timestamp. fscanf on load skips whitespace (incl newlines) between
+     * fields, so the separator choice doesn't matter. */
+    fprintf(f, "%d\n%lld\n%lld\n%d\n%ld\n", track_ordinal,
+            (long long)track_pos_ms, (long long)book_elapsed_ms,
+            completed ? 1 : 0, (long)time(NULL));
+    fclose(f);
+    /* Rename within one directory is a single exFAT metadata op, so the .pos
+     * is never seen half-written. On rename failure (SD pulled mid-write)
+     * drop the tmp and leave the previous .pos intact. */
+    if (rename(tmp, path) != 0) unlink(tmp);
+}
+
+int pos_load_sd(int book_id, int *track_ordinal, int64_t *track_pos_ms,
+                int64_t *book_elapsed_ms, int *completed) {
+    if (book_id <= 0) return 0;
+    char path[160];
+    snprintf(path, sizeof path, "%s/%d.pos", POS_DIR, book_id);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    int ord = 0, done = 0; long long tp = 0, be = 0; long ts = 0;
+    int n = fscanf(f, "%d %lld %lld %d %ld", &ord, &tp, &be, &done, &ts);
+    fclose(f);
+    if (n < 3) return 0;   /* corrupt/truncated: ignore, fall back to library.db */
+    if (track_ordinal)   *track_ordinal   = ord;
+    if (track_pos_ms)    *track_pos_ms    = (int64_t)tp;
+    if (book_elapsed_ms) *book_elapsed_ms = (int64_t)be;
+    if (completed)       *completed       = done;
+    return 1;
+}
+
+void pos_remove_sd(int book_id) {
+    if (book_id <= 0) return;
+    char path[160];
+    snprintf(path, sizeof path, "%s/%d.pos", POS_DIR, book_id);
+    unlink(path);
+    snprintf(path, sizeof path, "%s/%d.pos.tmp", POS_DIR, book_id);
+    unlink(path);
+}
+
 /* ---- progress persistence ---------------------------------------------- */
 
 static void save_progress(int completed) {
@@ -495,6 +591,12 @@ static void save_progress(int completed) {
     p.completed = completed;
     p.completed_at = completed ? (int)time(NULL) : 0;
     p.last_saved_at = (int)time(NULL);
+    /* SD is authoritative: a full /usr/data can never lose the place. The
+     * library.db write below is a best-effort mirror for the list view's "%"
+     * display, so its return is intentionally ignored — if /usr/data is full
+     * the mirror goes stale but the SD file holds the real position. */
+    pos_save_sd(g_pl.book_id, p.track_ordinal, p.position_ms,
+                p.total_book_elapsed_ms, completed);
     audiobook_save_progress(g_pl.db, &p);
 }
 
@@ -530,47 +632,304 @@ static void close_pcm(void) {
     if (g_pl.pcm) { x_snd_pcm_drop(g_pl.pcm); x_snd_pcm_close(g_pl.pcm); g_pl.pcm = NULL; }
 }
 
-/* Configure ALSA for (rate, channels). Opens plughw:0,0 once; reconfigures
- * on each track. Returns 0 on success. */
-static int setup_alsa(long rate, int channels) {
-    if (!g_pl.pcm) {
-        /* The PCM is sometimes transiently busy at audiobook-mode entry (a
-         * prior holder hasn't released it yet). Retry for ~1s before giving up
-         * so a single Play tap reliably opens the device instead of failing. */
-        const char *devs[] = { "plughw:0,0", "hw:0,0" };
-        int opened = 0;
-        for (int d = 0; d < 2 && !opened; d++) {
-            for (int attempt = 0; attempt < 5; attempt++) {
-                if (x_snd_pcm_open(&g_pl.pcm, devs[d], A_STREAM_PLAYBACK, 0) >= 0) {
-                    opened = 1; break;
-                }
-                if (attempt < 4) usleep(200000);  /* 200ms x4 = up to 0.8s per device */
-            }
-            if (!opened) plog("snd_pcm_open %s failed after retries, trying next", devs[d]);
+/* ---- Bluetooth (BlueALSA A2DP) ----------------------------------------- */
+
+/* Detect a connected A2DP sink via `bluealsa-cli list-pcms`. Picks the first
+ * A2DP *playback* PCM (a2dpsrc/sink = the BT device is the sink/speaker). Stores
+ * the org.bluealsa path into bt_pcm_path (logging only — we open the predefined
+ * `bluealsa` plug device, which auto-selects the most-recent sink). Returns 1
+ * if a sink was found, 0 if none/error. Runs only at track-open / fallback
+ * (never in the decode/render loops). popen is bounded by the child's output. */
+static int bt_detect(void) {
+    g_pl.bt_pcm_path[0] = '\0';
+    FILE *p = popen("bluealsa-cli list-pcms 2>/dev/null", "r");
+    if (!p) return 0;
+    char line[256];
+    int found = 0;
+    while (fgets(line, sizeof(line), p)) {
+        if (strstr(line, "a2dp") && strstr(line, "/sink")) {
+            size_t n = strlen(line);
+            while (n && (line[n-1] == '\n' || line[n-1] == '\r' || line[n-1] == ' '))
+                line[--n] = '\0';
+            snprintf(g_pl.bt_pcm_path, sizeof(g_pl.bt_pcm_path), "%s", line);
+            found = 1;
+            break;
         }
-        if (!opened) { plog("snd_pcm_open failed (all devices)"); return -1; }
-        plog("alsa pcm opened");
+    }
+    pclose(p);
+    if (found) plog("bt detect: %s", g_pl.bt_pcm_path);
+    return found;
+}
+
+/* Open ctl.bluealsa and grab the first playback-volume element. Best-effort:
+ * on failure volume buttons no-op on BT. */
+static void bt_mixer_open(void) {
+    if (g_pl.bt_mixer) return;
+    if (!x_snd_mixer_open || !x_snd_mixer_attach || !x_snd_mixer_load) return;
+    void *m = NULL;
+    if (x_snd_mixer_open(&m, 0) < 0) return;
+    if (x_snd_mixer_attach(m, "bluealsa") < 0 ||
+        x_snd_mixer_selem_register(m, NULL, NULL) < 0 ||
+        x_snd_mixer_load(m) < 0) {
+        x_snd_mixer_close(m); return;
+    }
+    g_pl.bt_mix_min = 0; g_pl.bt_mix_max = 127;
+    for (void *el = x_snd_mixer_first_elem(m); el; el = x_snd_mixer_elem_next(el)) {
+        if (!x_snd_mixer_selem_has_playback_volume(el)) continue;
+        long lo = 0, hi = 0;
+        if (x_snd_mixer_selem_get_playback_volume_range)
+            x_snd_mixer_selem_get_playback_volume_range(el, &lo, &hi);
+        g_pl.bt_mix_elem = el;
+        g_pl.bt_mix_min = lo; g_pl.bt_mix_max = hi;
+        break;   /* first playback-volume element (element name varies per device) */
+    }
+    g_pl.bt_mixer = m;
+    plog("bt mixer ok elem=%p range=%ld..%ld", g_pl.bt_mix_elem,
+         g_pl.bt_mix_min, g_pl.bt_mix_max);
+}
+
+static void bt_mixer_close(void) {
+    if (g_pl.bt_mixer) {
+        x_snd_mixer_close(g_pl.bt_mixer);
+        g_pl.bt_mixer = NULL; g_pl.bt_mix_elem = NULL;
+    }
+}
+
+/* The stock music engine (the same hiby_player process) plays over BT by
+ * opening the bluealsa A2DP sink PCM. It holds the bluealsa slave exclusively,
+ * so our snd_pcm_hw_params returns -EBUSY. Since we ARE hiby_player, the stock
+ * engine's bluealsa transport socket is in /proc/self/fd. We release it by
+ * shutting down every AF_UNIX socket whose SO_PEERCRED peer pid is the bluealsa
+ * daemon — that signals EOF to bluealsa, which releases the PCM slot, so our
+ * reopen can grab it. The stock audio thread sees EPIPE on its next write and
+ * stops (its main thread, which would reopen, is blocked by our hook_b). The
+ * reverse transition (handing BT back to stock on exit) is handled by
+ * bt_hand_back_to_stock, which does a short A2DP disconnect/reconnect so
+ * bluealsa recreates the PCM and stock re-acquires + resumes. */
+static pid_t find_bluealsa_pid(void) {
+    DIR *d = opendir("/proc");
+    if (!d) return -1;
+    struct dirent *de; pid_t found = -1;
+    while ((de = readdir(d)) != NULL) {
+        if (!isdigit((unsigned char)de->d_name[0])) continue;
+        char p[64];
+        snprintf(p, sizeof(p), "/proc/%s/comm", de->d_name);
+        int fd = open(p, O_RDONLY);
+        if (fd < 0) continue;
+        char buf[64] = {0};
+        ssize_t n = read(fd, buf, sizeof(buf) - 1);
+        close(fd);
+        if (n <= 0) continue;
+        if (buf[n-1] == '\n') buf[n-1] = '\0';
+        if (strcmp(buf, "bluealsa") == 0) { found = atoi(de->d_name); break; }
+    }
+    closedir(d);
+    return found;
+}
+
+static int bt_release_native_hold(void) {
+    pid_t ba = find_bluealsa_pid();
+    if (ba <= 0) { plog("bt_release: bluealsa pid not found"); return 0; }
+    DIR *d = opendir("/proc/self/fd");
+    if (!d) return 0;
+    struct dirent *de; int closed_any = 0;
+    while ((de = readdir(d)) != NULL) {
+        if (!isdigit((unsigned char)de->d_name[0])) continue;
+        int fd = atoi(de->d_name);
+        int dom = -1; socklen_t dl = sizeof(dom);
+        if (getsockopt(fd, SOL_SOCKET, SO_DOMAIN, &dom, &dl) != 0) continue;
+        if (dom != AF_UNIX) continue;
+        /* SO_PEERCRED fills {pid,uid,gid}; struct ucred isn't visible without
+         * _GNU_SOURCE, so declare the layout locally. */
+        struct { pid_t pid; uid_t uid; gid_t gid; } uc;
+        socklen_t ul = sizeof(uc);
+        if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &uc, &ul) != 0) continue;
+        if (uc.pid == ba) {
+            plog("bt_release: shutdown fd %d (peer bluealsa pid %d)", fd, uc.pid);
+            shutdown(fd, SHUT_RDWR);
+            close(fd);
+            closed_any = 1;
+        }
+    }
+    closedir(d);
+    if (!closed_any) plog("bt_release: no bluealsa-transport fd found");
+    return closed_any;
+}
+
+/* Hand the bluealsa A2DP slot back to the stock music engine on audiobook exit.
+ * We took it by force on entry (bt_release_native_hold), so on exit the stock
+ * engine's bluealsa fd is dead and it won't re-acquire on its own — its UI shows
+ * "playing" but no sound. A short A2DP disconnect/reconnect makes bluealsa
+ * recreate the PCM and nudges the stock engine to reopen and RESUME the track
+ * that was playing, so music plays over BT again after the audiobook exits.
+ * Detached (runs after we return to the launcher; a ~2s BT blip + a disconnect
+ * notification is the tradeoff). Best-effort: if the addr can't be parsed from
+ * bt_pcm_path, it's a no-op (the user can restart music manually). */
+static void bt_hand_back_to_stock(void) {
+    if (g_pl.output != OUT_BT || !g_pl.bt_pcm_path[0]) return;
+    /* bt_pcm_path = /org/bluealsa/hci0/dev_98_52_3D_2C_C2_4C/a2dpsrc/sink
+     * → addr 98:52:3D:2C:C2:4C */
+    char addr[32] = {0};
+    const char *p = strstr(g_pl.bt_pcm_path, "/dev_");
+    if (!p) return;
+    p += 5;  /* skip "/dev_" */
+    int i = 0;
+    while (*p && *p != '/' && i < (int)sizeof(addr) - 1) {
+        addr[i++] = (*p == '_') ? ':' : *p;
+        p++;
+    }
+    addr[i] = '\0';
+    if (i < 17) return;  /* not a valid MAC (xx:xx:xx:xx:xx:xx = 17 chars) */
+    /* Hand the BT sink back to stock, PAUSED (not auto-resumed). Sequence (all
+     * detached, so it runs after we return to the launcher):
+     *   1. disconnect/reconnect — makes bluealsa recreate the A2DP PCM; the stock
+     *      music engine reopens it and (left to itself) auto-RESUMES the track.
+     *   2. sleep ~2s — give stock time to reopen + resume.
+     *   3. inject KEY_PLAYPAUSE (code 164, the R1's physical play/pause key, on
+     *      /dev/input/event2) by writing three 16-byte input_event structs
+     *      (press / release / sync). A fresh O_WRONLY open of event2 succeeds
+     *      even while hiby_player EVIOCGRABs it (verified on-device), and evdev
+     *      write() injects the events into the input core, which the grabber
+     *      (hiby's main loop) reads → stock toggles PLAYING→PAUSED. Verified
+     *      on-device: writing these exact bytes toggles stock's playback.
+     *   Net: music comes back over BT but PAUSED — the user presses play when
+     *   ready. The printf escapes are doubled (\\x) so the C literal contains a
+     *   literal backslash-x for the shell's printf to turn into bytes (no NUL in
+     *   the C string). Best-effort: if the write fails, stock stays auto-resumed
+     *   (the prior v2.0.8 behavior) — no regression. */
+    char cmd[400];
+    snprintf(cmd, sizeof(cmd),
+        "( bluetoothctl disconnect %s; sleep 1; bluetoothctl connect %s; sleep 2; "
+        "printf '\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00"
+        "\\x01\\x00\\xa4\\x00\\x01\\x00\\x00\\x00"
+        "\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00"
+        "\\x01\\x00\\xa4\\x00\\x00\\x00\\x00\\x00"
+        "\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00"
+        "\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00' "
+        "> /dev/input/event2 ) >/dev/null 2>&1 &", addr, addr);
+    system(cmd);
+    plog("bt_hand_back: disconnect/reconnect %s + inject pause (stock -> PAUSED over BT)", addr);
+}
+
+
+/* Open `dev` with the same ~1s retry budget the wired path uses. Returns 1 on
+ * success (pcm set), 0 on failure. */
+static int open_pcm_retry(const char *dev) {
+    for (int attempt = 0; attempt < 5; attempt++) {
+        if (x_snd_pcm_open(&g_pl.pcm, dev, A_STREAM_PLAYBACK, 0) >= 0) return 1;
+        if (attempt < 4) usleep(200000);  /* 200ms x4 = up to 0.8s */
+    }
+    return 0;
+}
+
+/* Configure ALSA for (rate, channels). Auto-detects BT vs wired on the first
+ * open / when output changed since the last track; reconfigures an already-open
+ * PCM otherwise. force_wired (set by the mid-playback fallback) forces wired.
+ * On BT open or hw_params failure, falls back to wired. Returns 0 on success. */
+static int setup_alsa(long rate, int channels) {
+    int want_bt = g_pl.force_wired ? 0 : bt_detect();
+    int want_out = want_bt ? OUT_BT : OUT_WIRED;
+
+    /* Per-track re-evaluation: if a PCM is open on the *other* output (e.g. BT
+     * connected/disconnected between tracks), drop it and reopen on the new
+     * one. Leaving the BT mixer open across a switch to wired is wasteful and
+     * holds the BT control, so close it too. */
+    if (g_pl.pcm && g_pl.output != want_out) {
+        close_pcm();
+        if (g_pl.output == OUT_BT) bt_mixer_close();
+    }
+
+    if (!g_pl.pcm) {
+        int opened = 0;
+        if (want_out == OUT_BT) {
+            opened = open_pcm_retry("bluealsa");
+            if (!opened) {
+                plog("snd_pcm_open bluealsa failed -> wired fallback");
+                g_pl.bt_pcm_path[0] = '\0';
+                want_out = OUT_WIRED;
+            } else {
+                plog("alsa pcm opened (bluealsa)");
+            }
+        }
+        if (!opened) {
+            const char *devs[] = { "plughw:0,0", "hw:0,0" };
+            for (int d = 0; d < 2 && !opened; d++) {
+                opened = open_pcm_retry(devs[d]);
+                if (!opened) plog("snd_pcm_open %s failed after retries, trying next", devs[d]);
+            }
+            if (!opened) { plog("snd_pcm_open failed (all devices)"); return -1; }
+            plog("alsa pcm opened (wired)");
+        }
     } else {
         x_snd_pcm_drop(g_pl.pcm);
     }
+    g_pl.output = want_out;
+    if (want_out == OUT_BT && !g_pl.bt_mixer) bt_mixer_open();
 
-    void *hw = NULL;
-    x_snd_pcm_hw_params_malloc(&hw);
-    x_snd_pcm_hw_params_any(g_pl.pcm, hw);
-    x_snd_pcm_hw_params_set_access(g_pl.pcm, hw, A_ACCESS_RW_INT);
-    x_snd_pcm_hw_params_set_format(g_pl.pcm, hw, A_FMT_S16_LE);
-    x_snd_pcm_hw_params_set_channels(g_pl.pcm, hw, (unsigned int)channels);
-    unsigned int want_rate = (unsigned int)rate; int dir = 0;
-    x_snd_pcm_hw_params_set_rate_near(g_pl.pcm, hw, &want_rate, &dir);
-    unsigned int btime = 500000, bdir = 0;   /* 500ms buffer */
-    x_snd_pcm_hw_params_set_buffer_time_near(g_pl.pcm, hw, &btime, (int *)&bdir);
-    unsigned int ptime = 100000, pdir = 0;   /* 100ms period */
-    x_snd_pcm_hw_params_set_period_time_near(g_pl.pcm, hw, &ptime, (int *)&pdir);
-    int r = x_snd_pcm_hw_params(g_pl.pcm, hw);
-    if (r < 0) { plog("snd_pcm_hw_params failed: %d", r); x_snd_pcm_hw_params_free(hw); return -1; }
-    unsigned long period = 0; int gpdir = 0;
-    x_snd_pcm_hw_params_get_period_size(hw, &period, &gpdir);
-    x_snd_pcm_hw_params_free(hw);
+    /* Apply hw params. For BT (bluealsa plug) the slave PCM is opened lazily
+     * here; if the stock music engine (same hiby_player process) still holds
+     * the bluealsa slave from a recent play, snd_pcm_hw_params returns -EBUSY
+     * (-16). On the first EBUSY we actively release the stock engine's bluealsa
+     * transport (bt_release_native_hold), then retry a few times with a fresh
+     * plug open while bluealsa frees the slot. Only fall back to wired if it
+     * stays busy. (aplay with these same params succeeds once the slave is
+     * free, so this is contention, not a constraint rejection.) */
+    int r = -1;
+    unsigned long period = 0;
+    unsigned int want_rate = (unsigned int)rate;
+    int released_hold = 0;
+    for (int hp_attempt = 0; hp_attempt < 5; hp_attempt++) {
+        if (hp_attempt > 0 && want_out == OUT_BT) {
+            /* Reopen the plug so the slave-open retries after the holder frees
+             * it. (Just re-issuing hw_params on a failed plug PCM keeps the old
+             * slave in error state.) */
+            close_pcm();
+            if (!open_pcm_retry("bluealsa")) { r = -16; usleep(200000); continue; }
+        }
+        void *hw = NULL;
+        x_snd_pcm_hw_params_malloc(&hw);
+        x_snd_pcm_hw_params_any(g_pl.pcm, hw);
+        x_snd_pcm_hw_params_set_access(g_pl.pcm, hw, A_ACCESS_RW_INT);
+        x_snd_pcm_hw_params_set_format(g_pl.pcm, hw, A_FMT_S16_LE);
+        x_snd_pcm_hw_params_set_channels(g_pl.pcm, hw, (unsigned int)channels);
+        want_rate = (unsigned int)rate; int dir = 0;
+        x_snd_pcm_hw_params_set_rate_near(g_pl.pcm, hw, &want_rate, &dir);
+        unsigned int btime = 500000, bdir = 0;   /* 500ms buffer */
+        x_snd_pcm_hw_params_set_buffer_time_near(g_pl.pcm, hw, &btime, (int *)&bdir);
+        unsigned int ptime = 100000, pdir = 0;   /* 100ms period */
+        x_snd_pcm_hw_params_set_period_time_near(g_pl.pcm, hw, &ptime, (int *)&pdir);
+        r = x_snd_pcm_hw_params(g_pl.pcm, hw);
+        if (r == 0) {
+            int gpdir = 0;
+            x_snd_pcm_hw_params_get_period_size(hw, &period, &gpdir);
+            x_snd_pcm_hw_params_free(hw);
+            break;
+        }
+        plog("snd_pcm_hw_params failed: %d (attempt %d)", r, hp_attempt + 1);
+        x_snd_pcm_hw_params_free(hw);
+        if (want_out != OUT_BT) break;          /* wired: no retry, no fallback */
+        if (r != -16 && r != -11) break;         /* only retry EBUSY/EAGAIN */
+        /* First EBUSY: the stock music engine is holding bluealsa — release its
+         * transport so we can take over. Done once per setup_alsa call. */
+        if (!released_hold) {
+            close_pcm();  /* drop our (failed) plug first */
+            bt_release_native_hold();
+            released_hold = 1;
+            usleep(400000);  /* give bluealsa a moment to free the slot */
+            continue;
+        }
+        usleep(300000);                          /* 0.3s between further retries */
+    }
+    if (r < 0) {
+        /* A2DP stayed busy or rejected params; fall back to wired once. */
+        if (want_out == OUT_BT && !g_pl.force_wired) {
+            plog("BT hw_params failed (%d) -> wired fallback", r);
+            close_pcm(); bt_mixer_close();
+            g_pl.force_wired = 1; g_pl.bt_fell_back = 1;
+            return setup_alsa(rate, channels);  /* re-enters with force_wired=1 */
+        }
+        return -1;
+    }
 
     void *sw = NULL;
     x_snd_pcm_sw_params_malloc(&sw);
@@ -585,6 +944,33 @@ static int setup_alsa(long rate, int channels) {
     g_pl.rate = want_rate;
     g_pl.channels = channels;
     return 0;
+}
+
+/* Write `frames` to the PCM, retrying once on -EPIPE/-EIO. If the retry also
+ * fails AND we're on BT (and haven't already fallen back this track), the A2DP
+ * transport dropped: close the BT PCM, force wired, reopen, and re-issue the
+ * write so playback continues from the next chunk (position is unchanged — we
+ * keep track_pos_ms, so this is a brief glitch, not a jump). Used by all three
+ * decode write sites (AAC, MP3 wsola, MP3 direct). Returns frames written (>0)
+ * or a negative snd_pcm error. */
+static long pcm_write_or_fallback(const void *buf, unsigned long frames) {
+    long wr = x_snd_pcm_writei(g_pl.pcm, buf, frames);
+    if (wr < 0) {
+        if (x_snd_pcm_recover) x_snd_pcm_recover(g_pl.pcm, (int)wr, 1);
+        else x_snd_pcm_prepare(g_pl.pcm);
+        plog("alsa writei %ld -> recover", wr);
+        wr = x_snd_pcm_writei(g_pl.pcm, buf, frames);
+    }
+    if (wr < 0 && g_pl.output == OUT_BT && !g_pl.bt_fell_back) {
+        plog("BT write failed (%ld) -> wired fallback", wr);
+        close_pcm(); bt_mixer_close();
+        g_pl.force_wired = 1; g_pl.bt_fell_back = 1; g_pl.output = OUT_WIRED;
+        if (setup_alsa(g_pl.rate, g_pl.channels) == 0) {
+            mix_apply();   /* re-apply volume on the wired DAC */
+            wr = x_snd_pcm_writei(g_pl.pcm, buf, frames);
+        }
+    }
+    return wr;
 }
 
 /* Compute a byte offset for a resume position (used with MP3D_SEEK_TO_BYTE).
@@ -646,6 +1032,9 @@ static int open_track_aac(int idx, int64_t seek_ms) {
     }
 
     close_mh();
+    /* New track: re-evaluate BT vs wired (clear the mid-playback fallback so
+     * detection runs again — the fallback was sticky only for the prior track). */
+    g_pl.force_wired = 0; g_pl.bt_fell_back = 0;
     if (mp4_audio_open(g_pl.tracks[idx].path, &g_pl.mp4)) {
         plog("mp4_audio_open failed: %s", g_pl.tracks[idx].path);
         return -1;
@@ -738,6 +1127,9 @@ static int open_track(int idx, int64_t seek_ms) {
     }
 
     close_mh();
+    /* New track: re-evaluate BT vs wired (clear the mid-playback fallback so
+     * detection runs again — the fallback was sticky only for the prior track). */
+    g_pl.force_wired = 0; g_pl.bt_fell_back = 0;
     g_pl.track_fd = open(g_pl.tracks[idx].path, O_RDONLY);
     if (g_pl.track_fd < 0) { plog("open failed: %s", g_pl.tracks[idx].path); return -1; }
     memset(&g_pl.dec, 0, sizeof(g_pl.dec));
@@ -826,18 +1218,34 @@ static void cmd_play(int book_id, int64_t start_ms) {
     int start_idx = 0;
     int64_t into = 0;
     if (start_ms < 0) {
-        /* resume from saved progress */
-        audiobook_progress_t p;
-        if (audiobook_get_progress(g_pl.db, book_id, &p) > 0) {
-            start_idx = p.track_ordinal - 1;
+        /* resume from saved progress. The SD .pos is authoritative (a full
+         * /usr/data can never lose it); fall back to library.db only for
+         * positions saved by older builds (pre-2.0.9) that wrote library.db
+         * alone, so existing listeners keep their place across the upgrade. */
+        int sd_ord = 0, sd_done = 0;
+        int64_t sd_pos = 0, sd_book = 0;
+        if (pos_load_sd(book_id, &sd_ord, &sd_pos, &sd_book, &sd_done) > 0) {
+            start_idx = sd_ord - 1;
             if (start_idx < 0) start_idx = 0;
             if (start_idx >= g_pl.track_count) start_idx = g_pl.track_count - 1;
-            into = p.position_ms;
+            into = sd_pos;
             if (into < 0) into = 0;
             /* Smart rewind: ease back in a few seconds before the saved spot. */
             if (into > RESUME_REWIND_MS) into -= RESUME_REWIND_MS; else into = 0;
-            plog("resume book %d track %d @%lldms (rewound %dms)",
+            plog("resume(SD) book %d track %d @%lldms (rewound %dms)",
                  book_id, start_idx, (long long)into, RESUME_REWIND_MS);
+        } else {
+            audiobook_progress_t p;
+            if (audiobook_get_progress(g_pl.db, book_id, &p) > 0) {
+                start_idx = p.track_ordinal - 1;
+                if (start_idx < 0) start_idx = 0;
+                if (start_idx >= g_pl.track_count) start_idx = g_pl.track_count - 1;
+                into = p.position_ms;
+                if (into < 0) into = 0;
+                if (into > RESUME_REWIND_MS) into -= RESUME_REWIND_MS; else into = 0;
+                plog("resume(db) book %d track %d @%lldms (rewound %dms)",
+                     book_id, start_idx, (long long)into, RESUME_REWIND_MS);
+            }
         }
     } else {
         /* absolute book position: find the track containing it */
@@ -1023,23 +1431,11 @@ static void decode_step_aac(void) {
             int of = wsola_drain(&g_pl.wsola, rsbuf,
                                  (int)(sizeof(rsbuf) / sizeof(short) / ch));
             if (of <= 0) break;
-            long wr = x_snd_pcm_writei(g_pl.pcm, rsbuf, (unsigned long)of);
-            if (wr < 0) {
-                if (x_snd_pcm_recover) x_snd_pcm_recover(g_pl.pcm, (int)wr, 1);
-                else x_snd_pcm_prepare(g_pl.pcm);
-                plog("alsa writei %ld -> recover (aac)", wr);
-                wr = x_snd_pcm_writei(g_pl.pcm, rsbuf, (unsigned long)of);
-            }
+            long wr = pcm_write_or_fallback(rsbuf, (unsigned long)of);
             if (wr > 0) wr_total += wr;
         }
     } else {
-        long wr = x_snd_pcm_writei(g_pl.pcm, g_pl.aac_pcm, (unsigned long)frameSize);
-        if (wr < 0) {
-            if (x_snd_pcm_recover) x_snd_pcm_recover(g_pl.pcm, (int)wr, 1);
-            else x_snd_pcm_prepare(g_pl.pcm);
-            plog("alsa writei %ld -> recover (aac)", wr);
-            wr = x_snd_pcm_writei(g_pl.pcm, g_pl.aac_pcm, (unsigned long)frameSize);
-        }
+        long wr = pcm_write_or_fallback(g_pl.aac_pcm, (unsigned long)frameSize);
         if (wr > 0) wr_total = wr;
     }
     if (wr_total > 0) {
@@ -1105,24 +1501,12 @@ static void decode_step(void) {
                 int of = wsola_drain(&g_pl.wsola, rsbuf,
                                      (int)(sizeof(rsbuf) / sizeof(short) / ch));
                 if (of <= 0) break;
-                long wr = x_snd_pcm_writei(g_pl.pcm, rsbuf, (unsigned long)of);
-                if (wr < 0) {
-                    if (x_snd_pcm_recover) x_snd_pcm_recover(g_pl.pcm, (int)wr, 1);
-                    else x_snd_pcm_prepare(g_pl.pcm);
-                    plog("alsa writei %ld -> recover", wr);
-                    wr = x_snd_pcm_writei(g_pl.pcm, rsbuf, (unsigned long)of);
-                }
+                long wr = pcm_write_or_fallback(rsbuf, (unsigned long)of);
                 if (wr > 0) wr_total += wr;
             }
         }
     } else {
-        long wr = x_snd_pcm_writei(g_pl.pcm, buf, frames);
-        if (wr < 0) {
-            if (x_snd_pcm_recover) x_snd_pcm_recover(g_pl.pcm, (int)wr, 1);
-            else x_snd_pcm_prepare(g_pl.pcm);
-            plog("alsa writei %ld -> recover", wr);
-            wr = x_snd_pcm_writei(g_pl.pcm, buf, frames);
-        }
+        long wr = pcm_write_or_fallback(buf, frames);
         if (wr > 0) wr_total = wr;
     }
     if (wr_total > 0) {
@@ -1161,7 +1545,20 @@ static void *player_thread(void *arg) {
             case CMD_SEEK:   cmd_seek(seek_ms); break;
             case CMD_NEXT:   cmd_next(1); break;
             case CMD_PREV:   cmd_next(-1); break;
-            case CMD_QUIT:   g_pl.running = 0; break;
+            case CMD_QUIT:
+                /* Persist the exact final position before the thread exits.
+                 * Without this, the last place is only as fresh as the most
+                 * recent periodic save (throttled to every 5s in decode_step),
+                 * so up to 5s is silently lost on every exit — and if the saved
+                 * .pos was already missing/stale, the next session resumes ~5s
+                 * in and the periodic save then overwrites it with ~0, which
+                 * looks like "the resume reset to the beginning". Saving here
+                 * makes exit authoritative. Safe: save_progress no-opss when no
+                 * book is loaded, and g_pl.db is still open (audiobook_db_close
+                 * runs in ui_run AFTER player_shutdown returns). */
+                save_progress(0);
+                g_pl.running = 0;
+                break;
         }
 
         if (g_pl.state == PLAYER_PLAYING && g_pl.track_open && g_pl.pcm) {
@@ -1242,11 +1639,33 @@ void player_shutdown(void) {
     submit(CMD_QUIT, 0, 0);
     pthread_join(g_pl.thread, NULL);
     g_pl.thread_alive = 0;
+    /* Release the current track + ALSA PCM. CRITICAL: CMD_QUIT just sets
+     * running=0 and the thread exits with g_pl.pcm still open — if we don't
+     * close it here, we LEAK the output device (the wired DAC, or the bluealsa
+     * A2DP slot), so the stock music app can't re-acquire it after we exit
+     * (the "music won't play again after audiobook" symptom). Must run BEFORE
+     * the dlclose()s below: close_pcm uses the alsa dlsyms and close_mh uses
+     * the fdk-aac dlsym (AAC path). */
+    close_mh();
+    close_pcm();
     if (g_pl.mixer) { x_snd_mixer_close(g_pl.mixer); g_pl.mixer = NULL; }
+    bt_mixer_close();
     if (g_alsa_lib) dlclose(g_alsa_lib);
     g_alsa_lib = NULL;
     if (g_fdkaac_lib) dlclose(g_fdkaac_lib);
     g_fdkaac_lib = NULL;
+    /* We took the bluealsa slot from the stock music engine by force on entry
+     * (bt_release_native_hold), so on exit the stock engine's bluealsa fd is
+     * dead and it can't re-acquire on its own. close_pcm() (above) frees the
+     * slot, but that alone leaves stock stuck ("playing", no sound). A short
+     * A2DP disconnect/reconnect (bt_hand_back_to_stock, detached) makes bluealsa
+     * recreate the PCM and nudges stock to reopen + resume the track that was
+     * playing — so music plays over BT again after the audiobook exits. The
+     * tradeoff is a ~2s BT blip + a disconnect notification + the song resuming
+     * (the user can pause it). This is the proven v2.0.8 behavior; the user
+     * accepts the auto-resume since stock music can't be manually stopped on
+     * this firmware (only paused, which doesn't free the slot). */
+    bt_hand_back_to_stock();
 }
 
 int player_play_book(int book_id, int resume) {
@@ -1265,7 +1684,13 @@ void player_toggle(void) {
     if (!g_pl.thread_alive) return;
     if (g_pl.state == PLAYER_PLAYING) submit(CMD_PAUSE, 0, 0);
     else if (g_pl.state == PLAYER_PAUSED) submit(CMD_RESUME, 0, 0);
-    else if (g_pl.last_book > 0) submit_play(g_pl.last_book, 0);  /* resume saved */
+    /* STOPPED (e.g. after a track-advance open_track failure, or the user
+     * stopped, or the book finished): pressing play/pause RESUMES from the
+     * saved SD position — NOT from the beginning. Passing 0 here (start_ms=0)
+     * restarted the book from 0 and the periodic save then overwrote the
+     * saved place with ~0, which is exactly the "resume reset to the
+     * beginning" symptom. -1 = resume from saved progress (cmd_play). */
+    else if (g_pl.last_book > 0) submit_play(g_pl.last_book, -1);
 }
 
 void player_pause(void) {

@@ -196,6 +196,25 @@ def rgb565_to_png(raw: bytes) -> bytes:
     )
 
 
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+def validate_png(path: Path) -> None:
+    """Verify the file starts with valid PNG magic bytes.
+
+    Raises RuntimeError if validation fails so callers can catch it before
+    the bad file ever reaches an API or image viewer.
+    """
+    data = path.read_bytes()
+    if len(data) < len(PNG_MAGIC):
+        raise RuntimeError(f"PNG validation failed: {path} is only {len(data)} bytes")
+    if not data.startswith(PNG_MAGIC):
+        raise RuntimeError(
+            f"PNG validation failed: {path} does not start with PNG magic bytes "
+            f"(expected {PNG_MAGIC.hex()}, got {data[:len(PNG_MAGIC)].hex()})"
+        )
+
+
 def capture_screenshot(
     adb: str,
     output: Path,
@@ -204,7 +223,14 @@ def capture_screenshot(
     remote_raw: str = f"{DEFAULT_REMOTE_DIR}/fb0.raw",
 ) -> tuple[Path, Path]:
     output.parent.mkdir(parents=True, exist_ok=True)
-    raw_path = raw_output or output.with_suffix(".raw")
+    if raw_output is not None:
+        raw_path = raw_output
+    else:
+        # Keep raw files in a dedicated subdir so they don't sit next to PNGs
+        # as a trap for accidental direct Reads that crash non-vision models.
+        raw_dir = output.parent / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        raw_path = raw_dir / (output.stem + ".raw")
     raw_path.parent.mkdir(parents=True, exist_ok=True)
     remote_dir = remote_raw.rsplit("/", 1)[0]
     adb_shell(adb, f"mkdir -p {quote_remote(remote_dir)}")
@@ -212,6 +238,7 @@ def capture_screenshot(
     run([adb, "pull", remote_raw, str(raw_path)])
     raw = raw_path.read_bytes()
     output.write_bytes(rgb565_to_png(raw))
+    validate_png(output)
     return output, raw_path
 
 

@@ -798,6 +798,206 @@ int audio_read_chapters(const char *path, chapter_cb cb, void *ctx) {
     return emitted;
 }
 
+/* ---- Embedded cover-art extraction (JPEG or PNG) ------------------------ */
+/* The cover decoder (cover.c) takes an image file path and decodes it — JPEG
+ * via the device's libjpeg (scale_denom downscale-on-decode) or PNG via pngdec
+ * (libz dlopen'd, row-streamed) — so even a large embedded cover is cheap. So
+ * extraction = find the embedded image bytes (JPEG or PNG) in the file's
+ * metadata and write them to a per-book image file on the SD card. The scan
+ * then stores that path as the book's cover_path and the normal decode/cache
+ * path takes over. Both formats are detected by their byte signatures (JPEG
+ * SOI 0xFFD8FF, PNG sig 89 50 4E 47...), so we don't rely on the tag's declared
+ * type; unsupported formats are skipped (those books simply show no cover). */
+
+/* Write len bytes (a complete image) to out_path. Returns 1 on success; on
+ * any short write or close error the partial file is removed so a later
+ * attempt doesn't pick up a truncated image. */
+static int write_image_file(const char *out_path, const uint8_t *data, size_t len) {
+    if (!out_path || !data || len == 0) return 0;
+    FILE *f = fopen(out_path, "wb");
+    if (!f) return 0;
+    size_t w = fwrite(data, 1, len, f);
+    int ok = (w == len);
+    if (fclose(f) != 0) ok = 0;
+    if (!ok) unlink(out_path);
+    return ok;
+}
+
+/* 8-byte PNG signature. */
+static const uint8_t PNG_SIG[8] = { 0x89,0x50,0x4E,0x47,0x0D,0x0A,0x1A,0x0A };
+
+/* Locate the first embedded image in buf[0..len): a JPEG SOI (0xFF 0xD8 0xFF)
+ * or a PNG signature (8 bytes). APIC frames put an encoding byte + MIME string
+ * + picture type + description before the image, so it rarely starts at offset
+ * 0; a small forward scan finds either signature. Sets *out_off to the image
+ * start index and *out_kind to 0=JPEG / 1=PNG. Returns 1 if found. */
+static int find_image_off(const uint8_t *buf, size_t len, size_t *out_off, int *out_kind) {
+    if (len < 3) return 0;
+    for (size_t i = 0; i + 3 <= len; i++) {
+        if (buf[i] == 0xFF && buf[i + 1] == 0xD8 && buf[i + 2] == 0xFF) {
+            *out_off = i; *out_kind = 0; return 1;
+        }
+        if (i + 8 <= len && buf[i] == PNG_SIG[0] && buf[i + 1] == PNG_SIG[1] &&
+            buf[i + 2] == PNG_SIG[2] && buf[i + 3] == PNG_SIG[3] &&
+            buf[i + 4] == PNG_SIG[4] && buf[i + 5] == PNG_SIG[5] &&
+            buf[i + 6] == PNG_SIG[6] && buf[i + 7] == PNG_SIG[7]) {
+            *out_off = i; *out_kind = 1; return 1;
+        }
+    }
+    return 0;
+}
+
+/* Write <out_base>.jpg (JPEG) or <out_base>.png (PNG) and copy the full path
+ * into out_path. Returns 1 on success. */
+static int emit_image(const char *out_base, char *out_path, size_t out_path_len,
+                      const uint8_t *data, size_t len, int kind) {
+    const char *ext = kind == 1 ? "png" : "jpg";
+    char path[600];
+    if (snprintf(path, sizeof(path), "%s.%s", out_base, ext) >= (int)sizeof(path)) return 0;
+    if (!write_image_file(path, data, len)) return 0;
+    if (out_path && out_path_len) {
+        if (snprintf(out_path, out_path_len, "%s", path) >= (int)out_path_len) {
+            unlink(path);   /* caller couldn't receive the path — undo */
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* M4B/M4A: the cover lives in moov/udta/meta/ilst/covr. The iTunes 'meta' atom
+ * is a FullBox — a 4-byte version/flags header sits before its children — which
+ * the plain atom walker (qt_find_deep) mis-aligns on. Instead we raw-scan the
+ * mmap'd moov for the 4-byte 'covr' marker; that is safe because the moov is
+ * metadata-only (atom names + small tables + tag text — no audio samples that
+ * could false-match), and each candidate is validated against the covr/data
+ * atom layout + a JPEG SOI before anything is written. The mmap means a 15 MB
+ * moov with a 79 KB cover costs ~the cover size in RAM, not 15 MB. */
+static int extract_m4b_cover(const char *path, const char *out_base,
+                             char *out_path, size_t out_path_len) {
+    int64_t moov_len = 0;
+    uint8_t *map_base = NULL;
+    size_t map_len = 0;
+    uint8_t *moov = read_moov(path, &moov_len, &map_base, &map_len);
+    if (!moov || moov_len < 24) {
+        if (map_base) munmap(map_base, map_len); else free(moov);
+        return 0;
+    }
+
+    int found = 0;
+    for (int64_t i = 0; i + 24 <= moov_len && !found; i++) {
+        if (moov[i] != 'c' || moov[i + 1] != 'o' ||
+            moov[i + 2] != 'v' || moov[i + 3] != 'r')
+            continue;
+        if (i < 4) continue;
+        uint32_t covr_size = qt_read32(moov + i - 4);   /* size precedes type */
+        if (covr_size < 24 || (int64_t)i - 4 + covr_size > moov_len) continue;
+
+        /* First child is a 'data' atom:
+         *   [size(4)]['data'(4)][type/flags(4)][reserved(4)][image...]
+         * starting at i+4 (right after the covr type field). The 4-byte
+         * type/flags field is 0x0000000T, so the format code is its LAST
+         * byte: 0x0d=JPEG, 0x0e=PNG. We accept either and confirm the actual
+         * format from the byte signature at the image offset. */
+        uint32_t data_size = qt_read32(moov + i + 4);
+        if (data_size < 16) continue;
+        if (qt_read32(moov + i + 8) != 0x64617461 /* 'data' */) continue;
+        uint8_t fmt = moov[i + 15];
+        if (fmt != 0x0d && fmt != 0x0e) continue;
+
+        int64_t img_off = (int64_t)i + 20;    /* covr type(4)+data hdr(16) */
+        int64_t img_len = (int64_t)data_size - 16;
+        if (img_len < 8 || img_off + img_len > moov_len) continue;
+
+        /* Detect the actual format by signature (don't trust the flag byte). */
+        int kind = -1;
+        if (moov[img_off] == 0xFF && moov[img_off + 1] == 0xD8) kind = 0;
+        else if (moov[img_off] == PNG_SIG[0] && moov[img_off + 1] == PNG_SIG[1] &&
+                 moov[img_off + 2] == PNG_SIG[2] && moov[img_off + 3] == PNG_SIG[3])
+            kind = 1;
+        if (kind < 0) continue;
+
+        found = emit_image(out_base, out_path, out_path_len,
+                          moov + img_off, (size_t)img_len, kind);
+    }
+
+    if (map_base) munmap(map_base, map_len); else free(moov);
+    return found;
+}
+
+/* MP3: the cover is an ID3v2 APIC frame (v2.2 = PIC). We read up to ~1 MB of
+ * the tag so even a large embedded JPEG fits; the buffer is freed at once. The
+ * APIC body is encoding(1)+MIME\0+pic_type(1)+desc\0+image, so we scan it for
+ * the JPEG SOI rather than parsing the variable-length prefix, then take the
+ * image up to the frame's end. */
+#define MP3_COVER_READ_MAX (1024 * 1024)
+
+static int extract_mp3_cover(const char *path, const char *out_base,
+                             char *out_path, size_t out_path_len) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    uint8_t hdr[10];
+    if (fread(hdr, 1, 10, f) != 10) { fclose(f); return 0; }
+    if (hdr[0] != 'I' || hdr[1] != 'D' || hdr[2] != '3') { fclose(f); return 0; }
+
+    int major = hdr[3];
+    uint32_t tag_size = syncsafe_to_uint(hdr + 6);
+    size_t read_len = (size_t)tag_size + 10;
+    if (read_len > MP3_COVER_READ_MAX) read_len = MP3_COVER_READ_MAX;
+
+    uint8_t *buf = malloc(read_len);
+    if (!buf) { fclose(f); return 0; }
+    memcpy(buf, hdr, 10);
+    size_t got = 10 + fread(buf + 10, 1, read_len - 10, f);
+    fclose(f);
+
+    int found = 0;
+    uint32_t walk_end = tag_size + 10;
+    if (walk_end > got) walk_end = (uint32_t)got;
+
+    uint32_t pos = 10;
+    while (pos + 10 <= walk_end && !found) {
+        if (buf[pos] == 0) break;            /* padding / end of frames */
+        char id[5] = {0};
+        memcpy(id, buf + pos, 4);
+
+        uint32_t frame_size;
+        if (major == 4) frame_size = syncsafe_to_uint(buf + pos + 4);
+        else frame_size = ((uint32_t)buf[pos + 4] << 24) | ((uint32_t)buf[pos + 5] << 16) |
+                         ((uint32_t)buf[pos + 6] << 8) | ((uint32_t)buf[pos + 7]);
+        if (frame_size == 0) break;
+        if ((uint64_t)pos + 10 + frame_size > walk_end) break;
+
+        if (strcmp(id, "APIC") == 0) {
+            size_t body_off = (size_t)pos + 10;
+            size_t body_len = frame_size;
+            size_t j; int kind;
+            if (find_image_off(buf + body_off, body_len, &j, &kind)) {
+                size_t img_off = body_off + j;
+                size_t img_end = (size_t)pos + 10 + frame_size;
+                if (img_end > got) img_end = got;
+                if (img_end > img_off)
+                    found = emit_image(out_base, out_path, out_path_len,
+                                       buf + img_off, img_end - img_off, kind);
+            }
+        }
+        pos += 10 + frame_size;
+    }
+
+    free(buf);
+    return found;
+}
+
+int audio_extract_cover(const char *track_path, const char *out_base,
+                        char *out_path, size_t out_path_len) {
+    if (!track_path || !out_base) return 0;
+    int type = audio_file_type(track_path);
+    if (type == AUDIO_EXT_M4B || type == AUDIO_EXT_M4A)
+        return extract_m4b_cover(track_path, out_base, out_path, out_path_len);
+    if (type == AUDIO_EXT_MP3)
+        return extract_mp3_cover(track_path, out_base, out_path, out_path_len);
+    return 0;
+}
+
 /* ---- File type detection ------------------------------------------------ */
 
 int audio_file_type(const char *filename) {

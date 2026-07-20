@@ -41,3 +41,15 @@ IDENTITY.md
 SOUL.md
 TOOLS.md
 USER.md
+
+# Unrelated device artifacts (other projects / personal backups, not part of
+# the R1 audiobook firmware). Keep them out of the tree.
+Settings.apk
+audioflinger-effects-after-akg.txt
+codex-lockscreen-settings*.png
+device-current-audio/
+firmware-inspect/
+magisk-modules/
+tab-s5e-bota-backup.img
+tab-s5e-param-backup.img
+zz_samsung_akg_audio.zip

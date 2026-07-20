@@ -2,6 +2,140 @@
 
 All public releases are for the normal HiBy R1 on stock firmware 1.6. Do not install these packages on the R1 MIDI.
 
+## v2.0.14 - 2026-07-19
+
+Firmware marker: `2.0.14` - About-screen label `HiBy R1 2.0.14`.
+
+First public release since v2.0.4. Bundles all accumulated dev-build
+improvements (v2.0.5 through v2.0.14) into one update. Install over v2.0.4
+(or any v2.0.x); library, resume positions, and BT pairings are preserved.
+
+### Covers
+
+- PNG cover art now renders (external `cover.png`/`folder.png` and embedded
+  MP3 APIC / M4B `covr` PNG). A self-contained streaming PNG decoder
+  (`pngdec.c`) decodes row-by-row over `dlopen`'d `libz`, downsampling on the
+  fly (~150 KB peak), so large PNGs no longer OOM the device. No libpng
+  dependency.
+- Progressive-JPEG covers now decode instead of bailing. libjpeg's
+  `max_memory_to_use` is capped to available RAM (minus a headroom margin),
+  so huge progressives bail gracefully while normal/baseline covers render.
+  Previously about half of a large library showed no cover.
+- Cover dispatch is by file signature + extension; the `.r565` RGB565 cache
+  is shared across JPEG and PNG.
+
+### Bluetooth output
+
+- Audiobook playback can route to a connected Bluetooth A2DP headphone/speaker
+  via BlueALSA (`pcm.bluealsa` plug device, auto rate/format conversion).
+  Auto-detect at track open; falls back to the wired DAC if no sink is
+  connected or if the BT transport drops mid-playback (retry-then-fallback,
+  no auto-switch-back until the next track open).
+- Force-takes the A2DP slot from the stock player (same `hiby_player`
+  process) when needed, since the stock player holds it exclusively.
+- AVRCP remote support: a BT speaker's play/pause button controls the
+  audiobook (the virtual AVRCP input device is detected and reopened lazily).
+- On audiobook exit over BT, the stock player is handed back **paused** (a
+  KEY_PLAYPAUSE event is injected after the BT reconnect), so music does not
+  auto-play over the speaker when you leave the audiobook app. ~2 s BT blip.
+
+### Resume and position saving
+
+- Fixed a race that could reset a book to the beginning. Tapping play on a
+  stopped book while an AVRCP/key event arrived in the player thread's idle
+  window submitted a second "play from 0" command, overwriting the saved
+  position. The stopped-state play/pause now resumes from the saved position.
+- The exact final position is now saved on quit (previously only as fresh as
+  the 5-second periodic save, so up to 5 s could be lost on exit).
+- Positions remain SD-primary (`/usr/data/mnt/sd_0/.audiobook_pos`), surviving
+  a full `/usr/data` partition; the SQLite DB is a best-effort mirror.
+
+### ADB and boot
+
+- ADB is now always available at boot when System -> USB working mode is set
+  to "Device" (mode 1), via a new `S90adb` init script baked into the
+  rootfs. No in-app toggle needed. ADB and USB-DAC share the single USB
+  gadget controller and are mutually exclusive by USB working mode, so this
+  does not block USB-DAC (set the mode to DAC and ADB stays off that session).
+- Removed the in-app "Developer" / "ADB (durable)" toggle and its hook-side
+  poll (superseded by boot ADB).
+
+### Library scan robustness
+
+- Storage-full guards: the scan aborts cleanly (with a red on-screen error
+  flash) if `/usr/data` has too little free space to write the library DB,
+  instead of stalling. A `VACUUM` runs after orphan cleanup.
+
+## v2.0.4 - 2026-07-19
+
+Firmware marker: `2.0.4` - About-screen label `HiBy R1 2.0.4`.
+
+Fixes a library-scan hang that affected users with large audiobook
+libraries. M4B books with large "moov" metadata atoms (15 MB and up) caused
+the scanner to run out of memory and freeze on the "Scanning library..."
+screen. The chapter parser now memory-maps the moov atom instead of loading
+it all into RAM, so only the few KB of chapter data it actually needs are
+read. Scans that previously hung now complete.
+
+## v2.0.0 - 2026-07-18
+
+Firmware marker: `2.0A` - About-screen label `HiBy R1 2.0 A`.
+
+**Major release: the NativeApp pivot.** v2.0.0 replaces the v1.6.x
+resume-daemon / stock-route approach with a self-contained in-process audiobook
+app (`audiobook_app/`) that draws its own UI to the framebuffer and drives audio
+through ALSA, launched from the launcher's Audiobooks tile via an `LD_PRELOAD`
+hook into `hiby_player`.
+
+- New dedicated Audiobooks app with Home, Titles/Authors/Series/Folders/Finished
+ lists, book detail, Now Playing, Chapters, and Bookmarks screens - all drawn
+ by the app, not repurposed stock music views.
+- MP3 and M4B/AAC playback (AAC via `dlopen`'d `libfdk-aac`; self-contained
+ `mp4_audio.c` demuxer).
+- Per-book and multipart resume across reboots and book switching, with a
+ 5-second smart rewind on resume from a saved position.
+- Now Playing: cover art, title/author/duration, and a draggable progress
+ handle for scrub-seek (tapping the bar elsewhere does not jump).
+- Playback speed 1.0 / 1.1 / 1.25 / 1.5x via WSOLA time-stretch (pitch
+ preserved; 1.0x exact passthrough). Persists via `playback_speed`.
+- Sleep timer Off / 15 / 30 / 60 min with live on-screen countdown; auto-pauses
+ and saves position on expiry.
+- M4B embedded chapters parsed from the QuickTime chapter track (stsc-aware, so
+ multi-sample chunks resolve correctly) or Nero `chpl`; MP3 books get one
+ synthesized chapter per file. Chapters cached at scan time (Home -> Refresh).
+- Bookmarks: tap Mark on Now Playing to add; tap to jump; long-press to delete.
+- Cover-art thumbnails in lists (libjpeg decode-on-demand, progressive-JPEG
+ guard to avoid OOM freezes; pre-warm starvation fix so one bad cover doesn't
+ block the rest).
+- Hardware controls: power toggles backlight (audio plays dark, double-tap
+ wakes), play/pause/prev/next/volume in-app, fine-stepped volume (~2-2.5 dB)
+ with hold-to-ramp, Back always top-left.
+- Swipe left from a list jumps to Now Playing.
+- Library, progress, chapters, and bookmarks in an on-device SQLite DB; the
+ stock music database is no longer involved.
+- Clean exit to the HiBy launcher (no black screen, no power-button kick).
+
+**Expected behavior:** open Audiobooks and tap Home -> Refresh on first run
+with an SD card to scan `/Audiobooks`. **Audiobook playback stops when you
+leave the app to the launcher** - audio is tied to the app being open.
+Background playback on the launcher is planned for a later phase, not in this
+release.
+
+Build is `-IncludeAudiobookNativeApp` only (mutually exclusive with the legacy
+resume-daemon switches). **No persistent boot-ADB** in the public release
+(`-EnableBootAdb` omitted).
+
+Built package `r1-audiobooks-2.0A.upt`.
+
+- UPT MD5: `5153a5a80e9a4acdc9d2748011b0c34d`
+- UPT SHA256: `ab954621a02f7610563775d3e3770b69fff793ab9e13c324669dac77c1d5e1c8`
+- Rootfs MD5: `6baf5dcaae7d00fdded6b8cac62f485a`
+- Rootfs SHA256: `edae5ba040741e0a522f8192b969858232ce0f54af9ccb0cc9a042242a02eec4`
+- `hiby_player.audiobooks` (supervisor shell) MD5 inside rootfs:
+ `cbe2bc1001cbe6ad6ce6cd8e04889c59`
+- `libaudiobook_hook.so` size: 1,623,492 bytes
+- `r1_audiobook_app` size: 81,160 bytes
+
 ## v1.6.3 - 2026-07-01
 
 Firmware marker: `1.6.16.6-audiobook`
