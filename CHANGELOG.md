@@ -2,12 +2,12 @@
 
 All public releases are for the normal HiBy R1 on stock firmware 1.6. Do not install these packages on the R1 MIDI.
 
-## v2.0.14 - 2026-07-19
+## v2.0.15 - 2026-07-19
 
-Firmware marker: `2.0.14` - About-screen label `HiBy R1 2.0.14`.
+Firmware marker: `2.0.15` - About-screen label `HiBy R1 2.0.15`.
 
 First public release since v2.0.4. Bundles all accumulated dev-build
-improvements (v2.0.5 through v2.0.14) into one update. Install over v2.0.4
+improvements (v2.0.5 through v2.0.15) into one update. Install over v2.0.4
 (or any v2.0.x); library, resume positions, and BT pairings are preserved.
 
 ### Covers
@@ -35,20 +35,39 @@ improvements (v2.0.5 through v2.0.14) into one update. Install over v2.0.4
   process) when needed, since the stock player holds it exclusively.
 - AVRCP remote support: a BT speaker's play/pause button controls the
   audiobook (the virtual AVRCP input device is detected and reopened lazily).
-- On audiobook exit over BT, the stock player is handed back **paused** (a
-  KEY_PLAYPAUSE event is injected after the BT reconnect), so music does not
-  auto-play over the speaker when you leave the audiobook app. ~2 s BT blip.
+- On audiobook exit over BT, the stock player is handed back **paused**: the
+  A2DP sink is briefly disconnected then reconnected, which leaves the stock
+  music engine paused (and healthy - press play on the speaker/launcher to
+  resume). Music no longer auto-plays over the speaker when you leave the
+  audiobook app. Expect about a 2 s BT blip on exit. (Earlier builds injected
+  a play/pause key event after the reconnect, which could start the music
+  instead of pausing it; the injection is removed.)
+- Fixed garbled/doubled audio after a **pause then restart** over Bluetooth.
+  The resume re-seek reused the existing BlueALSA A2DP/LDAC stream with only
+  a `drop`/`prepare`, which left the encoder reservoir in a stale state and
+  played garbage on restart. The re-seek now re-opens the BlueALSA PCM fresh
+  (the same path the first clean play used); the wired DAC keeps the cheap
+  `drop`/`prepare` (it resumes clean).
 
 ### Resume and position saving
 
-- Fixed a race that could reset a book to the beginning. Tapping play on a
-  stopped book while an AVRCP/key event arrived in the player thread's idle
-  window submitted a second "play from 0" command, overwriting the saved
-  position. The stopped-state play/pause now resumes from the saved position.
+- Fixed a race that could **reset a book to the beginning** or double the
+  audio: tapping play on a stopped book while an AVRCP/key event arrived in
+  the player thread's idle window submitted a second "play" command for the
+  same book (the BT speaker auto-sends an AVRCP PLAY the instant the A2DP
+  slot is taken). Both plays then ran into the same output. A same-book
+  resume while already playing that book is now dropped; a seek, a different
+  book, or any play while not playing still proceeds.
 - The exact final position is now saved on quit (previously only as fresh as
   the 5-second periodic save, so up to 5 s could be lost on exit).
 - Positions remain SD-primary (`/usr/data/mnt/sd_0/.audiobook_pos`), surviving
   a full `/usr/data` partition; the SQLite DB is a best-effort mirror.
+- The DB mirror write is now skipped when `/usr/data` is critically low (< 1
+  MB free). The device's data partition is chronically ~95% full (the stock
+  music DB rebuilds on every boot), and a sqlite write hitting `SQLITE_FULL`
+  mid-WAL could poison the connection so the next read failed and the Now
+  Playing screen flipped to "Book not found". The SD store is authoritative,
+  so skipping the mirror just leaves the list-view "%" briefly stale.
 
 ### ADB and boot
 

@@ -47,6 +47,7 @@
 #include <dlfcn.h>
 #include <time.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <dirent.h>
@@ -597,6 +598,25 @@ static void save_progress(int completed) {
      * the mirror goes stale but the SD file holds the real position. */
     pos_save_sd(g_pl.book_id, p.track_ordinal, p.position_ms,
                 p.total_book_elapsed_ms, completed);
+    /* Free-space guard on the library.db mirror. /usr/data on this device is
+     * chronically ~95% full (the stock music DB rebuilds on every boot). A
+     * sqlite write that hits SQLITE_FULL mid-WAL can leave the connection in
+     * an error state, so the very next read (audiobook_get_book in the
+     * Now-Playing draw) fails and the screen flips to "Book not found". This
+     * was observed during the resume double-play thrash, where two rapid
+     * CMD_PLAYs + their periodic saves exhausted the last bytes. Skip the DB
+     * mirror entirely when free space is critically low — the SD store is
+     * authoritative and the list-view "%" just goes a little stale until space
+     * frees up. Threshold mirrors scan.c's SCAN_MIN_FREE_BYTES (1 MB): below
+     * it sqlite can't safely grow the WAL, so don't even try. */
+    struct statvfs vfs;
+    if (statvfs(AUDIOBOOK_DATA_DIR, &vfs) == 0) {
+        unsigned long long free_bytes = (unsigned long long)vfs.f_bavail
+                                        * (unsigned long long)vfs.f_frsize;
+        if (free_bytes < (unsigned long long)(1 * 1024 * 1024)) {
+            return;  /* SD already saved; skip the DB mirror to avoid poisoning */
+        }
+    }
     audiobook_save_progress(g_pl.db, &p);
 }
 
@@ -780,35 +800,26 @@ static void bt_hand_back_to_stock(void) {
     }
     addr[i] = '\0';
     if (i < 17) return;  /* not a valid MAC (xx:xx:xx:xx:xx:xx = 17 chars) */
-    /* Hand the BT sink back to stock, PAUSED (not auto-resumed). Sequence (all
-     * detached, so it runs after we return to the launcher):
-     *   1. disconnect/reconnect — makes bluealsa recreate the A2DP PCM; the stock
-     *      music engine reopens it and (left to itself) auto-RESUMES the track.
-     *   2. sleep ~2s — give stock time to reopen + resume.
-     *   3. inject KEY_PLAYPAUSE (code 164, the R1's physical play/pause key, on
-     *      /dev/input/event2) by writing three 16-byte input_event structs
-     *      (press / release / sync). A fresh O_WRONLY open of event2 succeeds
-     *      even while hiby_player EVIOCGRABs it (verified on-device), and evdev
-     *      write() injects the events into the input core, which the grabber
-     *      (hiby's main loop) reads → stock toggles PLAYING→PAUSED. Verified
-     *      on-device: writing these exact bytes toggles stock's playback.
-     *   Net: music comes back over BT but PAUSED — the user presses play when
-     *   ready. The printf escapes are doubled (\\x) so the C literal contains a
-     *   literal backslash-x for the shell's printf to turn into bytes (no NUL in
-     *   the C string). Best-effort: if the write fails, stock stays auto-resumed
-     *   (the prior v2.0.8 behavior) — no regression. */
-    char cmd[400];
+    /* Hand the BT sink back to stock, left PAUSED (not auto-resumed). Sequence
+     * (all detached, so it runs after we return to the launcher):
+     *   1. disconnect the A2DP sink, then reconnect it. This makes bluealsa
+     *      recreate the A2DP PCM slot. The stock music engine (same
+     *      hiby_player process) is left in whatever play/pause state it was
+     *      in; empirically, after this disconnect/reconnect stock is PAUSED
+     *      (it does NOT auto-resume) and HEALTHY — the user presses play on the
+     *      launcher/speaker and stock music resumes from where it was.
+     *   We do NOT inject a KEY_PLAYPAUSE here. Earlier builds injected a toggle
+     *   to force stock to PAUSED after an assumed auto-resume, but stock does
+     *   not auto-resume on reconnect — so the toggle was the only thing
+     *   STARTING the music (paused -> playing). Removing it leaves stock paused
+     *   (the desired state) and avoids the state-dependent toggle entirely.
+     *   Net: music comes back over BT, paused; the user presses play to resume. */
+    char cmd[300];
     snprintf(cmd, sizeof(cmd),
-        "( bluetoothctl disconnect %s; sleep 1; bluetoothctl connect %s; sleep 2; "
-        "printf '\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00"
-        "\\x01\\x00\\xa4\\x00\\x01\\x00\\x00\\x00"
-        "\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00"
-        "\\x01\\x00\\xa4\\x00\\x00\\x00\\x00\\x00"
-        "\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00"
-        "\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00' "
-        "> /dev/input/event2 ) >/dev/null 2>&1 &", addr, addr);
+        "( bluetoothctl disconnect %s; sleep 1; bluetoothctl connect %s ) "
+        ">/dev/null 2>&1 &", addr, addr);
     system(cmd);
-    plog("bt_hand_back: disconnect/reconnect %s + inject pause (stock -> PAUSED over BT)", addr);
+    plog("bt_hand_back: disconnect/reconnect %s (stock left PAUSED over BT)", addr);
 }
 
 
@@ -1116,7 +1127,24 @@ static int open_track(int idx, int64_t seek_ms) {
     if (g_pl.dec_open && g_pl.track_fd >= 0 && g_pl.track_idx == idx) {
         uint64_t target = seek_byte_target(seek_ms);
         int sr = mp3dec_ex_seek(&g_pl.dec, target);
-        if (g_pl.pcm) { x_snd_pcm_drop(g_pl.pcm); x_snd_pcm_prepare(g_pl.pcm); }
+        /* On Bluetooth, drop+prepare is NOT enough: after a pause the bluealsa
+         * A2DP/LDAC encoder reservoir is left in a stale state, so the
+         * restarted stream plays as garbage (verified on-device — wired
+         * drop+prepare resumes clean; only a BT pause->restart garbles).
+         * Re-open the bluealsa PCM fresh — the same path the first (clean)
+         * play used — so the LDAC stream starts clean. setup_alsa only
+         * reopens when the output CHANGES, so close_pcm() first to force a
+         * fresh open even when staying on BT. Wired keeps the cheap
+         * drop+prepare (it resumes clean). */
+        if (g_pl.output == OUT_BT) {
+            close_pcm();
+            if (setup_alsa(g_pl.rate, g_pl.channels) < 0) {
+                plog("re-seek: bluealsa reopen failed");
+                close_mh(); g_pl.state = PLAYER_STOPPED; return -1;
+            }
+        } else if (g_pl.pcm) {
+            x_snd_pcm_drop(g_pl.pcm); x_snd_pcm_prepare(g_pl.pcm);
+        }
         int64_t base = 0;
         for (int i = 0; i < idx; i++) base += g_pl.tracks[i].duration_ms;
         g_pl.track_base_ms = base;
@@ -1202,6 +1230,23 @@ static int book_is_playable(int book_id) {
 #define RESUME_REWIND_MS 5000
 
 static void cmd_play(int book_id, int64_t start_ms) {
+    /* Drop a duplicate RESUME of the book that's already playing. This is the
+     * close of the resume race: the user taps a book to play (CMD_PLAY -1),
+     * but the player thread is still in its 20ms idle usleep so g_pl.state is
+     * PLAYER_STOPPED when an AVRCP/keypress arrives in that window — the BT
+     * speaker auto-sends an AVRCP PLAY the instant we take the A2DP slot, and
+     * player_toggle's STOPPED branch then submits a SECOND CMD_PLAY(-1) for
+     * the same book. Both then run: the first resumes at the saved spot, the
+     * second re-opens + re-seeks the same track and starts a fresh decode into
+     * the SAME bluealsa PCM — two decode streams on one PCM = garbled/doubled
+     * audio. (Passing -1 on both already prevented position loss; this guard
+     * prevents the audible double-play itself.) Only a resume (-1) of the
+     * currently-PLAYING same book is dropped — a seek (start_ms>=0), a play of
+     * a different book, or any play while not playing still proceeds. */
+    if (start_ms < 0 && g_pl.state == PLAYER_PLAYING && book_id == g_pl.book_id) {
+        plog("PLAY book %d @%lld dropped (already playing this book, resume)", book_id, (long long)start_ms);
+        return;
+    }
     g_pl.book_id = book_id;
     g_pl.last_book = book_id;
     g_pl.fmt_unsupported = 0;
