@@ -252,15 +252,25 @@ folder names.
 
 ## Audio Unlocks
 
-The current release also enables three non-audiobook stock-feature unlocks:
+Since v2.0.17 the release also enables three non-audiobook stock-feature
+unlocks (applied by `tools/patch_r1_audio_feature_unlocks.py`):
 
-- Native DSD marker for analog output.
-- Bluetooth SBC XQ startup option.
-- USB DAC-related settings/flags.
+- Native DSD marker for analog output (`AnalogDsdNative: native` in
+  `ot_devices.json`).
+- Bluetooth SBC XQ startup option (`--sbc-quality=xq` in `/usr/bin/bt_init`).
+- USB DAC-related settings/flags (`usb_mode`, `dac_feedback`, `car_mode`,
+  `standby`, `about`, `dac_to_store` in `set_functions.json` /
+  `midi_set_functions.json` / `config.json`).
 
-These are verified by file/resource markers and light device testing, but they
-are less central than the audiobook flow. Future builds should keep them
-separable so audiobook bug fixes can be evaluated independently.
+These were carried by every pre-2.0 release (v1.5.0-v1.6.3) but were dropped at
+the v2.0.0 NativeApp pivot and are restored in v2.0.17. They are pure
+resource/shell-config tweaks (no binary, boot, PMIC, or mount changes), so they
+are independent of the audiobook app and its hook. USB DAC and boot-ADB share the
+single USB gadget controller and are mutually exclusive by USB working mode, so
+both can ship together. SBC XQ applies to the audiobook BT path too (the app
+drives `pcm.bluealsa` directly) and was on-device verified not to regress BT
+output. Future builds should keep them separable so audiobook bug fixes can be
+evaluated independently.
 
 ## Performance And Battery Notes
 

@@ -2,6 +2,41 @@
 
 All public releases are for the normal HiBy R1 on stock firmware 1.6. Do not install these packages on the R1 MIDI.
 
+## v2.0.17 - 2026-07-20
+
+Firmware marker: `2.0.17` - About-screen label `HiBy R1 2.0.17`.
+
+Restores three general device/music feature unlocks that the NativeApp pivot
+(v2.0.0) had dropped, even though the tooling for them was never removed. Every
+pre-2.0 release (v1.5.0 through v1.6.3) shipped these; they were simply left out
+of the v2.0.x build invocations. They are pure stock-resource / shell-config
+tweaks (no binary, boot, PMIC, or mount changes), so they layer onto v2.0.16
+without touching the audiobook app or its hook. Install over v2.0.4 (or any
+v2.0.x); library, resume positions, bookmarks, and BT pairings are preserved.
+
+### Restored stock-feature unlocks
+
+- **USB DAC mode**: unlocks the USB-DAC working mode and related Settings flags
+  (`usb_mode`, `dac_feedback`, `car_mode`, `standby`, `about`, `dac_to_store`) in
+  `set_functions.json` / `midi_set_functions.json` / `config.json`. USB-DAC and
+  boot-ADB share the one USB gadget controller and stay mutually exclusive by
+  System -> USB working mode (Device = ADB on; DAC = USB audio out, ADB off that
+  session). This is complementary to the boot-ADB shipped since v2.0.15, not a
+  conflict.
+- **Native DSD**: sets `AnalogDsdNative: native` on the analog output device in
+  `ot_devices.json`, enabling native DSD on the analog output path for the stock
+  Music player.
+- **Bluetooth SBC XQ**: adds `--sbc-quality=xq` to the BlueALSA launch in
+  `/usr/bin/bt_init`, raising SBC encoding quality when the receiving device
+  supports it. Because the audiobook app drives `pcm.bluealsa` directly for BT
+  output, this also applies to audiobook-over-BT; on-device testing confirmed
+  no regression vs v2.0.16's BT path.
+
+Everything else is unchanged from 2.0.16: SD-primary bookmarks, PNG and
+progressive-JPEG covers, Bluetooth A2DP output with AVRCP remote and wired
+fallback, SD-primary resume positions, boot ADB, and the storage-full scan
+guard. The audiobook app and hook library are byte-identical to v2.0.16.
+
 ## v2.0.16 - 2026-07-19
 
 Firmware marker: `2.0.16` - About-screen label `HiBy R1 2.0.16`.

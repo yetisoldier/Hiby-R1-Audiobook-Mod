@@ -71,25 +71,30 @@ present before a firmware package can be trusted.
 
 ## 3. Build The Audiobook Firmware
 
-The current release-style build uses the native Audiobooks hub, generated views,
-DB maintenance, resume runtime, custom icon, and the optional audio unlocks:
+The current (v2.0.x) release-style build uses the NativeApp pivot
+(`-IncludeAudiobookNativeApp`), boot ADB, and the three optional audio unlocks
+that the pre-2.0 line carried and v2.0.17 restores:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File tools\build_r1_audiobook_firmware.ps1 `
-  -OutDir work\audiobook-firmware-1.6.18-audiobook `
-  -OutputUpt work\audiobook-firmware-1.6.18-audiobook\r1-audiobooks-1.6.18-audiobook.upt `
-  -IncludeAudiobookLauncherIcon `
+  -OutDir work\audiobook-firmware-2.0.17 `
+  -OutputUpt work\audiobook-firmware-2.0.17\r1-audiobooks-2.0.17.upt `
+  -IncludeAudiobookNativeApp `
+  -EnableBootAdb `
   -UnlockNativeDsd `
   -EnableBluetoothSbcXq `
   -UnlockUsbDacMode `
-  -IncludeAudiobookResumeRuntime `
-  -IncludeAudiobookDbMaintenance `
-  -IncludeAudiobookNativeHubLauncher `
-  -IncludeAudiobookNativeHubViewRows `
-  -CustomVersionId 1.6.18-audiobook `
-  -CustomVersionLabel "HiBy R1 Audiobook FW 1.6.18"
+  -CustomVersionId 2.0.17 `
+  -CustomVersionLabel "HiBy R1 2.0.17"
 ```
+
+The NativeApp pivot is mutually exclusive with the legacy resume-daemon switches
+(`-IncludeAudiobookResumeRuntime`, `-IncludeAudiobookDbMaintenance`,
+`-IncludeAudiobookNativeHubLauncher`, `-IncludeAudiobookNativeHubViewRows`, etc.)
+- use `-IncludeAudiobookNativeApp` alone for those. The three audio unlocks
+(`-UnlockNativeDsd`, `-EnableBluetoothSbcXq`, `-UnlockUsbDacMode`) are
+independent of that guard and combine cleanly with the pivot.
 
 Build switches should stay explicit for release candidates. That makes it clear
 which risky features are included.
