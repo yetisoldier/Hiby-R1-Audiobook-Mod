@@ -20,6 +20,7 @@
 #include "scan.h"
 #include "tags.h"
 #include "posstore.h"      /* pos_remove_sd: drop stale SD .pos for pruned books */
+#include "bookmark_sd.h"   /* bookmark_remove_book_sd: drop stale SD .bm */
 
 /* ---- Limits ------------------------------------------------------------- */
 
@@ -946,6 +947,8 @@ int audiobook_cleanup_orphans(sqlite3 *db, scan_progress_cb progress,
         /* Drop the SD position file too so stale .pos don't accumulate for
          * books whose folder is gone. */
         pos_remove_sd(dead_ids[i]);
+        /* And the SD bookmark file for the same reason. */
+        bookmark_remove_book_sd(dead_ids[i]);
         removed++;
     }
 

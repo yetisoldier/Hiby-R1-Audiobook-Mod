@@ -16,6 +16,7 @@
 #include <errno.h>
 #include <time.h>
 #include "library.h"
+#include "bookmark_sd.h"
 
 /* ---- Schema bootstrap SQL (from orphaned binary) ----------------------- */
 
@@ -668,64 +669,74 @@ int audiobook_save_progress(sqlite3 *db, const audiobook_progress_t *p) {
 }
 
 /* ---- Bookmarks ---------------------------------------------------------- */
+/* Bookmarks are SD-primary (bookmark_sd.{c,h}); library.db's `bookmarks`
+ * table is no longer read or written. It stays in the schema (no migration)
+ * but is inert. The db param is retained on these signatures only so
+ * audiobook_list_bookmarks can run a one-time DB->SD migration the first time
+ * a book's bookmark screen is opened. */
 
 int audiobook_add_bookmark(sqlite3 *db, int book_id, int track_id,
                            int64_t position_ms, int64_t total_book_position_ms,
                            const char *label) {
-    sqlite3_stmt *stmt = NULL;
-    if (sqlite3_prepare_v2(db, SQL_ADD_BOOKMARK, -1, &stmt, NULL) != SQLITE_OK)
+    (void)db;   /* SD-primary; DB no longer holds bookmarks */
+    int created_at = -1;
+    if (bookmark_save_sd(book_id, track_id, position_ms,
+                         total_book_position_ms, label, &created_at) != 0)
         return -1;
-    int now = (int)time(NULL);
-    sqlite3_bind_int(stmt, 1, book_id);
-    if (track_id > 0) sqlite3_bind_int(stmt, 2, track_id);
-    else sqlite3_bind_null(stmt, 2);
-    sqlite3_bind_int64(stmt, 3, position_ms);
-    sqlite3_bind_int64(stmt, 4, total_book_position_ms);
-    sqlite3_bind_text(stmt, 5, label, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 6, now);
-    sqlite3_bind_int(stmt, 7, now);
-    int ret = -1;
-    if (sqlite3_step(stmt) == SQLITE_DONE)
-        ret = (int)sqlite3_last_insert_rowid(db);
-    sqlite3_finalize(stmt);
-    return ret;
+    return created_at;
 }
 
 int audiobook_list_bookmarks(sqlite3 *db, int book_id,
                             int (*cb)(const audiobook_bookmark_t *bm, void *ctx),
                             void *ctx) {
-    sqlite3_stmt *stmt = NULL;
-    if (sqlite3_prepare_v2(db, SQL_LIST_BOOKMARKS, -1, &stmt, NULL) != SQLITE_OK)
-        return -1;
-    sqlite3_bind_int(stmt, 1, book_id);
-    int count = 0;
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        audiobook_bookmark_t bm;
-        memset(&bm, 0, sizeof(bm));
-        bm.bookmark_id = sqlite3_column_int(stmt, 0);
-        bm.book_id = sqlite3_column_int(stmt, 1);
-        bm.track_id = sqlite3_column_int(stmt, 2);
-        bm.position_ms = sqlite3_column_int64(stmt, 3);
-        bm.total_book_position_ms = sqlite3_column_int64(stmt, 4);
-        safe_strcpy(bm.label, sizeof(bm.label),
-                    (const char *)sqlite3_column_text(stmt, 5));
-        bm.created_at = sqlite3_column_int(stmt, 6);
-        bm.updated_at = sqlite3_column_int(stmt, 7);
-        count++;
-        if (cb && cb(&bm, ctx) != 0) break;
+    /* One-time migration: the first time a book's bookmarks are listed and no
+     * .bm file exists yet, export any legacy in-DB bookmarks to SD (preserving
+     * their created_at ids) and leave an empty marker so the DB is never
+     * re-queried for this book. After migration SD is authoritative. */
+    if (!bookmark_file_exists_sd(book_id)) {
+        sqlite3_stmt *stmt = NULL;
+        if (sqlite3_prepare_v2(db, SQL_LIST_BOOKMARKS, -1, &stmt, NULL)
+                == SQLITE_OK) {
+            sqlite3_bind_int(stmt, 1, book_id);
+            int cap = 8, n = 0;
+            audiobook_bookmark_t *rows = malloc(cap * sizeof(*rows));
+            while (sqlite3_step(stmt) == SQLITE_ROW) {
+                if (!rows) break;
+                if (n == cap) {
+                    int ncap = cap * 2;
+                    audiobook_bookmark_t *nr = realloc(rows, ncap * sizeof(*rows));
+                    if (!nr) break;
+                    rows = nr; cap = ncap;
+                }
+                audiobook_bookmark_t *bm = &rows[n++];
+                memset(bm, 0, sizeof(*bm));
+                bm->bookmark_id = sqlite3_column_int(stmt, 0);
+                bm->book_id = sqlite3_column_int(stmt, 1);
+                bm->track_id = sqlite3_column_int(stmt, 2);
+                bm->position_ms = sqlite3_column_int64(stmt, 3);
+                bm->total_book_position_ms = sqlite3_column_int64(stmt, 4);
+                safe_strcpy(bm->label, sizeof(bm->label),
+                            (const char *)sqlite3_column_text(stmt, 5));
+                bm->created_at = sqlite3_column_int(stmt, 6);
+                bm->updated_at = sqlite3_column_int(stmt, 7);
+            }
+            sqlite3_finalize(stmt);
+            /* rows arrive newest-first (SQL_LIST_BOOKMARKS ORDER BY DESC);
+             * bookmark_migrate_sd reverses to oldest-first for the file. */
+            bookmark_migrate_sd(book_id, rows, n);
+            free(rows);
+        } else {
+            /* DB unreadable for this book — still drop a marker so we don't
+             * retry the migration every list. */
+            bookmark_migrate_sd(book_id, NULL, 0);
+        }
     }
-    sqlite3_finalize(stmt);
-    return count;
+    return bookmark_list_sd(book_id, cb, ctx);
 }
 
-int audiobook_delete_bookmark(sqlite3 *db, int bookmark_id) {
-    sqlite3_stmt *stmt = NULL;
-    if (sqlite3_prepare_v2(db, SQL_DELETE_BOOKMARK, -1, &stmt, NULL) != SQLITE_OK)
-        return -1;
-    sqlite3_bind_int(stmt, 1, bookmark_id);
-    int ret = (sqlite3_step(stmt) == SQLITE_DONE) ? 0 : -1;
-    sqlite3_finalize(stmt);
-    return ret;
+int audiobook_delete_bookmark(sqlite3 *db, int book_id, int bookmark_id) {
+    (void)db;   /* SD-primary; DB no longer holds bookmarks */
+    return bookmark_delete_sd(book_id, bookmark_id);
 }
 
 /* ---- Search ------------------------------------------------------------- */

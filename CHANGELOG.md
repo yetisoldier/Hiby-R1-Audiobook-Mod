@@ -2,6 +2,37 @@
 
 All public releases are for the normal HiBy R1 on stock firmware 1.6. Do not install these packages on the R1 MIDI.
 
+## v2.0.16 - 2026-07-19
+
+Firmware marker: `2.0.16` - About-screen label `HiBy R1 2.0.16`.
+
+Hardens bookmark storage so a full internal data partition can never lose or
+refuse a bookmark. Install over v2.0.4 (or any v2.0.x); library, resume
+positions, bookmarks, and BT pairings are preserved.
+
+### Bookmarks are now SD-primary
+
+- Bookmarks are saved to the SD card (`bookmark_sd.{c,h}`, one tiny
+  `<book_id>.bm` file per book under `.audiobook_pos/`), not to `library.db` on
+  the internal partition. Adding a bookmark now touches only the SD card, so a
+  full `/usr/data` can no longer poison the sqlite connection or flip Now Playing
+  to "Book not found" the way a failed DB write could. Mirrors the proven
+  SD-primary position store (`posstore.h`).
+- Each `.bm` is written atomically (temp file then rename within one directory),
+  so a power cut cannot corrupt an existing set; a damaged line is skipped on
+  read, so the worst case is losing one book's marks, never the whole library DB.
+- `created_at` doubles as the bookmark id reported to the UI, so the existing
+  jump/delete paths in `ui.c` are unchanged (`audiobook_delete_bookmark` gained
+  a `book_id` param so the SD file can be located; the one call site was updated).
+- Existing in-DB bookmarks migrate to SD automatically the first time a book's
+  bookmark screen is opened (one-time, per-book; an empty marker file is left
+  even when the DB has no rows so the DB is never re-queried). The `bookmarks`
+  table stays in the schema but is now inert.
+- Orphan-prune drops a removed book's `.bm` alongside its `.pos`
+  (`bookmark_remove_book_sd` next to `pos_remove_sd` in `scan.c`).
+- The library database itself stays on the UBIFS internal partition
+  (power-cut-safe), unchanged for books/tracks/chapters/progress.
+
 ## v2.0.15 - 2026-07-19
 
 Firmware marker: `2.0.15` - About-screen label `HiBy R1 2.0.15`.

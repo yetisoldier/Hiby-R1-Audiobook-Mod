@@ -1854,7 +1854,8 @@ static int handle_bookmarks_longpress(ui_state_t *ui, int x, int y) {
     c.rows = calloc(c.capacity, sizeof(bookmark_row_t));
     audiobook_list_bookmarks(ui->db, ui->current_book_id, bm_collect_cb, &c);
     if (idx < c.count) {
-        audiobook_delete_bookmark(ui->db, c.rows[idx].bookmark_id);
+        audiobook_delete_bookmark(ui->db, ui->current_book_id,
+                                  c.rows[idx].bookmark_id);
         ui_log("[ui] deleted bookmark idx=%d id=%d\n", idx,
                c.rows[idx].bookmark_id);
     }

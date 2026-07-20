@@ -198,8 +198,9 @@ int audiobook_list_bookmarks(sqlite3 *db, int book_id,
                             int (*cb)(const audiobook_bookmark_t *bm, void *ctx),
                             void *ctx);
 
-/* Delete a bookmark. Returns 0 on success. */
-int audiobook_delete_bookmark(sqlite3 *db, int bookmark_id);
+/* Delete a bookmark. book_id is required (the SD store is one file per book).
+ * bookmark_id is the created_at assigned at add time. Returns 0 on success. */
+int audiobook_delete_bookmark(sqlite3 *db, int book_id, int bookmark_id);
 
 /* ---- Search ------------------------------------------------------------- */
 
