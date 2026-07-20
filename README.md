@@ -3,20 +3,21 @@
 A self-contained audiobook app for the normal HiBy R1, based on stock HiBy R1
 firmware 1.6. **Not for the R1 MIDI.**
 
-> **v2.0.0 ("2.0 A") is the current release.** It replaces the older v1.6.x
-> resume-daemon / stock-route approach with a dedicated in-process audiobook app
-> (`audiobook_app/`) that draws its own UI and drives audio through ALSA.
+> **v2.0.16 is the current release.** It ships the dedicated in-process
+> audiobook app (`audiobook_app/`) that draws its own UI and drives audio
+> through ALSA, replacing the older v1.6.x resume-daemon / stock-route approach.
 
 ## Current release
 
-- **Version marker:** `2.0A`
-- **About-screen label:** `HiBy R1 2.0 A`
-- **Download:** <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v2.0.0>
-- **Package:** `r1-audiobooks-2.0A.upt` (rename to `r1.upt` to install)
-- **UPT MD5:** `5153a5a80e9a4acdc9d2748011b0c34d`
-- **UPT SHA256:** `ab954621a02f7610563775d3e3770b69fff793ab9e13c324669dac77c1d5e1c8`
-- **Persistent boot-ADB:** disabled (public release). Use a `-EnableBootAdb`
- development build for testing.
+- **Version marker:** `2.0.16`
+- **About-screen label:** `HiBy R1 2.0.16`
+- **Download:** <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v2.0.16>
+- **Package:** `r1-audiobooks-2.0.16.upt` (rename to `r1.upt` to install)
+- **UPT MD5:** `2826d58dfd5ca15e5e4a9a452ca6fac0`
+- **UPT SHA256:** `8f32daeb968930544a71eea595171cad8cab1abb135195cf430b44489db85afb`
+- **Persistent boot-ADB:** enabled. ADB starts automatically after every boot
+ (installs `/etc/init.d/S90adb`), so the device is reachable over USB without a
+ manual enable. Drop `-EnableBootAdb` from the build for a no-ADB variant.
 - **Base firmware:** stock HiBy R1 1.6 (normal R1).
 
 Before flashing, keep a known-good stock 1.6 `r1.upt` for recovery. This is
@@ -52,7 +53,8 @@ The audiobook app runs **in-process** inside `hiby_player`:
  framebuffer buffer *before* each pan. This keeps HiBy's display loop (and the
  touch controller) alive while showing our UI.
 - The event loop reads touch and the hardware keys, and the player engine
- decodes MP3 / M4B and writes PCM straight to ALSA.
+ decodes MP3 / M4B and writes PCM to ALSA (wired) or BlueALSA (Bluetooth A2DP),
+ falling back to wired when no BT sink is connected.
 - Exiting the app clears the framebuffer and returns immediately so the HiBy
  launcher redraws cleanly.
 
@@ -81,7 +83,11 @@ browser, Bluetooth, USB, and system UI are otherwise untouched.
 - **M4B chapters** parsed from the embedded QuickTime chapter track (stsc-aware)
  or Nero `chpl`; MP3 books get one chapter per file. Tap a chapter to seek.
 - **Bookmarks**: tap **Mark** on Now Playing to add; tap to jump; long-press to
- delete.
+ delete. Bookmarks are stored on the SD card, so a full internal data partition
+ can never lose one.
+- **Bluetooth A2DP output**: streams to paired Bluetooth headphones (BlueALSA),
+ with AVRCP play/pause from the remote. Falls back to the wired output
+ automatically when no BT sink is connected.
 
 **Hardware**
 - Power button toggles backlight (audio keeps playing dark; double-tap wakes).
@@ -110,7 +116,7 @@ browser, Bluetooth, USB, and system UI are otherwise untouched.
 
 ## Install
 
-1. Download `r1-audiobooks-2.0A.upt` from the release page.
+1. Download `r1-audiobooks-2.0.16.upt` from the release page.
 2. Rename it to exactly `r1.upt` (the R1 will not recognize the update otherwise).
 3. Copy it to the root of the SD card.
 4. On the R1, run the normal firmware update (System -> Firmware Update -> Local).
@@ -144,19 +150,21 @@ Build the hook/app shared library:
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\build_r1_audiobook_hook.ps1
 ```
 
-Build the public-release firmware (no boot-ADB, version 2.0 A):
+Build the public-release firmware (version 2.0.16):
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\build_r1_audiobook_firmware.ps1 `
- -OutDir work\audiobook-firmware-2.0A `
- -OutputUpt work\audiobook-firmware-2.0A\r1-audiobooks-2.0A.upt `
+ -OutDir work\audiobook-firmware-2.0.16 `
+ -OutputUpt work\audiobook-firmware-2.0.16\r1-audiobooks-2.0.16.upt `
  -IncludeAudiobookNativeApp `
- -CustomVersionId 2.0A `
- -CustomVersionLabel "HiBy R1 2.0 A"
+ -EnableBootAdb `
+ -CustomVersionId 2.0.16 `
+ -CustomVersionLabel "HiBy R1 2.0.16"
 ```
 
-Development builds add `-EnableBootAdb` for persistent ADB (installs
-`/etc/init.d/S90adb`). **Do not** include `-EnableBootAdb` in public releases.
+`-EnableBootAdb` installs `/etc/init.d/S90adb` so ADB starts automatically after
+every boot. The v2.0.16 public release ships with it on; drop the flag for a
+build without persistent ADB.
 
 The NativeApp build is mutually exclusive with the legacy resume-daemon
 switches (`-IncludeAudiobookLauncherGenre`, `-IncludeAudiobookResumeRuntime`,
@@ -173,7 +181,7 @@ alone.
 - `docs/github_release_process.md` - GitHub Release publishing runbook.
 - `docs/production_release_checklist.md` - release and verification checklist.
 - `docs/screenshots/` - README screenshots.
-- `firmware/releases/v2.0.0/` - v2.0.0 release notes, checksums, and package.
+- `firmware/releases/v2.0.16/` - v2.0.16 release notes and checksums.
 - `CHANGELOG.md` - release history.
 
 ## Attribution and sources
