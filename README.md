@@ -15,8 +15,8 @@ firmware 1.6. **Not for the R1 MIDI.**
 - **About-screen label:** `HiBy R1 2.0.17`
 - **Download:** <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v2.0.17>
 - **Package:** `r1-audiobooks-2.0.17.upt` (rename to `r1.upt` to install)
-- **UPT MD5:** _filled after build_
-- **UPT SHA256:** _filled after build_
+- **UPT MD5:** `57ff9f1cd47420fe0ac71231139adf5d`
+- **UPT SHA256:** `1d50f0aa2b217d0d68135dd5dfa22912f2f1911f921e2736f1f46eac80282fa5`
 - **Boot ADB:** included (installs `/etc/init.d/S90adb`). ADB is available at
  boot whenever System → USB working mode is set to **Device** (mode 1). ADB and
  USB-DAC share the single USB gadget controller and are mutually exclusive by
