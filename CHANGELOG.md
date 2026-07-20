@@ -2,6 +2,56 @@
 
 All public releases are for the normal HiBy R1 on stock firmware 1.6. Do not install these packages on the R1 MIDI.
 
+## v2.0.18 - 2026-07-20
+
+Firmware marker: `2.0.18` - About-screen label `HiBy R1 2.0.18`.
+
+Fixes the scanner so long audiobooks report their real duration instead of
+being shown as only a couple of hours. This was a scanner (tag-reader) bug,
+not a playback bug - the audio itself played correctly end to end. Install
+over v2.0.4 (or any v2.0.x); library, resume positions, bookmarks, and BT
+pairings are preserved. After install, open the Audiobooks app and tap
+Refresh Library once so the corrected durations are stored.
+
+### Fixed: long-audiobook duration under-reporting (tags.c)
+
+Two independent causes, both in the scanner's tag reader:
+
+- **MP3 VBR duration**: the scanner estimated duration from the bitrate of the
+  first audio frame only and never read the Xing / Info / Fraunhofer VBRI header
+  that stores the true frame count. For VBR books whose first frame is a
+  low-bitrate silence frame, the estimate was a fraction of the real length.
+  The scanner now parses the Xing / Info header (at first-frame + 4 + side
+  info: 32 bytes stereo / 17 mono for MPEG-1, 17 / 9 for MPEG-2 / 2.5) and the
+  VBRI header (fixed at first-frame + 4 + 32), computing duration as
+  `frames * samples_per_frame * 1000 / sample_rate`, and falls back to a full
+  bitrate sweep only for true CBR files. The ID3v2 syncsafe size in the first
+  10 bytes is read first so the first MPEG frame is found regardless of ID3v2
+  size (some books had cover-art-bearing ID3v2 tags over 64 KB, which the old
+  64 KB read could not pass).
+- **M4B / AAC large-moov duration**: the old `parse_qt_atoms` walker used each
+  atom's declared end to recurse, which on large `moov` atoms ran past the
+  256 KB read buffer and read garbage, corrupting the `mvhd` duration. The
+  scanner now memory-maps the whole `moov` atom via the existing `read_moov`
+  helper (the same mmap that fixed the big-moov scan-hang in v2.0.4) and reads
+  the `mvhd` duration directly via `qt_find_child`, so moov-at-end and very
+  large moov atoms are handled correctly.
+
+Verified on-device against all 298 files on the test library: 44 books
+corrected, no regressions. Examples: Trilobyte 5.1 h -> 25.5 h; Dad Is Fat
+2.7 h -> 5.4 h; Johnny 8.9 h -> 11.0 h; Saint Odd 1.9 h -> 9.3 h. Books whose
+duration was already correct are unchanged.
+
+The fix lives in the scanner; playback, resume, and bookmarks are untouched.
+A re-scan (Refresh Library) re-reads every book's duration and stores the
+corrected value; it does not restart in-progress books.
+
+Everything else is unchanged from 2.0.17: the three stock-feature unlocks
+(USB DAC, Native DSD, Bluetooth SBC XQ), SD-primary bookmarks, PNG and
+progressive-JPEG covers, Bluetooth A2DP output with AVRCP remote and wired
+fallback, SD-primary resume positions, boot ADB, and the storage-full scan
+guard.
+
 ## v2.0.17 - 2026-07-20
 
 Firmware marker: `2.0.17` - About-screen label `HiBy R1 2.0.17`.

@@ -3,17 +3,18 @@
 This note maps common audiobook-player features to practical R1 firmware work.
 It is a planning document, not release behavior.
 
-> **STALE — predates the NativeApp pivot (2026-07-17).** This document was
-> written 2026-06-11 about the *resume-daemon / stock-route* approach. The
-> device now runs the **NativeApp pivot** (`-IncludeAudiobookNativeApp`), a
-> self-contained in-process audiobook app (`audiobook_app/`, LD_PRELOAD hook
-> into `hiby_player`). Many items listed below as "Hard Or Risky" or "Good Next
-> Candidates" are now **implemented** — see the "Already Covered (NativeApp)"
-> section below and the per-feature memory files in
-> `C:\Users\yetis\.claude\projects\C--Users-yetis\memory\` (e.g.
-> `Hiby-R1-wsola-speed-findings.md`, `Hiby-R1-m4b-chapters-fix.md`,
-> `Hiby-R1-cover-art-findings.md`, `Hiby-R1-thumbprewarm-starvation.md`).
-> Treat the resume-daemon sections as historical context only.
+> **⚠️ SUPERSEDED — historical record (predates the NativeApp pivot,
+> 2026-07-17).** This document was written 2026-06-11 about the
+> *resume-daemon / stock-route* approach. The device now runs the **NativeApp
+> pivot** (`-IncludeAudiobookNativeApp`), a self-contained in-process audiobook
+> app (`audiobook_app/`, LD_PRELOAD hook into `hiby_player`). Many items listed
+> below as "Hard Or Risky" or "Good Next Candidates" are now **implemented** —
+> see the "Already Covered (NativeApp)" section below. For the current,
+> authoritative per-feature reference, see the [`docs/modding/`](./modding/)
+> knowledge base (e.g. [`modding/wsola_seek_resume.md`](./modding/wsola_seek_resume.md),
+> [`modding/library_scan_storage.md`](./modding/library_scan_storage.md),
+> [`modding/cover_art.md`](./modding/cover_art.md)). Treat the resume-daemon
+> sections below as historical context only.
 
 ## Already Covered (NativeApp pivot — current)
 

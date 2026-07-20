@@ -1,5 +1,11 @@
 # Audiobook View Research
 
+> **⚠️ SUPERSEDED — historical record (pre-2.0, v1.6.x era).** This research
+> explored stock-route / generated-`_views` browsing, which the NativeApp
+> pivot (v2.0.17) replaced with an in-process UI. See
+> [`audiobook_firmware_architecture.md`](./audiobook_firmware_architecture.md)
+> and [`modding/`](./modding/). Retained as historical context.
+
 The current public firmware opens Audiobooks directly to the title list by
 reusing the stock `genre\Audiobook` route. That route is stable and keeps Music
 albums/genres/search clean, but it does not provide a custom Audiobooks submenu.

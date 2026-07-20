@@ -3,20 +3,21 @@
 A self-contained audiobook app for the normal HiBy R1, based on stock HiBy R1
 firmware 1.6. **Not for the R1 MIDI.**
 
-> **v2.0.17 is the current release.** It ships the dedicated in-process
+> **v2.0.18 is the current release.** It ships the dedicated in-process
 > audiobook app (`audiobook_app/`) that draws its own UI and drives audio
 > through ALSA, replacing the older v1.6.x resume-daemon / stock-route approach.
-> v2.0.17 restores the USB DAC, Native DSD, and Bluetooth SBC XQ unlocks that
-> the pre-2.0 line carried.
+> v2.0.18 fixes the scanner so long audiobooks report their real duration
+> instead of being shown as only a couple of hours. It also carries the USB DAC,
+> Native DSD, and Bluetooth SBC XQ unlocks restored in v2.0.17.
 
 ## Current release
 
-- **Version marker:** `2.0.17`
-- **About-screen label:** `HiBy R1 2.0.17`
-- **Download:** <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v2.0.17>
-- **Package:** `r1-audiobooks-2.0.17.upt` (rename to `r1.upt` to install)
-- **UPT MD5:** `57ff9f1cd47420fe0ac71231139adf5d`
-- **UPT SHA256:** `1d50f0aa2b217d0d68135dd5dfa22912f2f1911f921e2736f1f46eac80282fa5`
+- **Version marker:** `2.0.18`
+- **About-screen label:** `HiBy R1 2.0.18`
+- **Download:** <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v2.0.18>
+- **Package:** `r1-audiobooks-2.0.18.upt` (rename to `r1.upt` to install)
+- **UPT MD5:** `113cac24a543f8c3b681472aeaa00302`
+- **UPT SHA256:** `0c524714f58b00ba75701fa3423c5f3edabbd249218afbc45c21b9dc20cadbed`
 - **Boot ADB:** included (installs `/etc/init.d/S90adb`). ADB is available at
  boot whenever System → USB working mode is set to **Device** (mode 1). ADB and
  USB-DAC share the single USB gadget controller and are mutually exclusive by
@@ -168,7 +169,7 @@ browser, Bluetooth, USB, and system UI are otherwise untouched.
 
 ## Install
 
-1. Download `r1-audiobooks-2.0.17.upt` from the release page.
+1. Download `r1-audiobooks-2.0.18.upt` from the release page.
 2. Rename it to exactly `r1.upt` (the R1 will not recognize the update otherwise).
 3. Copy it to the root of the SD card.
 4. On the R1, run the normal firmware update (System -> Firmware Update -> Local).
@@ -205,23 +206,23 @@ Build the hook/app shared library:
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\build_r1_audiobook_hook.ps1
 ```
 
-Build the public-release firmware (version 2.0.17):
+Build the public-release firmware (version 2.0.18):
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\build_r1_audiobook_firmware.ps1 `
- -OutDir work\audiobook-firmware-2.0.17 `
- -OutputUpt work\audiobook-firmware-2.0.17\r1-audiobooks-2.0.17.upt `
+ -OutDir work\audiobook-firmware-2.0.18 `
+ -OutputUpt work\audiobook-firmware-2.0.18\r1-audiobooks-2.0.18.upt `
  -IncludeAudiobookNativeApp `
  -EnableBootAdb `
  -UnlockNativeDsd `
  -EnableBluetoothSbcXq `
  -UnlockUsbDacMode `
- -CustomVersionId 2.0.17 `
- -CustomVersionLabel "HiBy R1 2.0.17"
+ -CustomVersionId 2.0.18 `
+ -CustomVersionLabel "HiBy R1 2.0.18"
 ```
 
 `-EnableBootAdb` installs `/etc/init.d/S90adb` so ADB starts automatically after
-every boot. The v2.0.17 public release ships with it on; drop the flag for a
+every boot. The v2.0.18 public release ships with it on; drop the flag for a
 build without persistent ADB. `-UnlockNativeDsd`, `-EnableBluetoothSbcXq`, and
 `-UnlockUsbDacMode` restore the three general device/music unlocks the pre-2.0
 line carried (Native DSD on the analog path, BlueALSA SBC XQ, and the USB DAC
@@ -235,16 +236,25 @@ alone.
 
 ## Architecture and docs
 
-- `docs/audiobook_app_feature_reference.md` - feature map (note: partially
- historical; the top section reflects the current NativeApp).
-- `docs/audiobook_firmware_architecture.md` - firmware build/flash architecture.
+- `docs/modding/` - **modder knowledge base**: the reverse-engineering
+ reference for the hook architecture, flash/recovery flow, audio decode/ALSA,
+ Bluetooth A2DP/AVRCP, input keys, cover art, WSOLA/seek, library scan/storage,
+ ADB automation, and the brick-lessons/build-risk guide. Start at
+ `docs/modding/README.md`.
+- `docs/audiobook_firmware_architecture.md` - high-level firmware architecture
+ (NativeApp pivot).
 - `docs/build_flash_verify_runbook.md` - build, flash, and verify runbook.
 - `docs/adb_control_tools.md` - live ADB control (screenshots, taps, presets).
 - `docs/github_release_process.md` - GitHub Release publishing runbook.
 - `docs/production_release_checklist.md` - release and verification checklist.
+- `docs/modder_start_here.md` - orientation for modders (points into
+ `docs/modding/`).
+- `docs/audiobook_app_feature_reference.md` - historical feature map (carries a
+ superseded banner; top section reflects the NativeApp).
 - `docs/screenshots/` - README screenshots.
 - `firmware/releases/v2.0.16/` - v2.0.16 release notes and checksums.
 - `firmware/releases/v2.0.17/` - v2.0.17 release notes and checksums.
+- `firmware/releases/v2.0.18/` - v2.0.18 release notes and checksums.
 - `CHANGELOG.md` - release history.
 
 ## Attribution and sources

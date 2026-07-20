@@ -1,5 +1,15 @@
 # HiBy R1 Audiobook Firmware Investigation
 
+> **⚠️ SUPERSEDED — historical record.** This document captures the original
+> pre-2.0 (v1.6.x) investigation: the stock OTA layout, rootfs, `hiby_player`,
+> media DB schema, and early prototype ideas that led to the resume-daemon /
+> stock-route approach. The current firmware (v2.0.17) uses the **NativeApp
+> pivot** — an in-process `LD_PRELOAD` hook into `hiby_player` — which replaced
+> that approach. For the current architecture read
+> [`audiobook_firmware_architecture.md`](./audiobook_firmware_architecture.md)
+> and the [`docs/modding/`](./modding/) knowledge base. The findings below are
+> retained as historical reference; do not follow them as a current build path.
+
 Working target: HiBy R1 stock firmware 1.6, normal R1, not MiDi.
 
 ## Stock Firmware Source

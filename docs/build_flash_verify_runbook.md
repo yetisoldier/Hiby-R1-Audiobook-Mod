@@ -6,11 +6,22 @@ firmware, not for normal end users.
 
 ## Current Release Reference
 
-- Public release: `v1.6.1`
-- Firmware marker: `1.6.18-audiobook`
-- Package: `r1-audiobooks-1.6.18-audiobook.upt`
+- Public release: `v2.0.17`
+- About-screen label: `HiBy R1 2.0.17`
+- Package: `r1-audiobooks-2.0.17.upt`
 - Base firmware: stock HiBy R1 1.6 for the normal R1
 - Target device: normal HiBy R1 only, not R1 MIDI
+- Source branch: `codex/r1-hiby-modding-integration` (the `main` branch has no
+  `audiobook_app/`; all source lives on the codex branch — GitHub release
+  `--target` must point at the codex branch).
+
+> This runbook was rewritten for the v2.0.x "NativeApp" pivot (in-process
+> `LD_PRELOAD` hook into `hiby_player`). The pre-2.0 v1.6.x resume-daemon /
+> DB-watcher / generated-`_views` workflow it replaced is historical. For the
+> deep architecture and the change categories that have bricked the device,
+> see [`docs/modding/`](./modding/) — especially
+> [`modding/brick_lessons_build_categories.md`](./modding/brick_lessons_build_categories.md)
+> before building or flashing anything.
 
 ## Prerequisites
 
@@ -47,27 +58,28 @@ work\original\rootfs.squashfs
 The R1 `.upt` is an ISO-style OTA image with `ota_config.in` and chunked files
 under `ota_v0`. The extraction script reconstructs the kernel and rootfs.
 
-## 2. Build Native Helpers
+## 2. Build The Native App + Hook
 
-The DB helper is a static MIPS binary built from C plus SQLite:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass `
-  -File tools\build_r1_db_maint_helper.ps1
-```
-
-If resume helper binaries were changed, rebuild them too:
+The NativeApp pivot builds the hook shared library (`libaudiobook_hook.so`,
+~1.6 MB) and the native smoke-test helper from `audiobook_app/` with
+`zig cc` (target `mipsel-linux-gnueabihf.2.22`). This is handled by the
+firmware build script in §3, which invokes `tools/build_r1_audiobook_hook.ps1`.
+To build just the hook/app in isolation (for a quick check):
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass `
-  -File tools\build_r1_memscan_helper.ps1
-
-powershell -NoProfile -ExecutionPolicy Bypass `
-  -File tools\build_r1_direct_open_helper.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\build_r1_audiobook_hook.ps1
 ```
 
-The release verifier checks that the expected helper strings/features are
-present before a firmware package can be trusted.
+The Zig toolchain lives under `.deps\zig\` (gitignored by design); the build
+script throws if it is missing. Install it via
+`tools\build_r1_db_maint_helper.ps1` if needed. Static linking is NOT
+supported for this glibc target — the hook is a shared lib. See
+[`modding/hook_architecture.md`](./modding/hook_architecture.md) for the
+full build flags and ABI pin rationale.
+
+(The legacy `build_r1_db_maint_helper.ps1` / `build_r1_memscan_helper.ps1`
+/ `build_r1_direct_open_helper.ps1` build the v1.6.x resume-daemon helpers
+and are NOT used by the NativeApp pivot.)
 
 ## 3. Build The Audiobook Firmware
 
@@ -119,69 +131,114 @@ This checks:
 - QEMU/user-mode MIPS DB helper fixture.
 - Git whitespace.
 
-Run the release package verifier:
+Run the release package verifier against the NativeApp build:
 
 ```powershell
 python tools\verify_r1_audiobook_build.py `
-  --out-dir work\audiobook-firmware-1.6.18-audiobook `
-  --upt-name r1-audiobooks-1.6.18-audiobook.upt `
-  --expected-version 1.6.18-audiobook `
-  --expected-label "HiBy R1 Audiobook FW 1.6.18" `
-  --require-db-maintenance `
-  --expect-audiobook-launcher-icon `
+  --out-dir work\audiobook-firmware-2.0.17 `
+  --upt-name r1-audiobooks-2.0.17.upt `
+  --expected-version 2.0.17 `
+  --expected-label "HiBy R1 2.0.17" `
   --expect-native-dsd `
   --expect-sbc-xq `
   --expect-usb-dac-mode `
-  --expect-native-hub-launcher `
-  --expect-native-hub-view-rows `
   --expect-current-hashes
 ```
 
-The verifier is intentionally strict. It checks exact patch bytes, rootfs modes,
-hashes, scripts, resources, feature markers, and known-bad package hashes.
+The verifier is intentionally strict. It checks exact patch bytes, rootfs
+modes, hashes, scripts, resources, feature markers, and known-bad package
+hashes. **For NativeApp builds the legacy resume-runtime / DB-watcher checks
+FAIL — this is EXPECTED** (v2.0.16 fails them identically); only the
+unlock-specific and NativeApp checks need to pass. Do not add
+`--require-db-maintenance` / `--expect-native-hub-launcher` /
+`--expect-native-hub-view-rows` — those are v1.6.x legacy flags that
+contradict the NativeApp pivot.
 
 ## 5. Stage Firmware On The R1
 
-Enable ADB on the R1, connect it, then stage the verified package:
+Enable ADB on the R1 (System → USB working mode = Device, since v2.0.14 boot
+ADB starts it automatically), connect it, then stage the verified package.
+The staging script runs local verification, refuses known-bad hashes, pushes
+to `/usr/data/mnt/sd_0/r1.upt`, backs up an existing different `r1.upt`, and
+verifies remote byte count + hashes:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File tools\adb_stage_verified_firmware.ps1 `
-  -Package firmware\releases\v1.6.1\r1-audiobooks-1.6.18-audiobook.upt `
-  -BuildOutDir work\audiobook-firmware-1.6.18-audiobook `
+  -Package work\audiobook-firmware-2.0.17\r1-audiobooks-2.0.17.upt `
+  -BuildOutDir work\audiobook-firmware-2.0.17 `
   -ExpectCurrentHashes `
   -ExpectNativeDsd `
   -ExpectBluetoothSbcXq `
   -ExpectUsbDacMode `
-  -ExpectNativeHubLauncher `
-  -ExpectNativeHubViewRows `
   -IUnderstandThisStagesFirmware
 ```
 
-The staging script:
-
-- Runs local firmware verification first.
-- Refuses known bad package hashes.
-- Pushes the package to `/usr/data/mnt/sd_0/r1.upt`.
-- Backs up an existing different `r1.upt`.
-- Verifies remote byte count and hashes.
+> **Gotcha:** `adb_stage_verified_firmware.ps1` defaults to staging the stale
+> 1.6.16.6 build — it does not know the NativeApp pivot output path. If it
+> does not pick up your 2.0.x `.upt`, stage directly with `adb push` instead
+> (gives no auto-backup, so back up the prior image first):
+>
+> ```bash
+> adb shell cp /usr/data/mnt/sd_0/r1.upt /usr/data/mnt/sd_0/r1.upt.prev.bak
+> MSYS_NO_PATHCONV=1 adb -s <serial> push work\audiobook-firmware-2.0.17\r1-audiobooks-2.0.17.upt /usr/data/mnt/sd_0/r1.upt
+> adb shell md5sum /usr/data/mnt/sd_0/r1.upt
+> ```
+>
+> The `MSYS_NO_PATHCONV=1` prefix is required on Windows git-bash so the
+> `/usr/...` destination is not mangled to `C:/Program Files/Git/usr/...`.
+> See [`modding/flash_and_recovery.md`](./modding/flash_and_recovery.md).
 
 ## 6. Flash On The Device
 
-Use the normal R1 firmware update UI. After the update finishes and the R1
-reboots, manually re-enable ADB if further verification is needed.
+The data-preserving ADB flash path is byte-for-byte the menu's firmware-update
+path, but driven from ADB so `/usr/data` (library.db, resume positions,
+bookmarks, BT pairings) is preserved:
 
-For normal users, remove or rename SD-root `r1.upt` after a successful flash.
-For test verification, the installed verifier can allow it to remain present.
+```bash
+# 1. (Staged in §5 — .upt is at /usr/data/mnt/sd_0/r1.upt, md5 verified.)
+
+# 2. Write the ota:kernel2 boot-MODE marker to mtd5.
+MSYS_NO_PATHCONV=1 adb -s <serial> shell /usr/bin/bootmode.sh Recovery
+
+# 3. Reboot into recovery — bootmode.sh does NOT reboot on its own.
+adb -s <serial> reboot
+```
+
+`bootmode.sh Recovery` does `flash_erase /dev/mtd5 0 1` + `nandwrite -s 0 -p
+/dev/mtd5 -` to write a 256-byte `ota:kernel2` marker. After `adb reboot`, the
+bootloader sees the marker, boots the recovery kernel, which validates +
+applies the staged `.upt`, and reboots into the new firmware (~90–100 s). ADB
+returns on the new version.
+
+**Critical gotchas** (all from [`modding/flash_and_recovery.md`](./modding/flash_and_recovery.md)):
+
+- `bootmode.sh Recovery` does **NOT reboot** — you must run `adb reboot`
+  separately. A flash that wrote the marker but never rebooted leaves the
+  device on the old version with nothing applied.
+- Use `Recovery` (writes `ota:kernel2`); `bootmode.sh` with no arg / `*`
+  writes `ota:kernel` — a different boot mode, not the firmware-update path.
+- **DO NOT use `/data/recovery_all` + `S39_recovery.recovery`** — that is a
+  factory reset (`rm -rf /data/*`) that wipes `/usr/data`. Only
+  `bootmode.sh Recovery` is data-preserving.
+- Prefix `MSYS_NO_PATHCONV=1` on Windows git-bash for `adb shell <abs-path>`,
+  or the path is mangled to `C:/Program Files/Git/usr/...` and the command is
+  a silent no-op.
+
+End users flashing from the SD card use the normal R1 firmware update UI
+instead (System → Firmware Update → Local); the result is identical. Remove
+or rename `r1.upt` on the SD card after a successful flash so the updater
+stops offering it.
 
 ## 7. Verify The Installed Firmware
 
-After flashing and re-enabling ADB:
+After flashing (ADB returns on the new version; no manual re-enable needed
+with boot ADB):
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File tools\adb_verify_installed_audiobook_release.ps1 `
-  -ExpectedVersion 1.6.18-audiobook `
+  -ExpectedVersion 2.0.17 `
   -ExpectNativeDsd `
   -ExpectBluetoothSbcXq `
   -ExpectUsbDacMode `
@@ -189,29 +246,24 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -CaptureFramebuffer
 ```
 
-The installed verifier checks:
+The installed verifier checks (NativeApp-relevant):
 
-- `/etc/r1_audiobook_version`
-- `/usr/resource/config.json`
-- audio unlock markers
-- resume daemon process
-- DB watcher process
-- DB helper files and feature strings
+- `/etc/r1_audiobook_version` (version + enabled-feature markers)
+- `/usr/resource/config.json` and audio unlock markers (`ot_devices.json`,
+  `bt_init`, `set_functions.json`)
+- `libaudiobook_hook.so` present in the read-only rootfs
+- the NativeApp launches (drive via `tools/r1_adb_control.py preset
+  main-audiobooks`; the app log `/tmp/.audiobook_hook.log` is the truth source
+  when the screenshot classifier reports "unknown")
 - staged firmware hygiene
-- `user.ini` saved-last audiobook cleanup
 - free space
-- media DB integrity
-- audiobook row counts
-- Music search/album leakage
-- generated catalogs
 - framebuffer capture
 
-The production `1.6.18-audiobook` package passed this installed verification on
-2026-06-22 with artifacts under:
-
-```text
-work\installed-release-verification\20260622-150507
-```
+(The legacy resume-daemon / DB-watcher / generated-catalog checks are
+v1.6.x-era and do not apply to the NativeApp pivot — those process/catalog
+checks will report absent, which is expected.) See
+[`modding/adb_automation_screenshots.md`](./modding/adb_automation_screenshots.md)
+for driving the UI over ADB safely.
 
 ## 8. Live Smoke Testing
 
@@ -255,13 +307,37 @@ docs\release_recovery_notes.md
 docs\github_release_process.md
 ```
 
-Commit and push `main`, then tag:
+Commit and push the **codex** branch (`codex/r1-hiby-modding-integration`) —
+`main` has no `audiobook_app/` and is far behind; all source lives on codex.
+Then tag:
 
 ```powershell
 git tag -a vX.Y.Z -m "HiBy R1 Audiobook Mod vX.Y.Z"
-git push origin HEAD:main
+git push origin HEAD:codex/r1-hiby-modding-integration
 git push origin vX.Y.Z
 ```
+
+Publish the GitHub Release through the checked-in REST helper. **The
+release body file MUST be pure ASCII** — PowerShell 5.1 `Get-Content -Raw`
+reads no-BOM UTF-8 as cp1252, so `ConvertTo-Json` fails with HTTP 400 on any
+non-ASCII byte. Verify `0` non-ASCII bytes before publishing:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File tools\publish_github_release.ps1 `
+  -Tag vX.Y.Z `
+  -Name "HiBy R1 Audiobook Mod vX.Y.Z" `
+  -BodyFile firmware\releases\vX.Y.Z\README.md `
+  -Assets "firmware\releases\vX.Y.Z\r1-audiobooks-...upt,firmware\releases\vX.Y.Z\MD5SUMS.txt,firmware\releases\vX.Y.Z\SHA256SUMS.txt"
+```
+
+> **Gotchas** (see [`docs/github_release_process.md`](./github_release_process.md)):
+> `gh release --target` / the REST helper target must be the **codex** branch
+> (not `main`); a transient 503→422 "asset already exists" response cleans up
+> on retry; and on Windows git-bash, **unquoted backslashes in PowerShell
+> args are stripped** (`work\release-v2.0.17\r1-audiobooks-2.0.17.upt` →
+> `workrelease-v2.0.17r1-audiobooks-2.0.17.upt`) — quote paths or use forward
+> slashes when invoking PowerShell from git-bash.
 
 Publish the GitHub Release through the checked-in REST helper:
 
@@ -289,21 +365,29 @@ download assets.
 
 ## Recovery And Rollback
 
-If a custom build fails:
+If a custom build fails (or bricks — two historical builds did, see
+[`modding/brick_lessons_build_categories.md`](./modding/brick_lessons_build_categories.md)):
 
-1. Put official stock HiBy R1 1.6 firmware on the SD card as `r1.upt`.
-2. Use the normal R1 update/recovery flow.
-3. Re-enable ADB after boot if further inspection is needed.
-4. Do not keep trying unverified packages. Inspect rootfs modes, `hiby_player`
-   executable bit, and verifier failures first.
+1. Put a known-good `r1.upt` (stock 1.6, or a prior good release like `2.0A`)
+   on the SD card root.
+2. Use the normal R1 SD-card firmware update / recovery flow. The bootloader's
+   recovery path reads the SD root even when the main rootfs is broken.
+3. Once it boots the known-good firmware, re-stage and re-flash normally.
+4. Re-enable ADB after boot if further inspection is needed (or rely on boot
+   ADB if the known-good build has `-EnableBootAdb`).
+5. Do not keep trying unverified packages. Inspect rootfs modes,
+   `hiby_player` executable bit, and verifier failures first.
 
-Known historical black-screen causes:
+See [`modding/flash_and_recovery.md`](./modding/flash_and_recovery.md) for the
+full revert path and the MTD layout. Known historical black-screen / brick
+causes (guarded in the staging/verifier scripts):
 
 - Repacked rootfs left `/usr/bin/hiby_player` non-executable.
 - A package passed a basic update but booted to black screen due to unsafe
   binary/rootfs changes.
-
-Those hashes are guarded in the staging/verifier scripts.
+- v2.0.1: bundled PMIC (AXP2101) + USB-DAC + brightness-binary-patch changes.
+- v2.0.2: `mount_ubifs.sh` `sync`→`noatime` broke the `/usr/data` UBIFS mount
+  → freeze/reset loop.
 
 ## Development Cleanup
 

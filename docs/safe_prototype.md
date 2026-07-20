@@ -1,5 +1,14 @@
 # Safe Prototype Workflow
 
+> **⚠️ SUPERSEDED — historical record (pre-2.0, v1.6.x era).** This describes
+> the old no-flash ADB prototype workflow that filtered a copied media
+> database so `/Audiobooks` paths were removed from normal Music views. The
+> current firmware (v2.0.17) is the NativeApp pivot — an in-process
+> `LD_PRELOAD` audiobook app — and does not use this approach. Retained for
+> historical/recovery context only. For the current build/flash workflow see
+> [`build_flash_verify_runbook.md`](./build_flash_verify_runbook.md) and
+> [`modding/`](./modding/).
+
 This older workflow is kept for developers and recovery-minded tinkerers. Most users should install the release firmware from the main README instead.
 
 The prototype path does not flash firmware. It uses ADB to collect the live R1 state, then filters a copied media database so `/Audiobooks` paths are removed from normal Music views.

@@ -62,7 +62,8 @@ After that, re-run `tools\publish_github_release.ps1`.
 3. Copy the verified package and checksum files into `firmware\releases\vX.Y.Z`.
 4. Update `README.md`, `CHANGELOG.md`, and `docs\production_release_checklist.md`.
 5. Commit the release files.
-6. Push `main`.
+6. Push the **codex branch** (`codex/r1-hiby-modding-integration`) — `main` has
+   no `audiobook_app/` and is far behind; all source lives on codex.
 7. Create and push the tag.
 8. Run `tools\publish_github_release.ps1` to create the GitHub Release and upload assets.
 9. Run the same script with `-VerifyOnly` and confirm the asset count, names, and sizes.
@@ -77,3 +78,33 @@ Invoke-RestMethod `
   -Uri "https://api.github.com/repos/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tags/v1.6.1" `
   -Headers @{ "User-Agent" = "hiby-r1-audiobook-release-check"; Accept = "application/vnd.github+json" }
 ```
+
+## v2.0.x release gotchas
+
+These bit the v2.0.x (NativeApp) release process — learned the hard way across
+v2.0.15 → v2.0.17:
+
+- **Target the codex branch, not `main`.** `gh release --target` / the REST
+  helper target must be `codex/r1-hiby-modding-integration`. `main` has no
+  `audiobook_app/` and is far behind; a release pointed at `main` would tag a
+  tree with no audiobook source.
+- **The release BodyFile MUST be pure ASCII.** PowerShell 5.1 `Get-Content -Raw`
+  reads no-BOM UTF-8 as cp1252, so `ConvertTo-Json` fails with HTTP 400 on any
+  non-ASCII byte. Verify `0` non-ASCII bytes before publishing (the v2.0.0
+  release notes were re-checked for this). Use plain ASCII dashes (`-`), not
+  em-dashes, in release body text.
+- **Transient 503 → 422 "asset already exists".** A retry cleans it up — the
+  asset from the failed attempt is removed and the re-run succeeds. Don't
+  assume the release is broken on a 422; just re-run.
+- **git-bash strips unquoted backslashes in PowerShell args.** From git-bash,
+  `-OutputUpt work\release-v2.0.17\r1-audiobooks-2.0.17.upt` UNQUOTED becomes
+  `workrelease-v2.0.17r1-audiobooks-2.0.17.upt` (a file in the repo root). The
+  build still succeeds but writes to the wrong path. **Quote paths or use
+  forward slashes** when invoking PowerShell from git-bash.
+- **Checksums live at `firmware\releases\<ver>\{MD5SUMS,SHA256SUMS}.txt`.**
+  Generate them for the `.upt` after the build and ship them as release assets
+  alongside the `.upt`. Release binaries live on GitHub Releases, not in git.
+- **The `.upt` is renamed to `r1.upt` by the end user** to install; the release
+  asset keeps the versioned name (`r1-audiobooks-<ver>.upt`).
+- **Two ADB devices on one machine.** Only `ingenic_2233` is the R1; a second
+  device (e.g. `ZY22JFZHDT`) is unrelated. Target `adb -s ingenic_2233`.

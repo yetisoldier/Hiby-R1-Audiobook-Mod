@@ -1,5 +1,10 @@
 # Network OTA Research
 
+> **Historical (pre-2.0 research, not production-enabled).** Network OTA was
+> investigated but never shipped; the current flash path is the data-preserving
+> ADB/SD recovery flow — see [`modding/flash_and_recovery.md`](./modding/flash_and_recovery.md).
+> Retained as a historical record.
+
 Status: investigation and tooling, not production-enabled.
 Date: 2026-06-17.
 

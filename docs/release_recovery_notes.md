@@ -76,3 +76,91 @@ Keep these together for recovery and comparison:
 
 The previous public release was `v1.6.0`, firmware marker
 `1.6.17-audiobook`.
+
+---
+
+## v2.0.18 note (2026-07-20, NativeApp pivot)
+
+The current public release is **v2.0.18** (about-screen label "HiBy R1
+2.0.18"). It is the v2.0.x "NativeApp" pivot (in-process `LD_PRELOAD` hook into
+`hiby_player`), not the v1.6.x resume-daemon line described above. The sections
+above are retained as the historical v1.6.1 record.
+
+- GitHub release: `v2.0.18`
+- Package: `r1-audiobooks-2.0.18.upt` (42,213,376 B)
+- MD5: `113cac24a543f8c3b681472aeaa00302`
+- SHA256: `0c524714f58b00ba75701fa3423c5f3edabbd249218afbc45c21b9dc20cadbed`
+- Source branch: `codex/r1-hiby-modding-integration` (`main` has no
+  `audiobook_app/`; release `--target` = codex).
+- Only audiobook code change vs v2.0.17: the scanner tag reader
+  (`audiobook_app/tags.c`) so long audiobooks report their real duration (MP3
+  VBR Xing/Info/VBRI parse + M4B moov-mmap mvhd). The three stock unlocks
+  (USB DAC, Native DSD, SBC XQ) are unchanged. After install, open the
+  Audiobooks app and tap Refresh Library once to correct stored durations.
+
+### Flash (data-preserving, ADB-driven)
+
+```bash
+MSYS_NO_PATHCONV=1 adb -s ingenic_2233 push work/audiobook-firmware-2.0.18/r1-audiobooks-2.0.18.upt /usr/data/mnt/sd_0/r1.upt
+adb -s ingenic_2233 shell md5sum /usr/data/mnt/sd_0/r1.upt
+MSYS_NO_PATHCONV=1 adb -s ingenic_2233 shell /usr/bin/bootmode.sh Recovery
+adb -s ingenic_2233 reboot
+```
+
+The same gotchas as v2.0.17 apply (see the v2.0.17 note below): `bootmode.sh
+Recovery` does NOT reboot (run `adb reboot` separately); `MSYS_NO_PATHCONV=1`
+required on git-bash; use `bootmode.sh Recovery` not `/data/recovery_all`;
+target `ingenic_2233`.
+
+## v2.0.17 note (2026-07-20, NativeApp pivot)
+
+An earlier public release, **v2.0.17** (about-screen label "HiBy R1 2.0.17").
+Superseded by v2.0.18 above. It is the v2.0.x "NativeApp" pivot (in-process
+`LD_PRELOAD` hook into `hiby_player`), not the v1.6.x resume-daemon line
+described above. The sections above are retained as the historical v1.6.1
+record.
+
+- GitHub release: `v2.0.17`
+- Package: `r1-audiobooks-2.0.17.upt` (42,213,376 B)
+- MD5: `57ff9f1cd47420fe0ac71231139adf5d`
+- SHA256: `1d50f0aa2b217d0d68135dd5dfa22912f2f1911f921e2736f1f46eac80282fa5`
+- Source branch: `codex/r1-hiby-modding-integration` (`main` has no
+  `audiobook_app/`; release `--target` = codex).
+- Restores the USB DAC, Native DSD, and Bluetooth SBC XQ unlocks the pivot had
+  dropped. No audiobook code changed from v2.0.16.
+
+### Flash (data-preserving, ADB-driven)
+
+```bash
+MSYS_NO_PATHCONV=1 adb -s ingenic_2233 push work/release-v2.0.17/r1-audiobooks-2.0.17.upt /usr/data/mnt/sd_0/r1.upt
+adb -s ingenic_2233 shell md5sum /usr/data/mnt/sd_0/r1.upt
+MSYS_NO_PATHCONV=1 adb -s ingenic_2233 shell /usr/bin/bootmode.sh Recovery
+adb -s ingenic_2233 reboot
+```
+
+**Gotchas corrected here:**
+
+- `bootmode.sh Recovery` does **NOT reboot** — it only writes the
+  `ota:kernel2` marker to `mtd5`. You must run `adb reboot` separately.
+  (Earlier notes implied it rebooted; it does not.) A first flash that wrote
+  the marker but never rebooted left the device on v2.0.16 with nothing
+  applied; the second attempt (explicit `adb reboot`) worked.
+- `MSYS_NO_PATHCONV=1` is required on Windows git-bash so `/usr/...` is not
+  mangled to `C:/Program Files/Git/usr/...` (silent no-op).
+- Use `bootmode.sh Recovery` (writes `ota:kernel2` → data-preserving firmware
+  update). Do NOT use `/data/recovery_all` + `S39_recovery.recovery` — that is
+  a factory reset (`rm -rf /data/*`) that wipes `/usr/data` (library.db, resume
+  positions, bookmarks, BT pairings).
+- Target `ingenic_2233` (the R1); a second device on the same machine
+  (`ZY22JFZHDT`) is NOT the R1.
+
+### Recovery / revert
+
+If a flash bricks, SD-card force-flash a known-good `r1.upt` (stock 1.6, or a
+prior good release like `2.0A`). The bootloader's recovery path reads the SD
+root even when the main rootfs is broken. This is how v2.0.1 and v2.0.2 were
+recovered — see [`docs/modding/brick_lessons_build_categories.md`](./modding/brick_lessons_build_categories.md)
+for what bricked them and the cardinal rule for avoiding it.
+
+Full flash + recovery reference: [`docs/modding/flash_and_recovery.md`](./modding/flash_and_recovery.md).
+Current-release checklist: [`docs/production_release_checklist.md`](./production_release_checklist.md).

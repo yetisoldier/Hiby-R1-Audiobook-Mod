@@ -1,5 +1,12 @@
 # hiby-modding Organization Review - 2026-06-16
 
+> **Historical reference (still useful for attribution + borrowing guidance).**
+> This review of the public hiby-modding ecosystem informed the project. The
+> current architecture is the NativeApp pivot (v2.0.17) — see
+> [`audiobook_firmware_architecture.md`](./audiobook_firmware_architecture.md)
+> and [`modding/`](./modding/). The borrowing/licensing caution below still
+> applies: do not copy R3 Pro II binaries or patches blindly to the R1.
+
 Source reviewed: <https://github.com/hiby-modding>
 
 ## Summary

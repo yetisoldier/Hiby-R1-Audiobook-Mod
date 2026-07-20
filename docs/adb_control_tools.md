@@ -10,6 +10,16 @@ development:
 - generated input streams are temporary and do not change firmware files or
   patch process memory
 
+> **See also:** [`docs/modding/adb_automation_screenshots.md`](./modding/adb_automation_screenshots.md)
+> for the screenshot/vision pitfalls (the `application/octet-stream` crash,
+> safe capture, the pre-Read safeguard, the vision sub-agent pattern), preset
+> coordinates for the v2.0.16/17 UI layout, and the app log truth source. Key
+> points: use `adb exec-out screencap -p` (not `adb shell screencap -p >`, which
+> CRLF-corrupts the PNG on Windows); never `Read` `.raw` framebuffer files;
+> `r1_adb_control.py` has no `-s` flag — set `ANDROID_SERIAL=<serial>` to target
+> a specific device (the R1 enumerates as `ingenic_2233`; a second device like
+> `ZY22JFZHDT` is NOT the R1).
+
 ADB still has to be enabled manually after a reboot.
 
 The ADB scripts prefer the repo-local platform-tools binary at

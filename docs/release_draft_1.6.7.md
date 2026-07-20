@@ -1,5 +1,11 @@
 # Release Notes: 1.6.7-audiobook
 
+> **⚠️ Historical (pre-2.0, v1.6.x era).** This is an old release draft for
+> the resume-daemon line. The current release is v2.0.17 (NativeApp pivot) —
+> see [`release_recovery_notes.md`](./release_recovery_notes.md) and
+> [`production_release_checklist.md`](./production_release_checklist.md).
+> Retained as a historical record.
+
 Status: published as GitHub release `v1.1.0`.
 
 This build is for the normal HiBy R1 only. It is based on stock HiBy R1 firmware 1.6, not the R1 MIDI.

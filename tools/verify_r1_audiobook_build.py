@@ -103,8 +103,8 @@ EXPECTED_CURRENT_HASHES = {
         "sha256": "02b286676d93ec683307820e1ef40288f34ef21a42a24f5cbda361f2d3733b7b",
     },
     "rootfs.squashfs": {
-        "md5": "74430b4fc06220419a0558a4a5b8b829",
-        "sha256": "400acaf978ed8beb7255e46acbda3f3905f3e8b350b26908cfae7cca5fd0d0b1",
+        "md5": "cce3b61bab9ebf4a531541218042d26a",
+        "sha256": "e83cda026829896b21c67555609faac7d8402ded15915b44e153c8633e6bb101",
     },
     "r1-audiobooks-1.6.3-audiobook.upt": {
         "md5": "1954b92ae7a394a0dc450c2d5f70f3d2",
@@ -115,8 +115,8 @@ EXPECTED_CURRENT_HASHES = {
         "sha256": "9138fd1e91c008205f81857095c50341898d535fae11cc42edec6ed12556e519",
     },
     "squashfs-root/usr/bin/hiby_player": {
-        "md5": "09997a636c94112ff76c85a6d4a8d0ff",
-        "sha256": "f49ea55a48c1bdf1398a2a6672b1d596516650f7ebe77846ba7c33a5cfee329c",
+        "md5": "cbe2bc1001cbe6ad6ce6cd8e04889c59",
+        "sha256": "397b23e44f8cc8e0a1cd33062f1082b993b1eaf1b63974287974f3067bacde18",
     },
 }
 

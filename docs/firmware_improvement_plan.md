@@ -1,5 +1,11 @@
 # Firmware Improvement Plan
 
+> **⚠️ SUPERSEDED — historical record (pre-2.0, v1.6.x era).** This plan
+> tracked the resume-daemon line through `1.6.11-audiobook`. The current line
+> is the NativeApp pivot (v2.0.17) — for current status see `CHANGELOG.md`,
+> [`audiobook_firmware_architecture.md`](./audiobook_firmware_architecture.md),
+> and [`modding/`](./modding/). Retained as historical context.
+
 This plan originally tracked post-`1.6.4-audiobook` work and now records which
 items have landed in the `1.6.11-audiobook` release.
 
