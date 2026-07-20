@@ -121,6 +121,25 @@ browser, Bluetooth, USB, and system UI are otherwise untouched.
  `S90adb` init script baked into the rootfs. No in-app toggle needed. ADB and
  USB-DAC are mutually exclusive by USB working mode.
 
+**Restored stock unlocks (since v2.0.17)**
+- These three general device/music unlocks were carried by every pre-2.0 release
+ (v1.5.0-v1.6.3) and were dropped at the v2.0.0 NativeApp pivot; v2.0.17 turns
+ them back on. They are pure stock-resource / shell-config tweaks (no binary,
+ boot, PMIC, or mount changes), so the audiobook app and hook are unchanged from
+ v2.0.16.
+- **USB DAC mode**: unlocks the USB-DAC working mode and related Settings flags,
+ so you can set System -> USB working mode to **DAC** and use the R1 as a USB
+ DAC. USB-DAC and boot-ADB share the single USB gadget controller and stay
+ mutually exclusive by USB working mode (Device = ADB on; DAC = USB audio out,
+ ADB off that session) - complementary to boot-ADB, not a conflict.
+- **Native DSD**: sets `AnalogDsdNative: native` on the analog output device in
+ `ot_devices.json`, enabling native DSD on the analog output path for the stock
+ Music player (was `dop`).
+- **Bluetooth SBC XQ**: adds `--sbc-quality=xq` to the BlueALSA launch in
+ `/usr/bin/bt_init`, raising SBC encoding quality when the receiving device
+ supports it. Because the audiobook app drives `pcm.bluealsa` directly for BT
+ output, this applies to audiobook-over-BT as well as stock music.
+
 ## Expected behavior
 
 - **First run with an SD card:** put audiobooks under `/Audiobooks`, open the
