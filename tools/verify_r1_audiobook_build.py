@@ -103,8 +103,8 @@ EXPECTED_CURRENT_HASHES = {
         "sha256": "02b286676d93ec683307820e1ef40288f34ef21a42a24f5cbda361f2d3733b7b",
     },
     "rootfs.squashfs": {
-        "md5": "cce3b61bab9ebf4a531541218042d26a",
-        "sha256": "e83cda026829896b21c67555609faac7d8402ded15915b44e153c8633e6bb101",
+        "md5": "e8650406cb7a7d6828cf8b7c2e8967ce",
+        "sha256": "3af214082e21bdb4d7f3b03be8f93082c3b744309f9ea08a0243edf73ad5b8e8",
     },
     "r1-audiobooks-1.6.3-audiobook.upt": {
         "md5": "1954b92ae7a394a0dc450c2d5f70f3d2",
