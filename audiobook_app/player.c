@@ -898,17 +898,17 @@ static int setup_alsa(long rate, int channels) {
             if (!open_pcm_retry("bluealsa")) { r = -16; usleep(200000); continue; }
         }
         void *hw = NULL;
-        x_snd_pcm_hw_params_malloc(&hw);
-        x_snd_pcm_hw_params_any(g_pl.pcm, hw);
-        x_snd_pcm_hw_params_set_access(g_pl.pcm, hw, A_ACCESS_RW_INT);
-        x_snd_pcm_hw_params_set_format(g_pl.pcm, hw, A_FMT_S16_LE);
-        x_snd_pcm_hw_params_set_channels(g_pl.pcm, hw, (unsigned int)channels);
+        int e_m = x_snd_pcm_hw_params_malloc(&hw);
+        int e_a = x_snd_pcm_hw_params_any(g_pl.pcm, hw);
+        int e_ac = x_snd_pcm_hw_params_set_access(g_pl.pcm, hw, A_ACCESS_RW_INT);
+        int e_f = x_snd_pcm_hw_params_set_format(g_pl.pcm, hw, A_FMT_S16_LE);
+        int e_ch = x_snd_pcm_hw_params_set_channels(g_pl.pcm, hw, (unsigned int)channels);
         want_rate = (unsigned int)rate; int dir = 0;
-        x_snd_pcm_hw_params_set_rate_near(g_pl.pcm, hw, &want_rate, &dir);
+        int e_r = x_snd_pcm_hw_params_set_rate_near(g_pl.pcm, hw, &want_rate, &dir);
         unsigned int btime = 500000, bdir = 0;   /* 500ms buffer */
-        x_snd_pcm_hw_params_set_buffer_time_near(g_pl.pcm, hw, &btime, (int *)&bdir);
+        int e_b = x_snd_pcm_hw_params_set_buffer_time_near(g_pl.pcm, hw, &btime, (int *)&bdir);
         unsigned int ptime = 100000, pdir = 0;   /* 100ms period */
-        x_snd_pcm_hw_params_set_period_time_near(g_pl.pcm, hw, &ptime, (int *)&pdir);
+        int e_p = x_snd_pcm_hw_params_set_period_time_near(g_pl.pcm, hw, &ptime, (int *)&pdir);
         r = x_snd_pcm_hw_params(g_pl.pcm, hw);
         if (r == 0) {
             int gpdir = 0;
@@ -916,7 +916,13 @@ static int setup_alsa(long rate, int channels) {
             x_snd_pcm_hw_params_free(hw);
             break;
         }
-        plog("snd_pcm_hw_params failed: %d (attempt %d)", r, hp_attempt + 1);
+        /* DIAG: which set_* failed, or did all succeed and only hw_params reject?
+         * <0 = that call errored (params left partial -> hw_params -22). All >=0
+         * and r=-22 = constraint commit rejected the buffer/period combo (the
+         * buffer-then-period order can leave period_time_near unable to divide
+         * the already-committed buffer_size on some slaves). */
+        plog("hw_params diag: malloc=%d any=%d acc=%d fmt=%d ch=%d(rate=%ld->%u) rate=%d buf=%d(%u) per=%d(%u) -> hw=%d",
+             e_m, e_a, e_ac, e_f, e_ch, rate, want_rate, e_r, e_b, btime, e_p, ptime, r);
         x_snd_pcm_hw_params_free(hw);
         if (want_out != OUT_BT) break;          /* wired: no retry, no fallback */
         if (r != -16 && r != -11) break;         /* only retry EBUSY/EAGAIN */
