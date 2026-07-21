@@ -27,6 +27,11 @@
 #define MAX_FILES_PER_BOOK 1024
 #define MAX_PATH_LEN 512
 #define MAX_BOOKS 4096
+/* Cap on synthesized placeholder chapters for a single file with no embedded
+ * chapters. Guards against a bogus embedded_chapters (trak-count heuristic)
+ * creating thousands of rows -> OOM on this 56MB device. Real single-file
+ * audiobooks have at most a few hundred chapters. */
+#define SYNTH_CHAPTER_CAP 1024
 
 /* Minimum free space required on the DB's partition (/usr/data, the ~36 MB
  * UBIFS user-data partition) before we start a scan. sqlite's rollback journal
@@ -353,13 +358,19 @@ typedef struct {
     char *chapter_titles;
     int chapter_titles_sz;
     int count;
+    /* Offset to add to each embedded chapter's start_ms/end_ms so chapters in
+     * a multi-file book are stored BOOK-relative (cumulative across files), not
+     * file-relative. 0 for single-file books. Lets chapter-tap seek resolve to
+     * the right track via cmd_seek's book-ms -> track-idx accumulation. */
+    int64_t book_offset_ms;
 } scan_chapter_ctx_t;
 
 static int scan_chapter_cb(int ordinal, const char *title,
                            int64_t start_ms, int64_t end_ms, void *ctx) {
     scan_chapter_ctx_t *c = (scan_chapter_ctx_t *)ctx;
     if (!c || c->track_id <= 0) return 1;
-    upsert_chapter(c->db, c->track_id, ordinal, title, start_ms, end_ms);
+    upsert_chapter(c->db, c->track_id, ordinal, title,
+                   start_ms + c->book_offset_ms, end_ms + c->book_offset_ms);
     append_chapter_title(c->chapter_titles, c->chapter_titles_sz, title);
     c->count++;
     return 0;
@@ -774,6 +785,12 @@ int audiobook_scan_library(sqlite3 *db, const char *root_path,
         char chapter_titles[4096];
         chapter_titles[0] = '\0';
 
+        /* Cumulative book-relative position across files. Each synthesized or
+         * embedded chapter is stored with book-relative start_ms/end_ms so the
+         * chapter list shows real positions and chapter-tap seek resolves to the
+         * correct track (cmd_seek accumulates tracks[i].duration_ms the same way). */
+        int64_t book_pos_ms = 0;
+
         /* Upsert tracks */
         for (int j = 0; j < bd->file_count; j++) {
             audio_tags_t tags;
@@ -805,14 +822,19 @@ int audiobook_scan_library(sqlite3 *db, const char *root_path,
 
             /* Upsert chapters. For M4B/M4A, parse real embedded chapters
              * (Nero chpl or QuickTime chapter track) via audio_read_chapters;
-             * fall back to evenly-spaced placeholders if none are found.
-             * Multi-file (MP3) books get one synthesized chapter per track so
-             * every book has a populated Chapters list. */
+             * they are offset to book-relative by scan_chapter_cb. If none are
+             * found, synthesize: multi-file books get one chapter per file
+             * titled after the track (NOT "Chapter 1" placeholders — that was
+             * the bug where a multi-file .m4a/.m4b book with no embedded chapters
+             * showed every chapter as "Chapter 1"); single-file books get one
+             * placeholder covering the file. Either way the window is
+             * book-relative [book_pos_ms, book_pos_ms + duration]. */
             int track_id = get_track_id_by_path(db, bd->files[j].path);
             if (track_id > 0) {
                 delete_chapters_for_track(db, track_id);
                 int is_m4b = (bd->files[j].type == AUDIO_EXT_M4B ||
                               bd->files[j].type == AUDIO_EXT_M4A);
+                int parsed = 0;
                 if (is_m4b) {
                     scan_chapter_ctx_t cctx;
                     cctx.db = db;
@@ -820,33 +842,43 @@ int audiobook_scan_library(sqlite3 *db, const char *root_path,
                     cctx.chapter_titles = chapter_titles;
                     cctx.chapter_titles_sz = (int)sizeof(chapter_titles);
                     cctx.count = 0;
-                    int parsed = audio_read_chapters(bd->files[j].path,
-                                                    scan_chapter_cb, &cctx);
-                    if (parsed > 0) continue;  /* real chapters upserted */
-
-                    /* Fallback: evenly-spaced placeholders if we found none. */
-                    int nch = tags.embedded_chapters > 0
-                                  ? tags.embedded_chapters : 1;
-                    int64_t chapter_duration = tags.duration_ms / nch;
-                    for (int c = 0; c < nch; c++) {
-                        char ch_title[32];
-                        snprintf(ch_title, sizeof(ch_title),
-                                "Chapter %d", c + 1);
-                        upsert_chapter(db, track_id, c + 1, ch_title,
-                                      c * chapter_duration,
-                                      (c + 1) * chapter_duration);
+                    cctx.book_offset_ms = book_pos_ms;
+                    parsed = audio_read_chapters(bd->files[j].path,
+                                                 scan_chapter_cb, &cctx);
+                }
+                if (parsed <= 0) {
+                    if (bd->file_count > 1) {
+                        /* Multi-file book: one chapter per file, titled after
+                         * the track, spanning its book-relative window. */
+                        upsert_chapter(db, track_id, j + 1, track_title,
+                                       book_pos_ms,
+                                       book_pos_ms + tags.duration_ms);
                         append_chapter_title(chapter_titles,
                                              sizeof(chapter_titles),
-                                             ch_title);
+                                             track_title);
+                    } else {
+                        /* Single file, no embedded chapters: evenly-spaced
+                         * placeholders. nch is capped to guard against a bogus
+                         * trak-count heuristic OOMing the device. */
+                        int nch = tags.embedded_chapters > 0
+                                      ? tags.embedded_chapters : 1;
+                        if (nch > SYNTH_CHAPTER_CAP) nch = SYNTH_CHAPTER_CAP;
+                        int64_t chapter_duration = tags.duration_ms / nch;
+                        for (int c = 0; c < nch; c++) {
+                            char ch_title[32];
+                            snprintf(ch_title, sizeof(ch_title),
+                                     "Chapter %d", c + 1);
+                            upsert_chapter(db, track_id, c + 1, ch_title,
+                                           c * chapter_duration,
+                                           (c + 1) * chapter_duration);
+                            append_chapter_title(chapter_titles,
+                                                 sizeof(chapter_titles),
+                                                 ch_title);
+                        }
                     }
-                } else if (bd->file_count > 1) {
-                    /* Multi-file book: synthesize one chapter per track. */
-                    upsert_chapter(db, track_id, j + 1, track_title, 0,
-                                  tags.duration_ms);
-                    append_chapter_title(chapter_titles,
-                                         sizeof(chapter_titles), track_title);
                 }
             }
+            book_pos_ms += tags.duration_ms;
         }
 
         /* Update FTS index with real metadata + collected chapter titles. */

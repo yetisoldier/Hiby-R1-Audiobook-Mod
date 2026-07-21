@@ -45,6 +45,11 @@
 #define ITEM_PAD        4
 #define FOOTER_H        44
 #define SCROLL_SPEED    3   /* pixels per touch move event */
+/* Cap on chapter rows rendered/seekable at once. Bounds the chapter-list
+ * render allocation (each row ~264B) and the tap-seek start_ms array so a
+ * pathological chapter count (huge multi-file book, bogus embedded_chapters)
+ * can't OOM this 56MB device. Real audiobooks have well under this. */
+#define MAX_CHAPTER_ROWS 2048
 /* Scrollable list viewport (between the title bar and the footer). */
 #define LIST_VIEWPORT_H (RENDER_FB_H - FOOTER_H - TITLE_BAR_H)
 
@@ -1879,6 +1884,9 @@ typedef struct {
 
 static int ch_collect_cb(const audiobook_chapter_t *ch, void *ctx) {
     ch_ctx_t *c = (ch_ctx_t *)ctx;
+    /* Hard cap: stop collecting beyond MAX_CHAPTER_ROWS so the render allocation
+     * can't grow unboundedly and OOM the device on a pathological chapter count. */
+    if (c->count >= MAX_CHAPTER_ROWS) return 1;
     if (c->count >= c->capacity) {
         int nc = c->capacity ? c->capacity * 2 : 64;
         chapter_row_t *nr = realloc(c->rows, nc * sizeof(chapter_row_t));
@@ -1971,15 +1979,19 @@ static int handle_chapters_touch(ui_state_t *ui, int x, int y) {
     int idx = (y - item_y) / LIST_ITEM_H;
     if (idx < 0) return 0;
 
-    /* Resolve the tapped chapter's start_ms by list position. */
-    int64_t starts[256];
-    ch_starts_t c = { starts, 0, 256 };
+    /* Resolve the tapped chapter's start_ms by list position. Sized to
+     * MAX_CHAPTER_ROWS to match the render cap, so a tap on any visible row
+     * maps to a valid entry (and taps beyond the cap harmlessly no-op). */
+    int64_t *starts = malloc((size_t)MAX_CHAPTER_ROWS * sizeof(int64_t));
+    if (!starts) return 1;
+    ch_starts_t c = { starts, 0, MAX_CHAPTER_ROWS };
     audiobook_get_chapters(ui->db, ui->current_book_id, ch_starts_cb, &c);
     if (idx < c.count) {
         player_play_book_from(ui->current_book_id, starts[idx]);
         navigate_to(ui, SCREEN_NOW_PLAYING, ui->list_mode,
                     ui->current_book_id);
     }
+    free(starts);
     return 1;
 }
 
