@@ -113,6 +113,20 @@ int utf8_safe_append(char *buf, int buf_len, const char *src) {
     return end;
 }
 
+/* ---- UTF-8 validation --------------------------------------------------- */
+
+int utf8_is_valid(const char *s, int len) {
+    if (!s) return 1;
+    if (len < 0) len = (int)strlen(s);
+    int i = 0;
+    while (i < len) {
+        uint32_t cp; int adv;
+        if (utf8_decode(s + i, len - i, &cp, &adv) != 0) return 0;
+        i += adv;
+    }
+    return 1;
+}
+
 /* ---- UTF-16 -> UTF-8 ---- */
 
 static int emit_utf8(char *out, int out_len, int *o, uint32_t cp) {

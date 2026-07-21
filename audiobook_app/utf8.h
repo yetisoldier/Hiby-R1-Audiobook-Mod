@@ -52,4 +52,8 @@ int utf16_to_utf8(const uint8_t *src, int src_len, int big_endian,
  * (excl. NUL), or -1 if out is too small. */
 int cp1251_to_utf8(const uint8_t *src, int src_len, char *out, int out_len);
 
+/* Validate whether s[0..len] (or up to first NUL if len<0) is valid UTF-8.
+ * Returns 1 if valid, 0 if any invalid/overlong/surrogate sequence found. */
+int utf8_is_valid(const char *s, int len);
+
 #endif /* AUDIOBOOK_UTF8_H */

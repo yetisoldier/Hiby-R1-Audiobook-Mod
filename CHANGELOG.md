@@ -2,6 +2,47 @@
 
 All public releases are for the normal HiBy R1 on stock firmware 1.6. Do not install these packages on the R1 MIDI.
 
+## v2.0.21 - 2026-07-21
+
+Firmware marker: `2.0.21` - About-screen label `HiBy R1 2.0.21`.
+
+Fixes two reported issues: the "Folders" menu now shows a real folder
+hierarchy, and the screen-dark / key-input freeze after auto-dim is resolved.
+Install over any v2.0.x; library, resume positions, bookmarks, and BT
+pairings are preserved.
+
+### Hierarchical folder browser
+
+The Folders menu was a flat list of every book. It now behaves like a real
+file manager: tapping a folder drills into it, tapping a book opens it, and
+the Back button returns to the parent folder (or Home from the top level).
+Folders are shown first, then any books stored directly at the current level.
+The footer counts total items at that level.
+
+Implementation: `LIST_FOLDERS` queries all `root_path`s, extracts the next
+path segment after the current `folder_path`, deduplicates and sorts the
+segments alphabetically, and prepends them as folder rows before the direct
+book rows. `folder_path` is saved/restored on the navigation stack so Back
+works across arbitrary depth.
+
+### Screen-dark input freeze fix
+
+After the stock system auto-dimmed the screen, the power button sometimes
+failed to wake it, volume-down/play-pause stopped working, and only volume-up
+responded. The root cause was a combination of:
+
+1. `blanked` state drift — the stock auto-dim changed backlight brightness
+   independently, so our `blanked` flag no longer matched reality. Fix:
+   `sync_blank_state()` reads `/sys/class/backlight/backlight_pwm0/brightness`
+   every 1 s and syncs the flag.
+2. Stale key file descriptors — the stock input subsystem can re-enumerate
+   devices after a dim/blank, leaving our `dup()`'d fds pointing to dead
+   devices (`ENODEV`/`EBADF`). Fix: `reopen_key_fds()` probes and reopens
+   missing devices every 5 s, and fatal `read()` errors close the fd
+   immediately.
+3. Missing wake-on-any-key — only the power button was wired to unblank.
+   Fix: any non-power key press while blanked now wakes the screen.
+
 ## v2.0.20 - 2026-07-21
 
 Firmware marker: `2.0.20` - About-screen label `HiBy R1 2.0.20`.

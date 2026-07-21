@@ -69,7 +69,13 @@ static void parse_id3v2_text(const uint8_t *data, int len, int encoding,
         /* UTF-8: copy up to the first NUL, boundary-safe */
         int n = 0;
         while (n < len && data[n] != 0) n++;
-        utf8_safe_truncate(out, out_len, (const char *)data, n);
+        /* Some encoders claim UTF-8 but actually write cp1251. Validate and
+         * fall back to cp1251 conversion if the bytes aren't valid UTF-8. */
+        if (utf8_is_valid((const char *)data, n)) {
+            utf8_safe_truncate(out, out_len, (const char *)data, n);
+        } else {
+            cp1251_to_utf8(data, n, out, out_len);
+        }
     } else {
         /* encoding 0 = ISO-8859-1 per spec, but Russian MP3s in the wild are
          * almost always Windows-1251. Heuristic: if any byte >= 0x80 appears,

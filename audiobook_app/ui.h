@@ -87,10 +87,15 @@ typedef struct {
      * series display name tapped on the Authors/Series list). */
     char list_filter[256];
 
+    /* Folder browser path (current directory in hierarchical folder view).
+     * Empty or AUDIOBOOK_LIBRARY_ROOT means top level. */
+    char folder_path[512];
+
     /* Navigation stack for back button */
     ui_screen_t nav_stack[8];
     list_mode_t nav_list_mode[8];
     int nav_book_id[8];
+    char nav_folder_path[8][512];
     int nav_depth;
 
     /* Running flag */

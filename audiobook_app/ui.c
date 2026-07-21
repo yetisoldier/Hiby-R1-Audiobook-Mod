@@ -325,6 +325,79 @@ static void set_blanked(ui_state_t *ui, int on, int fb_fd) {
     }
 }
 
+/* Sync our blanked flag with the real backlight. The stock system may auto-dim
+ * the screen independently; if we don't notice, our blanked flag drifts and
+ * the power button toggles the wrong way. */
+static void sync_blank_state(ui_state_t *ui, int fb_fd) {
+    int bl = read_brightness();
+    if (bl < 0) return;  /* can't read — leave state alone */
+    if (bl == 0 && !ui->blanked) {
+        ui->saved_brightness = 50;
+        ui->blanked = 1;
+        ui_log("[ui] auto-blank sync (backlight went to 0)\n");
+    } else if (bl > 0 && ui->blanked) {
+        ui->blanked = 0;
+        ui_log("[ui] auto-wake sync (backlight went to %d)\n", bl);
+    }
+}
+
+/* Try to reopen key fds that are missing or dead. Called periodically from
+ * the event loop so a device re-enumeration (e.g. after screen dark) doesn't
+ * leave us with stale fds forever. */
+static void reopen_key_fds(ui_state_t *ui) {
+    const char *keydevs[] = {"/dev/input/event0", "/dev/input/event2",
+                             "/dev/input/event3"};
+    int have[3] = {0, 0, 0};
+    for (int i = 0; i < ui->n_key_fds; i++) {
+        if (ui->key_fds[i] < 0) continue;
+        /* Probe the fd: a non-blocking read should return -1 EAGAIN if alive.
+         * If it returns a real error (ENODEV, EBADF, etc.), the fd is dead. */
+        struct input_event ev;
+        ssize_t r = read(ui->key_fds[i], &ev, sizeof(ev));
+        if (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+            ui_log("[ui] key fd %d dead (%s), closing\n",
+                   ui->key_fds[i], strerror(errno));
+            close(ui->key_fds[i]);
+            ui->key_fds[i] = -1;
+            continue;
+        }
+        /* Match against known device paths to mark which ones we have. */
+        char link[128];
+        char proc[64];
+        int found = 0;
+        snprintf(proc, sizeof(proc), "/proc/self/fd/%d", ui->key_fds[i]);
+        ssize_t n = readlink(proc, link, sizeof(link) - 1);
+        if (n > 0) {
+            link[n] = '\0';
+            for (int k = 0; k < 3; k++) {
+                if (strcmp(link, keydevs[k]) == 0) { have[k] = 1; found = 1; }
+            }
+        }
+        if (!found) have[0] = have[1] = have[2] = 1; /* unknown — don't add more */
+    }
+    /* Compact out dead entries */
+    int j = 0;
+    for (int i = 0; i < ui->n_key_fds; i++) {
+        if (ui->key_fds[i] >= 0) ui->key_fds[j++] = ui->key_fds[i];
+    }
+    ui->n_key_fds = j;
+    /* Reopen missing ones */
+    for (int k = 0; k < 3; k++) {
+        if (have[k]) continue;
+        int fd = dup_hiby_input_fd(keydevs[k]);
+        const char *src = "hiby-dup";
+        if (fd < 0) { fd = open(keydevs[k], O_RDONLY | O_NONBLOCK); src = "fresh"; }
+        if (fd >= 0) {
+            if (ui->n_key_fds < 4) {
+                ui->key_fds[ui->n_key_fds++] = fd;
+                ui_log("[ui] key fd REOPEN %s = %d (%s)\n", keydevs[k], fd, src);
+            } else {
+                close(fd);
+            }
+        }
+    }
+}
+
 /* R1 touch screen reports ABS_MT_POSITION_X/Y in the range 0-479/0-799
  * (screen coords). Some kernels report 0-255 for X and 0-255 for Y and
  * need scaling, but on R1 the events are already screen-resolution. */
@@ -568,6 +641,8 @@ int ui_run(uint16_t *fb, int fb_fd) {
      * Also reads the key devices (via hiby_player's grabbed fds) for the
      * power button (blank/wake) and back/esc. */
     static int key_log_count = 0;
+    uint64_t last_key_reopen = 0;
+    uint64_t last_blank_sync = 0;
     while (ui->running) {
         fd_set rfds;
         FD_ZERO(&rfds);
@@ -599,6 +674,16 @@ int ui_run(uint16_t *fb, int fb_fd) {
         timeout.tv_sec = 0;
         timeout.tv_usec = 20000;  /* 20ms — short so we can pan promptly */
         int rv = select(maxfd + 1, &rfds, NULL, NULL, &timeout);
+        uint64_t now = now_ms();
+        /* Periodically sync blank state and reopen dead key fds */
+        if (now - last_blank_sync >= 1000) {
+            last_blank_sync = now;
+            sync_blank_state(ui, fb_fd);
+        }
+        if (now - last_key_reopen >= 5000) {
+            last_key_reopen = now;
+            reopen_key_fds(ui);
+        }
         if (rv > 0) {
             if (ui->input_fd >= 0 && FD_ISSET(ui->input_fd, &rfds)) {
                 struct input_event ev;
@@ -631,7 +716,8 @@ int ui_run(uint16_t *fb, int fb_fd) {
                 if (ui->key_fds[i] < 0
                     || !FD_ISSET(ui->key_fds[i], &rfds)) continue;
                 struct input_event ev;
-                while (read(ui->key_fds[i], &ev, sizeof(ev)) == sizeof(ev)) {
+                ssize_t r;
+                while ((r = read(ui->key_fds[i], &ev, sizeof(ev))) == sizeof(ev)) {
                     if (ev.type != EV_KEY) continue;
                     /* Diagnostic: log the first ~40 key events so we can
                      * identify the exact power keycode. */
@@ -639,6 +725,11 @@ int ui_run(uint16_t *fb, int fb_fd) {
                         key_log_count++;
                         ui_log("[ui] KEY press code=%d (0x%x) value=%d fd=%d\n",
                                ev.code, ev.code, ev.value, ui->key_fds[i]);
+                    }
+                    /* Any key press (except power, which toggles) wakes the
+                     * screen if it is dark — matches stock player behavior. */
+                    if (ev.value == 1 && ev.code != KEY_POWER && ui->blanked) {
+                        set_blanked(ui, 0, fb_fd);
                     }
                     /* Volume keys also act on key-repeat (value==2) so holding
                      * the button ramps through the fine mixer-unit steps for
@@ -677,6 +768,12 @@ int ui_run(uint16_t *fb, int fb_fd) {
                         }
                     }
                 }
+                if (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                    ui_log("[ui] key fd %d read err (%s); closing\n",
+                           ui->key_fds[i], strerror(errno));
+                    close(ui->key_fds[i]);
+                    ui->key_fds[i] = -1;
+                }
             }
             /* Bluetooth AVRCP remote (BT speaker's play/pause button). The one
              * button alternates KEY_PLAYCD(200)/KEY_PAUSECD(201) per press; we
@@ -708,7 +805,7 @@ int ui_run(uint16_t *fb, int fb_fd) {
          * show our UI. Our ioctl hook draws before the real pan.
          * Keep panning even when blanked (backlight off) so the touch IC
          * stays alive for double-tap wake. */
-        uint64_t now = now_ms();
+        now = now_ms();
         if (can_pan && (now - last_pan) >= PAN_INTERVAL_MS) {
             last_pan = now;
             vinfo.yoffset = (vinfo.yoffset == 0) ? vinfo.yres : 0;
@@ -752,6 +849,9 @@ static void navigate_to(ui_state_t *ui, ui_screen_t screen,
         ui->nav_stack[ui->nav_depth] = ui->screen;
         ui->nav_list_mode[ui->nav_depth] = ui->list_mode;
         ui->nav_book_id[ui->nav_depth] = ui->current_book_id;
+        utf8_safe_truncate(ui->nav_folder_path[ui->nav_depth],
+                           sizeof(ui->nav_folder_path[0]),
+                           ui->folder_path, -1);
         ui->nav_depth++;
     }
     ui->screen = screen;
@@ -770,6 +870,8 @@ static void navigate_back(ui_state_t *ui) {
         ui->screen = ui->nav_stack[ui->nav_depth];
         ui->list_mode = ui->nav_list_mode[ui->nav_depth];
         ui->current_book_id = ui->nav_book_id[ui->nav_depth];
+        utf8_safe_truncate(ui->folder_path, sizeof(ui->folder_path),
+                           ui->nav_folder_path[ui->nav_depth], -1);
         ui->selected_idx = 0;
         ui->scroll_offset = 0;
     } else {
@@ -910,6 +1012,7 @@ static int handle_home_touch(ui_state_t *ui, int x, int y) {
             navigate_to(ui, SCREEN_LIST, LIST_SERIES, 0);
             break;
         case HOME_FOLDERS:
+            ui->folder_path[0] = '\0';
             navigate_to(ui, SCREEN_LIST, LIST_FOLDERS, 0);
             break;
         case HOME_FINISHED:
@@ -994,6 +1097,7 @@ static void ui_truncate_to_width(char *dst, int dst_len, const char *s,
 
 typedef struct {
     int book_id;
+    int is_folder;       /* 1 = folder row, 0 = book row */
     char title[256];
     char author[256];
     int64_t duration_ms;
@@ -1020,6 +1124,7 @@ static int list_collect_cb(const audiobook_book_t *b, void *ctx) {
     }
     list_item_t *item = &lc->items[lc->count++];
     item->book_id = b->book_id;
+    item->is_folder = 0;
     utf8_safe_truncate(item->title, (int)sizeof(item->title), b->title, -1);
     utf8_safe_truncate(item->author, (int)sizeof(item->author), b->author, -1);
     item->duration_ms = b->total_duration_ms;
@@ -1045,7 +1150,112 @@ static void collect_list_books(ui_state_t *ui, list_ctx_t *lc) {
             audiobook_list_books_by_series(ui->db, ui->list_filter,
                                            list_collect_cb, lc); break;
         case LIST_TITLES:
-        case LIST_FOLDERS:
+            audiobook_list_books(ui->db, list_collect_cb, lc); break;
+        case LIST_FOLDERS: {
+            const char *prefix = ui->folder_path[0] ? ui->folder_path : AUDIOBOOK_LIBRARY_ROOT;
+            size_t plen = strlen(prefix);
+            char folder_names[128][256];
+            int folder_count = 0;
+
+            sqlite3_stmt *stmt = NULL;
+            const char *sql = "SELECT book_id, title, author, total_duration_ms, completed, root_path "
+                                "FROM books ORDER BY root_path, sort_title";
+            if (sqlite3_prepare_v2(ui->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+                while (sqlite3_step(stmt) == SQLITE_ROW) {
+                    int bid = sqlite3_column_int(stmt, 0);
+                    const char *title = (const char *)sqlite3_column_text(stmt, 1);
+                    const char *author = (const char *)sqlite3_column_text(stmt, 2);
+                    int64_t dur = sqlite3_column_int64(stmt, 3);
+                    int completed = sqlite3_column_int(stmt, 4);
+                    const char *rpath = (const char *)sqlite3_column_text(stmt, 5);
+                    if (!rpath) continue;
+
+                    if (strcmp(rpath, prefix) == 0) {
+                        /* Book directly at this level */
+                        if (lc->count >= lc->capacity) {
+                            int nc = lc->capacity ? lc->capacity * 2 : 64;
+                            list_item_t *ni = realloc(lc->items, nc * sizeof(list_item_t));
+                            if (!ni) break;
+                            lc->items = ni;
+                            lc->capacity = nc;
+                        }
+                        list_item_t *it = &lc->items[lc->count++];
+                        it->book_id = bid;
+                        it->is_folder = 0;
+                        utf8_safe_truncate(it->title, sizeof(it->title), title ? title : "?", -1);
+                        utf8_safe_truncate(it->author, sizeof(it->author), author ? author : "", -1);
+                        it->duration_ms = dur;
+                        it->completed = completed;
+                        audiobook_progress_t p;
+                        it->has_progress = (audiobook_get_progress(lc->db, bid, &p) > 0);
+                        it->elapsed_ms = it->has_progress ? p.total_book_elapsed_ms : 0;
+                    } else if (strncmp(rpath, prefix, plen) == 0 && rpath[plen] == '/') {
+                        const char *rest = rpath + plen + 1;
+                        const char *end = strchr(rest, '/');
+                        int seg_len = end ? (int)(end - rest) : (int)strlen(rest);
+                        if (seg_len <= 0 || seg_len >= 256) continue;
+
+                        int found = 0;
+                        for (int i = 0; i < folder_count; i++) {
+                            if (strncmp(folder_names[i], rest, seg_len) == 0
+                                && folder_names[i][seg_len] == '\0') {
+                                found = 1;
+                                break;
+                            }
+                        }
+                        if (!found && folder_count < 128) {
+                            strncpy(folder_names[folder_count], rest, seg_len);
+                            folder_names[folder_count][seg_len] = '\0';
+                            folder_count++;
+                        }
+                    }
+                }
+                sqlite3_finalize(stmt);
+            }
+
+            /* Sort folders alphabetically */
+            for (int i = 0; i < folder_count - 1; i++) {
+                for (int j = i + 1; j < folder_count; j++) {
+                    if (strcasecmp(folder_names[i], folder_names[j]) > 0) {
+                        char tmp[256];
+                        memcpy(tmp, folder_names[i], 256);
+                        memcpy(folder_names[i], folder_names[j], 256);
+                        memcpy(folder_names[j], tmp, 256);
+                    }
+                }
+            }
+
+            /* Prepend folders to the list */
+            if (folder_count > 0 && lc->items) {
+                int total = folder_count + lc->count;
+                if (total > lc->capacity) {
+                    int nc = total;
+                    list_item_t *ni = realloc(lc->items, nc * sizeof(list_item_t));
+                    if (ni) {
+                        lc->items = ni;
+                        lc->capacity = nc;
+                    }
+                }
+                if (lc->capacity >= total) {
+                    memmove(&lc->items[folder_count], lc->items,
+                            lc->count * sizeof(list_item_t));
+                    for (int i = 0; i < folder_count; i++) {
+                        list_item_t *it = &lc->items[i];
+                        it->book_id = 0;
+                        it->is_folder = 1;
+                        utf8_safe_truncate(it->title, sizeof(it->title),
+                                           folder_names[i], -1);
+                        it->author[0] = '\0';
+                        it->duration_ms = 0;
+                        it->completed = 0;
+                        it->has_progress = 0;
+                        it->elapsed_ms = 0;
+                    }
+                    lc->count = total;
+                }
+            }
+            break;
+        }
         default:
             audiobook_list_books(ui->db, list_collect_cb, lc); break;
     }
@@ -1172,76 +1382,83 @@ static void draw_list(ui_state_t *ui) {
         if (is_selected)
             render_fill_rect(r, 0, item_top, 4, LIST_ITEM_H, COL_ACCENT);
 
-        /* Cover thumbnail (small, left). When present, the text column shifts
-         * right; when absent, the existing full-width layout is used. We ONLY
-         * read the cache here (cover_thumb_cached) — never decode — so the
-         * render/pan hook can't block on a libjpeg decode. The event loop
-         * pre-warms one uncached thumbnail per tick (cover_thumb_prewarm). */
-        int bid = lc.items[i].book_id;
-        const uint16_t *thumb = cover_thumb_cached(bid);
-        if (!thumb && ui->thumb_warm_target == 0 && !thumb_is_failed(ui, bid))
-            ui->thumb_warm_target = bid;   /* ask the event loop to decode this */
-        int text_x = 24;
-        int right_margin = 18;
-        if (thumb) {
-            int ts = COVER_THUMB_PX;
-            int tx = 12;
-            int ty = item_top + (LIST_ITEM_H - ts) / 2;
-            render_blit_rgb565(r, tx, ty, ts, ts, thumb, ts, ts);
-            render_draw_rect(r, tx, ty, ts, ts, COL_GRAY_DK);
-            text_x = tx + ts + 12;   /* 80 */
-        }
-        int avail_w = RENDER_FB_W - text_x - right_margin;
-
-        /* Title (truncate to fit, reserving room for "Done" if completed) */
-        int title_max_w = avail_w;
-        if (lc.items[i].completed)
-            title_max_w -= render_text_width("Done", FONT_SCALE_1) + 16;
-        char title_buf[256];
-        ui_truncate_to_width(title_buf, sizeof(title_buf), lc.items[i].title,
-                             FONT_SCALE_2, title_max_w, 1);
-        render_text(r, text_x, item_top + 10, title_buf, FONT_SCALE_2, COL_WHITE);
-
-        /* Second line: author + duration */
-        char line2[256];
-        char dur[32];
-        int total_sec = (int)(lc.items[i].duration_ms / 1000);
-        int h = total_sec / 3600;
-        int m = (total_sec % 3600) / 60;
-        if (h > 0) snprintf(dur, sizeof(dur), "%dh %dm", h, m);
-        else snprintf(dur, sizeof(dur), "%dm", m);
-
-        if (lc.items[i].has_progress && lc.items[i].elapsed_ms > 0) {
-            int done_sec = (int)(lc.items[i].elapsed_ms / 1000);
-            int dh = done_sec / 3600;
-            int dm = (done_sec % 3600) / 60;
-            char done[32];
-            if (dh > 0) snprintf(done, sizeof(done), "%dh %dm", dh, dm);
-            else snprintf(done, sizeof(done), "%dm", dm);
-            snprintf(line2, sizeof(line2), "%s / %s", done, dur);
+        if (lc.items[i].is_folder) {
+            char name_buf[256];
+            ui_truncate_to_width(name_buf, sizeof(name_buf), lc.items[i].title,
+                                 FONT_SCALE_2, RENDER_FB_W - 48, 0);
+            render_text(r, 24, item_top + 30, name_buf, FONT_SCALE_2, COL_WHITE);
         } else {
-            snprintf(line2, sizeof(line2), "%s", dur);
-        }
+            /* Cover thumbnail (small, left). When present, the text column shifts
+             * right; when absent, the existing full-width layout is used. We ONLY
+             * read the cache here (cover_thumb_cached) — never decode — so the
+             * render/pan hook can't block on a libjpeg decode. The event loop
+             * pre-warms one uncached thumbnail per tick (cover_thumb_prewarm). */
+            int bid = lc.items[i].book_id;
+            const uint16_t *thumb = cover_thumb_cached(bid);
+            if (!thumb && ui->thumb_warm_target == 0 && !thumb_is_failed(ui, bid))
+                ui->thumb_warm_target = bid;   /* ask the event loop to decode this */
+            int text_x = 24;
+            int right_margin = 18;
+            if (thumb) {
+                int ts = COVER_THUMB_PX;
+                int tx = 12;
+                int ty = item_top + (LIST_ITEM_H - ts) / 2;
+                render_blit_rgb565(r, tx, ty, ts, ts, thumb, ts, ts);
+                render_draw_rect(r, tx, ty, ts, ts, COL_GRAY_DK);
+                text_x = tx + ts + 12;   /* 80 */
+            }
+            int avail_w = RENDER_FB_W - text_x - right_margin;
 
-        if (lc.items[i].author[0]) {
-            utf8_safe_append(line2, sizeof(line2), "  -  ");
-            utf8_safe_append(line2, sizeof(line2), lc.items[i].author);
-        }
+            /* Title (truncate to fit, reserving room for "Done" if completed) */
+            int title_max_w = avail_w;
+            if (lc.items[i].completed)
+                title_max_w -= render_text_width("Done", FONT_SCALE_1) + 16;
+            char title_buf[256];
+            ui_truncate_to_width(title_buf, sizeof(title_buf), lc.items[i].title,
+                                 FONT_SCALE_2, title_max_w, 1);
+            render_text(r, text_x, item_top + 10, title_buf, FONT_SCALE_2, COL_WHITE);
 
-        render_text(r, text_x, item_top + 62, line2, FONT_SCALE_1, COL_GRAY_LT);
+            /* Second line: author + duration */
+            char line2[256];
+            char dur[32];
+            int total_sec = (int)(lc.items[i].duration_ms / 1000);
+            int h = total_sec / 3600;
+            int m = (total_sec % 3600) / 60;
+            if (h > 0) snprintf(dur, sizeof(dur), "%dh %dm", h, m);
+            else snprintf(dur, sizeof(dur), "%dm", m);
 
-        /* Progress bar */
-        if (lc.items[i].has_progress && lc.items[i].duration_ms > 0) {
-            double frac = (double)lc.items[i].elapsed_ms /
-                          lc.items[i].duration_ms;
-            render_progress_bar(r, text_x, item_top + LIST_ITEM_H - 12,
-                               avail_w, 4, frac,
-                               COL_ACCENT, COL_GRAY_DK);
-        }
+            if (lc.items[i].has_progress && lc.items[i].elapsed_ms > 0) {
+                int done_sec = (int)(lc.items[i].elapsed_ms / 1000);
+                int dh = done_sec / 3600;
+                int dm = (done_sec % 3600) / 60;
+                char done[32];
+                if (dh > 0) snprintf(done, sizeof(done), "%dh %dm", dh, dm);
+                else snprintf(done, sizeof(done), "%dm", dm);
+                snprintf(line2, sizeof(line2), "%s / %s", done, dur);
+            } else {
+                snprintf(line2, sizeof(line2), "%s", dur);
+            }
 
-        if (lc.items[i].completed) {
-            render_text_right(r, RENDER_FB_W - 18, item_top + 10, "Done",
-                             FONT_SCALE_1, COL_GREEN);
+            if (lc.items[i].author[0]) {
+                utf8_safe_append(line2, sizeof(line2), "  -  ");
+                utf8_safe_append(line2, sizeof(line2), lc.items[i].author);
+            }
+
+            render_text(r, text_x, item_top + 62, line2, FONT_SCALE_1, COL_GRAY_LT);
+
+            /* Progress bar */
+            if (lc.items[i].has_progress && lc.items[i].duration_ms > 0) {
+                double frac = (double)lc.items[i].elapsed_ms /
+                              lc.items[i].duration_ms;
+                render_progress_bar(r, text_x, item_top + LIST_ITEM_H - 12,
+                                   avail_w, 4, frac,
+                                   COL_ACCENT, COL_GRAY_DK);
+            }
+
+            if (lc.items[i].completed) {
+                render_text_right(r, RENDER_FB_W - 18, item_top + 10, "Done",
+                                 FONT_SCALE_1, COL_GREEN);
+            }
         }
 
         y += LIST_ITEM_H;
@@ -1251,7 +1468,10 @@ static void draw_list(ui_state_t *ui) {
 
     /* Footer */
     char footer[64];
-    snprintf(footer, sizeof(footer), "%d books", lc.count);
+    if (ui->list_mode == LIST_FOLDERS)
+        snprintf(footer, sizeof(footer), "%d items", lc.count);
+    else
+        snprintf(footer, sizeof(footer), "%d books", lc.count);
     render_draw_hline(r, 0, RENDER_FB_H - FOOTER_H, RENDER_FB_W, COL_DIVIDER);
     render_text_centered(r, 0, RENDER_FB_H - FOOTER_H + 10, RENDER_FB_W,
                         footer, FONT_SCALE_1, COL_GRAY_LT);
@@ -1301,8 +1521,17 @@ static int handle_list_touch(ui_state_t *ui, int x, int y) {
     lc.items = calloc(lc.capacity, sizeof(list_item_t));
     lc.db = ui->db;
     collect_list_books(ui, &lc);
-    if (idx < lc.count)
-        navigate_to(ui, SCREEN_DETAIL, ui->list_mode, lc.items[idx].book_id);
+    if (idx < lc.count) {
+        if (lc.items[idx].is_folder) {
+            const char *prefix = ui->folder_path[0] ? ui->folder_path : AUDIOBOOK_LIBRARY_ROOT;
+            char new_path[512];
+            snprintf(new_path, sizeof(new_path), "%s/%s", prefix, lc.items[idx].title);
+            navigate_to(ui, SCREEN_LIST, LIST_FOLDERS, 0);
+            utf8_safe_truncate(ui->folder_path, sizeof(ui->folder_path), new_path, -1);
+        } else {
+            navigate_to(ui, SCREEN_DETAIL, ui->list_mode, lc.items[idx].book_id);
+        }
+    }
     free(lc.items);
     return 1;
 }

@@ -72,6 +72,21 @@ static int file_entry_cmp(const void *a, const void *b) {
     return audiobook_natural_cmp(fa->name, fb->name);
 }
 
+/* If s is not valid UTF-8, treat it as Windows-1251 and convert to UTF-8
+ * in-place (through a temp buffer). This fixes folder/file names returned by
+ * readdir() on VFAT when the on-disk encoding doesn't match the iocharset,
+ * and ID3 tags that claim UTF-8 but contain cp1251. */
+static void fix_utf8_inplace(char *s, int sz) {
+    if (!s || sz <= 0) return;
+    if (utf8_is_valid(s, -1)) return;
+    char tmp[512];
+    int n = (int)strlen(s);
+    if (n > (int)sizeof(tmp) - 1) n = (int)sizeof(tmp) - 1;
+    if (cp1251_to_utf8((const uint8_t *)s, n, tmp, (int)sizeof(tmp)) >= 0) {
+        utf8_safe_truncate(s, sz, tmp, -1);
+    }
+}
+
 /* ---- Directory walking -------------------------------------------------- */
 
 static int is_audio_file(const char *name) {
@@ -115,6 +130,7 @@ static int collect_audio_files(const char *dir_path,
                  "%s/%s", dir_path, ent->d_name);
         utf8_safe_truncate(files[count].name, (int)sizeof(files[count].name),
                           ent->d_name, -1);
+        fix_utf8_inplace(files[count].name, (int)sizeof(files[count].name));
         files[count].type = type;
         count++;
     }
@@ -154,6 +170,7 @@ static int find_book_dirs(const char *root_path,
         }
         book_dir_t *bd = &(*out_books)[*out_book_count];
         utf8_safe_truncate(bd->path, (int)sizeof(bd->path), parent_path, -1);
+        fix_utf8_inplace(bd->path, (int)sizeof(bd->path));
         bd->files = NULL;
         bd->file_count = 0;
         (*out_book_count)++;
