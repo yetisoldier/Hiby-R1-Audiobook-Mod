@@ -2,6 +2,127 @@
 
 All public releases are for the normal HiBy R1 on stock firmware 1.6. Do not install these packages on the R1 MIDI.
 
+## v2.0.20 - 2026-07-21
+
+Firmware marker: `2.0.20` - About-screen label `HiBy R1 2.0.20`.
+
+Adds UTF-8 / Cyrillic support for audiobook filenames and metadata tags,
+and changes the Now Playing Prev/Next buttons from track-skip to relative
+seek. Install over v2.0.4 (or any v2.0.x); library, resume positions,
+bookmarks, and BT pairings are preserved.
+
+### UTF-8 / Cyrillic support (filenames and tags)
+
+The audiobook app now renders Cyrillic (and other non-Latin) text
+correctly instead of `???????`. The device font (`msyh.ttf`, Microsoft
+YaHei) already contained the glyphs; the limitation was entirely in the
+app's own C code:
+
+- A new pure-C helper (`utf8.{c,h}`) provides UTF-8 decode, UTF-8
+  boundary-safe truncate/append, UTF-16 -> UTF-8 (BOM-aware, surrogates),
+  and Windows-1251 -> UTF-8 (embedded WHATWG table).
+- The font glyph cache is now a bounded LRU keyed by codepoint (cap 512)
+  instead of a fixed 95-slot ASCII array, so any codepoint the font holds
+  can render. The old `non-ASCII -> '?'` clamp is gone.
+- Text drawing and measuring walk UTF-8 codepoints; `render_text_wrap`
+  is pixel/codepoint-aware (wraps at spaces, never mid-codepoint).
+- ID3 tag decoding handles encodings 0/1/2/3: UTF-16 -> UTF-8 (1/2), UTF-8
+  copy (3), and encoding-0 frames with high bytes are treated as
+  Windows-1251 -> UTF-8 (the common Russian-MP3 convention).
+- All fixed `char[]` buffer copies in scan/library/ui are now
+  UTF-8-boundary-safe, and UI list truncation appends a U+2026 ellipsis
+  (`…`) cleanly without splitting a glyph.
+
+Verified on-device with a Windows-1251 ID3v2.3 tag: author `Иван Петров`,
+track `Первая глава`, album `Сборник` render correctly from both the tag
+and a Cyrillic folder/filename. FTS5 search finds Cyrillic text; no `?`
+anywhere; no data loss (52 -> 53 books). Scope is the audiobook app only;
+the stock music app (`hiby_player`, closed binary) is unchanged.
+
+### Now Playing skip buttons: relative seek
+
+Prev / Next on the Now Playing screen now seek relative to the current
+position instead of skipping tracks: Prev rewinds 30 s, Next advances
+60 s (clamped to [0, total]). Useful for re-hearing a sentence or jumping
+past an intro within a long chapter. Track navigation is still available
+via the chapter list.
+
+### Diagnostics
+
+`setup_alsa` now logs a single diagnostic line naming which
+`snd_pcm_hw_params_set_*` call failed (or that all succeeded and only the
+constraint commit rejected the buffer/period combo) when `snd_pcm_hw_params`
+errors. It fires only on failure - zero overhead on the success path. This
+makes any future ALSA `hw_params` error self-describing in the hook log
+instead of a bare `failed: -22`. (Audio playback is healthy on a clean
+install; a prior `hw_params -22` seen during testing was stale DAC state
+from rapid re-flashing, cleared by a normal reboot - not a code bug.)
+
+Everything else is unchanged from 2.0.19: the multi-file chapter-list fix,
+the three stock-feature unlocks (USB DAC, Native DSD, Bluetooth SBC XQ),
+SD-primary bookmarks, PNG and progressive-JPEG covers, Bluetooth A2DP
+output with AVRCP remote and wired fallback, SD-primary resume positions,
+boot ADB, and the storage-full scan guard.
+
+## v2.0.19 - 2026-07-21
+
+Firmware marker: `2.0.19` - About-screen label `HiBy R1 2.0.19`.
+
+Fixes the chapter list for audiobooks split into one file per chapter,
+where every chapter was listed as "Chapter 1" with a duration of 0:00
+and tapping a chapter did not jump to the right place. This was a scanner
+bug (scan.c), not a playback bug. Install over v2.0.4 (or any v2.0.x);
+library, resume positions, bookmarks, and BT pairings are preserved.
+Existing books keep their resume positions; the chapter list is rebuilt
+on the next library refresh.
+
+### Fixed: multi-file books showed "Chapter 1" / 0:00 (scan.c)
+
+Two related scanner bugs:
+
+- For multi-file M4A / M4B books with no embedded chapter metadata, the
+  `is_m4b` code path wrote a single "Chapter 1" placeholder for each file
+  instead of one chapter per file named after the file, so every row
+  literally read "Chapter 1".
+- For multi-file MP3 books, each file's chapter row was stored with a
+  start position of 0:00 instead of its cumulative position within the
+  whole book, so every chapter showed 0:00 and chapter-tap seek always
+  jumped back to the first file.
+
+The scanner now gives every multi-file book one chapter per file, named
+after the file (its title tag, or the file name if untitled), spanning
+that file's real cumulative position within the whole book
+(`[book_pos_ms, book_pos_ms + duration]`). `book_offset_ms` is threaded
+through `scan_chapter_cb` so embedded chapters in a single-file M4B that
+is part of a multi-file set are also offset to whole-book positions.
+Single-file audiobooks with no embedded chapters now get a single
+"Chapter 1" entry covering the whole file, so every book has a populated
+Chapters list.
+
+### Hardening
+
+- `SYNTH_CHAPTER_CAP = 1024` caps placeholder chapters a single file can
+  synthesize.
+- `MAX_CHAPTER_ROWS = 2048` caps chapter rows the chapter list renders or
+  accepts taps for.
+
+Both guard against a malformed file reporting a huge chapter count that
+could exhaust the device's memory and freeze it. Defensive only; normal
+behavior unchanged.
+
+Verified on-device: cumulative chapter start_ms across multi-file books
+(e.g. Food: A Love Story `[0, 32026, 73064, 177109, 414144, 634173, ...]`),
+per-file titles, 993 -> 1012 chapters, 52 books / 298 tracks, no data loss.
+A user-reported freeze while browsing chapters of an M4A multi-file book
+could not be reproduced (test library's multi-file books are MP3); the
+memory-exhaustion hardening addresses the most plausible cause.
+
+Everything else is unchanged from 2.0.18: the long-audiobook duration fix,
+the three stock-feature unlocks (USB DAC, Native DSD, Bluetooth SBC XQ),
+SD-primary bookmarks, PNG and progressive-JPEG covers, Bluetooth A2DP
+output with AVRCP remote and wired fallback, SD-primary resume positions,
+boot ADB, and the storage-full scan guard.
+
 ## v2.0.18 - 2026-07-20
 
 Firmware marker: `2.0.18` - About-screen label `HiBy R1 2.0.18`.
