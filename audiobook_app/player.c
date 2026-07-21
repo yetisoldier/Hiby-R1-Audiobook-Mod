@@ -240,7 +240,7 @@ typedef struct {
 
 enum {
     CMD_NONE = 0, CMD_PLAY, CMD_RESUME, CMD_PAUSE, CMD_STOP, CMD_SEEK,
-    CMD_NEXT, CMD_PREV, CMD_QUIT,
+    CMD_FF, CMD_RW, CMD_QUIT,   /* row-1 skip buttons: FF +60s / RW -30s */
 };
 enum { DEC_MP3 = 0, DEC_AAC = 1 };
 
@@ -1349,14 +1349,31 @@ static void cmd_seek(int64_t ms) {
     plog("SEEK %lldms -> track %d @%lld", (long long)ms, idx, (long long)into);
 }
 
-static void cmd_next(int dir) {
+/* Row-1 skip buttons: relative time skip within the current book.
+ *   dir > 0  -> fast-forward SKIP_FF_MS (Next, +60s)
+ *   dir <= 0 -> rewind      SKIP_RW_MS (Prev, -30s)
+ * Computed against the current book-elapsed position, clamped to [0, total_ms],
+ * then handed to cmd_seek which resolves book-ms -> (track, into) and re-opens.
+ * Replaces the old track-skip behavior (Next = next file, Prev = previous file
+ * or restart track 0), which was useless on single-file books and offered no
+ * quick "I missed that sentence" jump. Runs on the player thread; position_ms
+ * and total_ms are written on this same thread (decode_step / open_book), so no
+ * mutex is needed here -- same as cmd_seek. */
+#define SKIP_FF_MS  60000   /* Next = +60s */
+#define SKIP_RW_MS  30000   /* Prev = -30s */
+static void cmd_skip(int dir) {
     if (g_pl.track_count == 0) return;
-    int idx = g_pl.track_idx + dir;
-    if (idx < 0) idx = 0;
-    if (idx >= g_pl.track_count) { cmd_stop(); return; }
-    if (open_track(idx, 0) < 0) { g_pl.state = PLAYER_STOPPED; return; }
-    g_pl.state = PLAYER_PLAYING;
-    plog("NEXT/PREV -> track %d", idx);
+    int64_t delta = (dir > 0) ? SKIP_FF_MS : -SKIP_RW_MS;
+    int64_t target = g_pl.position_ms + delta;
+    if (target < 0) target = 0;
+    /* Guard total_ms > 0 so a (defensive) unknown-duration book still skips
+     * forward instead of clamping to 0. Skip past the end lands at total and
+     * the decode loop hits natural EOF -> book finishes. */
+    if (g_pl.total_ms > 0 && target > g_pl.total_ms) target = g_pl.total_ms;
+    plog("SKIP %s%lldms -> %lld (pos=%lld total=%lld)",
+         dir > 0 ? "+" : "-", (long long)delta, (long long)target,
+         (long long)g_pl.position_ms, (long long)g_pl.total_ms);
+    cmd_seek(target);   /* sets state = PLAYER_PLAYING; re-opens track */
 }
 
 /* ---- decode one chunk -------------------------------------------------- */
@@ -1588,8 +1605,8 @@ static void *player_thread(void *arg) {
             case CMD_PAUSE:  cmd_pause(); break;
             case CMD_STOP:   cmd_stop(); break;
             case CMD_SEEK:   cmd_seek(seek_ms); break;
-            case CMD_NEXT:   cmd_next(1); break;
-            case CMD_PREV:   cmd_next(-1); break;
+            case CMD_FF:     cmd_skip(1); break;
+            case CMD_RW:     cmd_skip(-1); break;
             case CMD_QUIT:
                 /* Persist the exact final position before the thread exits.
                  * Without this, the last place is only as fresh as the most
@@ -1750,13 +1767,13 @@ void player_seek_book_ms(int64_t ms) {
     if (g_pl.book_id > 0) submit(CMD_SEEK, g_pl.book_id, ms);
 }
 
-int player_next(void) {
-    if (g_pl.track_count > 0) { submit(CMD_NEXT, 0, 0); return 0; }
+int player_ff(void) {
+    if (g_pl.track_count > 0) { submit(CMD_FF, 0, 0); return 0; }
     return -1;
 }
 
-int player_prev(void) {
-    if (g_pl.track_count > 0) { submit(CMD_PREV, 0, 0); return 0; }
+int player_rw(void) {
+    if (g_pl.track_count > 0) { submit(CMD_RW, 0, 0); return 0; }
     return -1;
 }
 

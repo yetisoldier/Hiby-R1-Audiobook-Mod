@@ -19,6 +19,7 @@
 #include <stdint.h>
 #include <sys/mman.h>
 #include "tags.h"
+#include "utf8.h"
 
 /* ---- Utilities ---------------------------------------------------------- */
 
@@ -39,10 +40,11 @@ static int get_file_info(const char *path, int64_t *size, int *mtime) {
 }
 
 static void safe_copy(char *dst, int dst_len, const uint8_t *src, int src_len) {
-    if (!dst || dst_len <= 0 || !src || src_len <= 0) return;
-    int n = src_len < dst_len - 1 ? src_len : dst_len - 1;
-    memcpy(dst, src, n);
-    dst[n] = '\0';
+    if (!dst || dst_len <= 0) return;
+    if (!src || src_len <= 0) { dst[0] = '\0'; return; }
+    /* Boundary-safe: if the fixed buffer cuts a multi-byte UTF-8 sequence,
+     * back up to the last complete codepoint. */
+    utf8_safe_truncate(dst, dst_len, (const char *)src, src_len);
 }
 
 /* ---- ID3v2 parsing ------------------------------------------------------ */
@@ -56,31 +58,34 @@ static uint32_t syncsafe_to_uint(const uint8_t *p) {
 
 static void parse_id3v2_text(const uint8_t *data, int len, int encoding,
                              char *out, int out_len) {
-    if (!data || len <= 0 || !out || out_len <= 0) return;
+    if (!out || out_len <= 0) return;
+    out[0] = '\0';
+    if (!data || len <= 0) return;
     /* encoding: 0=ISO-8859-1, 1=UTF-16 w/ BOM, 2=UTF-16BE, 3=UTF-8 */
     if (encoding == 1 || encoding == 2) {
-        /* UTF-16: just take the ASCII subset, skip BOM */
-        int si = 0;
-        if (encoding == 1 && len >= 2 && data[0] == 0xFF && data[1] == 0xFE)
-            si = 2; /* BOM */
-        int di = 0;
-        for (; si + 1 < len && di < out_len - 1; si += 2) {
-            if (data[si] == 0 && data[si+1] == 0) break; /* null terminator */
-            if (data[si+1] == 0 && data[si] < 128)
-                out[di++] = data[si];
-            else
-                out[di++] = '?';
-        }
-        out[di] = '\0';
+        /* UTF-16 -> UTF-8 (BOM-aware; encoding 2 has no BOM, treat as BE) */
+        utf16_to_utf8(data, len, (encoding == 2), out, out_len);
+    } else if (encoding == 3) {
+        /* UTF-8: copy up to the first NUL, boundary-safe */
+        int n = 0;
+        while (n < len && data[n] != 0) n++;
+        utf8_safe_truncate(out, out_len, (const char *)data, n);
     } else {
-        /* ISO-8859-1 or UTF-8: copy directly, stop at null */
-        int n = len < out_len - 1 ? len : out_len - 1;
-        int di = 0;
-        for (int i = 0; i < n; i++) {
-            if (data[i] == 0) break;
-            out[di++] = data[i];
+        /* encoding 0 = ISO-8859-1 per spec, but Russian MP3s in the wild are
+         * almost always Windows-1251. Heuristic: if any byte >= 0x80 appears,
+         * treat the field as Windows-1251 and convert to UTF-8; otherwise it
+         * is plain ASCII and we copy bytes through. A Latin-1 field with
+         * accents would mis-decode here — acceptable for the target audience
+         * (Russian audiobooks) and only triggers on encoding-0 + high bytes. */
+        int has_high = 0, n = 0;
+        while (n < len && data[n] != 0) {
+            if (data[n] >= 0x80) has_high = 1;
+            n++;
         }
-        out[di] = '\0';
+        if (has_high)
+            cp1251_to_utf8(data, n, out, out_len);
+        else
+            utf8_safe_truncate(out, out_len, (const char *)data, n);
     }
 }
 
@@ -575,8 +580,7 @@ static int parse_nero_chpl(const uint8_t *buf, int boff, int bend, int64_t track
         if (p + namelen > bend) break;
         char title[256];
         int tn = namelen < (int)sizeof(title) - 1 ? namelen : (int)sizeof(title) - 1;
-        memcpy(title, buf + p, tn);
-        title[tn] = '\0';
+        utf8_safe_truncate(title, (int)sizeof(title), (const char *)(buf + p), tn);
         p += namelen;
 
         int64_t start_ms = start_100ns / 10000;  /* 100ns -> ms */
@@ -586,8 +590,7 @@ static int parse_nero_chpl(const uint8_t *buf, int boff, int bend, int64_t track
         }
         emitted++;
         prev_start_ms = start_ms;
-        strncpy(prev_title, title, sizeof(prev_title) - 1);
-        prev_title[sizeof(prev_title) - 1] = '\0';
+        utf8_safe_truncate(prev_title, (int)sizeof(prev_title), title, -1);
     }
     if (emitted > 0 && cb) {
         cb(emitted, prev_title, prev_start_ms, track_dur_ms, ctx);
@@ -795,13 +798,13 @@ static int parse_qt_chapter_track(const char *path, const uint8_t *moov,
                 snprintf(title, sizeof(title), "Chapter %d", i + 1);
             } else {
                 /* Text sample: uint16 length prefix, then that many bytes of
-                 * text (UTF-8 for ASCII chapter titles). */
+                 * UTF-8 text. */
                 int tlen = (sbuf[0] << 8) | sbuf[1];
                 int avail = (int)sizes[i] - 2;
                 if (tlen < 0 || tlen > avail) tlen = avail;  /* length unreliable */
                 if (tlen > (int)sizeof(title) - 1) tlen = (int)sizeof(title) - 1;
-                memcpy(title, sbuf + 2, tlen);
-                title[tlen] = '\0';
+                utf8_safe_truncate(title, (int)sizeof(title),
+                                   (const char *)(sbuf + 2), tlen);
             }
         }
         emitted++;

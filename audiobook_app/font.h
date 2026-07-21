@@ -36,15 +36,26 @@ int font_available(void);
 /* Map a render scale (1/2/3) to a pixel size. */
 int font_px_for_scale(int scale);
 
-/* Draw one ASCII char at (x, y=top), alpha-blending color over the existing
- * framebuffer pixel. Returns the x advance (next pen x). Non-ASCII -> '?'. */
+/* Draw one char at (x, y=top), alpha-blending color over the existing
+ * framebuffer pixel. Returns the x advance (next pen x). For a byte < 0x80
+ * this draws the ASCII glyph; a stray non-ASCII byte (legacy single-char call)
+ * advances without drawing — use font_draw_text for UTF-8 strings. */
 int font_draw_char(uint16_t *fb, int x, int y, char c, int px, uint16_t color);
 
-/* Draw an ASCII string at (x, y=top). Returns the x after the last char. */
+/* Draw one Unicode codepoint at (x, y=top). Used by the UTF-8-aware text
+ * paths. Returns the x advance. */
+int font_draw_codepoint(uint16_t *fb, int x, int y, uint32_t cp, int px,
+                        uint16_t color);
+
+/* Advance width of a single codepoint at the given size (rasterizes on miss
+ * so the cached metrics are used). */
+int font_codepoint_width(uint32_t cp, int px);
+
+/* Draw a UTF-8 string at (x, y=top). Returns the x after the last char. */
 int font_draw_text(uint16_t *fb, int x, int y, const char *s, int px,
                    uint16_t color);
 
-/* Pixel width of a string at the given size (sum of advances). */
+/* Pixel width of a UTF-8 string at the given size (sum of advances). */
 int font_text_width(const char *s, int px);
 
 /* Line height (ascent + descent) at the given size, for vertical spacing. */
