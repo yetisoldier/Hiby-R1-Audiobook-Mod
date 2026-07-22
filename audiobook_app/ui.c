@@ -661,11 +661,11 @@ int ui_run(uint16_t *fb, int fb_fd) {
                                 break;
                             case KEY_NEXT:       /* 163 */
                             case KEY_FASTFORWARD: /* 208 */
-                                player_next();
+                                player_ff();
                                 break;
                             case KEY_PREVIOUS:    /* 165 */
                             case KEY_REWIND:       /* 207 */
-                                player_prev();
+                                player_rw();
                                 break;
                             case KEY_VOLUMEUP:    /* 115 */
                                 player_volume_step(+1);
@@ -1532,9 +1532,9 @@ static void draw_now_playing(ui_state_t *ui) {
     int ctrl_w = 120;
     int gap = (RENDER_FB_W - 3 * ctrl_w) / 4;   /* 30 */
 
-    /* Prev */
+    /* Prev = rewind 30s */
     render_fill_rect(r, gap, ctrl_y, ctrl_w, 60, COL_GRAY);
-    render_text_centered(r, gap, ctrl_y + 16, ctrl_w, "Prev",
+    render_text_centered(r, gap, ctrl_y + 16, ctrl_w, "-30s",
                          FONT_SCALE_4, COL_WHITE);
 
     /* Play/Pause — label + color reflect state */
@@ -1544,10 +1544,10 @@ static void draw_now_playing(ui_state_t *ui) {
     render_text_centered(r, gap * 2 + ctrl_w, ctrl_y + 16, ctrl_w,
                          playing ? "Pause" : "Play", FONT_SCALE_4, COL_BLACK);
 
-    /* Next */
+    /* Next = fast-forward 60s */
     render_fill_rect(r, gap * 3 + 2 * ctrl_w, ctrl_y, ctrl_w, 60, COL_GRAY);
     render_text_centered(r, gap * 3 + 2 * ctrl_w, ctrl_y + 16, ctrl_w,
-                         "Next", FONT_SCALE_4, COL_WHITE);
+                         "+60s", FONT_SCALE_4, COL_WHITE);
 
     /* Row 2 (4 buttons, own tighter spacing than row 1): Mark / Sleep / Speed /
      * Chaps. Mark adds a bookmark (flashes green); Sleep cycles Off/15/30/60 min
@@ -1674,14 +1674,14 @@ static int handle_now_playing_touch(ui_state_t *ui, int x, int y) {
     int ctrl_w = 120;
     int gap = (RENDER_FB_W - 3 * ctrl_w) / 4;   /* 30 */
 
-    /* Row 1: Prev / Play-Pause / Next */
+    /* Row 1: RW (-30s) / Play-Pause / FF (+60s) */
     if (y >= ctrl_y && y < ctrl_y + 60) {
-        if (x >= gap && x < gap + ctrl_w) { player_prev(); return 1; }
+        if (x >= gap && x < gap + ctrl_w) { player_rw(); return 1; }
         if (x >= gap * 2 + ctrl_w && x < gap * 2 + 2 * ctrl_w) {
             player_toggle(); return 1;
         }
         if (x >= gap * 3 + 2 * ctrl_w && x < gap * 3 + 3 * ctrl_w) {
-            player_next(); return 1;
+            player_ff(); return 1;
         }
     }
     /* Row 2: Mark (add bookmark) / Sleep (cycle 0/15/30/60 min) /

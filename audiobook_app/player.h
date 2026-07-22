@@ -53,13 +53,10 @@ void player_stop(void);
  * resume playing. */
 void player_seek_book_ms(int64_t ms);
 
-/* Skip to the next/previous track in the current book. */
-int player_next(void);
-int player_prev(void);
-
-/* Skip to the next/previous track in the current book. */
-int player_next(void);
-int player_prev(void);
+/* Relative time skip in the current book: player_ff fast-forwards +60s,
+ * player_rw rewinds -30s, clamped to [0, total]. Resumes playing. */
+int player_ff(void);
+int player_rw(void);
 
 /* ---- Bookmarks ---- */
 /* Add a bookmark at the current playback position (current track + book-elapsed
