@@ -461,16 +461,17 @@ int audiobook_db_open(const char *db_path, sqlite3 **db_out) {
     }
 
     sqlite3 *db = NULL;
-    if (sqlite3_open(db_path, &db) != SQLITE_OK) {
+    int rc_open = sqlite3_open(db_path, &db);
+    if (rc_open != SQLITE_OK) {
         if (db) sqlite3_close(db);
         return -1;
     }
 
     /* Bootstrap schema */
     char *err = NULL;
-    if (sqlite3_exec(db, SCHEMA_SQL, NULL, NULL, &err) != SQLITE_OK) {
-        fprintf(stderr, "[library] schema bootstrap failed: %s\n",
-                err ? err : "?");
+    int rc_schema = sqlite3_exec(db, SCHEMA_SQL, NULL, NULL, &err);
+    if (rc_schema != SQLITE_OK) {
+        fprintf(stderr, "[library] schema bootstrap failed: %s\n", err ? err : "?");
         sqlite3_free(err);
         sqlite3_close(db);
         return -1;

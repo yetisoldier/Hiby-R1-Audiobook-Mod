@@ -455,21 +455,47 @@ static int vol_save(int pct) {
 }
 
 static void mix_apply(void) {
+    long v;
+    int retries;
+
     if (g_pl.output == OUT_BT) {
-        /* BlueALSA A2DP volume is linear 0=silent..max=loud (NOT inverted like
-         * the CS43131 DAC). If the BT mixer couldn't be opened, no-op (matches
-         * the "missing lib/ctl -> no-op" discipline). */
+        /* BlueALSA A2DP volume is linear 0=silent..max=loud. */
         if (!g_pl.bt_mixer || !g_pl.bt_mix_elem) return;
         long range = g_pl.bt_mix_max - g_pl.bt_mix_min;
-        long v = g_pl.bt_mix_min + (long)(g_pl.volume_pct * range / 100);
-        x_snd_mixer_selem_set_playback_volume_all(g_pl.bt_mix_elem, v);
+        v = g_pl.bt_mix_min + (long)(g_pl.volume_pct * range / 100);
+        retries = 2;
+        while (retries-- >= 0) {
+            if (x_snd_mixer_selem_set_playback_volume_all(g_pl.bt_mix_elem, v) >= 0)
+                return;
+        }
         return;
     }
+
     if (!g_pl.mixer_ok) return;
-    long v = pct_to_mix(g_pl.volume_pct);
-    if (g_pl.mix_left)  x_snd_mixer_selem_set_playback_volume_all(g_pl.mix_left, v);
-    if (g_pl.mix_right) x_snd_mixer_selem_set_playback_volume_all(g_pl.mix_right, v);
+    v = pct_to_mix(g_pl.volume_pct);
+
+    /* Retry mixer calls in case I2C to CS43131 is temporarily blocked.
+     * The event loop can stall for 0-45ms on a single mixer call under heavy
+     * system load. Retrying up to 2x with short delays prevents silent volume
+     * failure (UI shows change, hardware doesn't respond). */
+    void *elems[3];
+    elems[0] = g_pl.mix_left;
+    elems[1] = g_pl.mix_right;
+    elems[2] = NULL;
+
+    for (int pass = 0; pass < 3; pass++) {
+        int all_done = 1;
+        for (int ch = 0; elems[ch]; ch++) {
+            if (!elems[ch]) continue;
+            long rc = x_snd_mixer_selem_set_playback_volume_all(elems[ch], v);
+            if (rc < 0) all_done = 0;
+        }
+        if (all_done) return; /* All successful -- done */
+        usleep(1000); /* 1ms delay between retries for I2C to settle */
+    }
 }
+
+
 
 /* Open the mixer and locate the Left/Right playback volume elements. Called
  * once from player_init. Best-effort: volume buttons no-op if this fails. */
