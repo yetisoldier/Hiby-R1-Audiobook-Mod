@@ -10,6 +10,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/mman.h>      /* mmap the TTF read-only instead of an eager heap copy */
 
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "vendor/stb_truetype.h"
@@ -33,6 +34,7 @@ typedef struct {
 
 static stbtt_fontinfo g_info;
 static unsigned char *g_ttf_data = NULL;
+static size_t g_ttf_map_len = 0;   /* mmap length, for munmap on a future shutdown */
 static int g_ok = 0;
 
 static glyph_t g_cache[N_SIZES][N_GLYPHS];
@@ -48,21 +50,23 @@ int font_init(void) {
     if (fd < 0) { return 0; }
     off_t sz = lseek(fd, 0, SEEK_END);
     if (sz <= 0) { close(fd); return 0; }
-    lseek(fd, 0, SEEK_SET);
-    g_ttf_data = (unsigned char *)malloc((size_t)sz);
-    if (!g_ttf_data) { close(fd); return 0; }
-    ssize_t n = 0;
-    while (n < sz) {
-        ssize_t r = read(fd, g_ttf_data + n, (size_t)(sz - n));
-        if (r <= 0) break;
-        n += r;
-    }
+    /* mmap the TTF read-only (squashfs file → shares the fs page cache, and is
+     * evictable under RAM pressure, unlike an anonymous heap copy). stb_truetype
+     * only reads through this pointer (InitFont + metrics + glyph rasterize are
+     * all reads), so a read-only mapping is safe. Saves the multi-MB resident
+     * copy held for the process lifetime. The mapping persists until process
+     * exit (no font_shutdown today); it's file-backed so it costs no anonymous
+     * heap and the kernel can evict it under pressure. */
+    void *map = mmap(NULL, (size_t)sz, PROT_READ, MAP_PRIVATE, fd, 0);
     close(fd);
-    if (n != sz) { free(g_ttf_data); g_ttf_data = NULL; return 0; }
+    if (map == MAP_FAILED) return 0;
+    g_ttf_data = (unsigned char *)map;
+    g_ttf_map_len = (size_t)sz;
 
     if (!stbtt_InitFont(&g_info, g_ttf_data,
                        stbtt_GetFontOffsetForIndex(g_ttf_data, 0))) {
-        free(g_ttf_data); g_ttf_data = NULL; return 0;
+        munmap(g_ttf_data, g_ttf_map_len);
+        g_ttf_data = NULL; g_ttf_map_len = 0; return 0;
     }
     g_ok = 1;
     return 1;

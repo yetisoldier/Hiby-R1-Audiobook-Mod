@@ -15,7 +15,15 @@
 
 /* ---- Constants --------------------------------------------------------- */
 
-#define AUDIOBOOK_DB_PATH       "/usr/data/audiobooks/library.db"
+/* library.db now lives on the SD card (exFAT). /usr/data is chronically ~95%
+ * full (the stock music DB rebuilds on every boot and dominates the ~36 MB
+ * UBIFS partition), so a scan that grows the WAL or a save_progress that hits
+ * SQLITE_FULL can leave the DB in a broken state. SD has gigabytes free and
+ * the DB is <1 MB — moving it here durably fixes the "storage full" scan block
+ * and the stale-WAL freeze. The old path is kept for one-time migration. */
+#define AUDIOBOOK_DB_DIR        "/usr/data/mnt/sd_0/Audiobooks/.audiobook_library"
+#define AUDIOBOOK_DB_PATH       "/usr/data/mnt/sd_0/Audiobooks/.audiobook_library/library.db"
+#define AUDIOBOOK_DB_PATH_OLD   "/usr/data/audiobooks/library.db"
 #define AUDIOBOOK_DATA_DIR      "/usr/data/audiobooks"
 #define AUDIOBOOK_COVER_CACHE   "/usr/data/audiobooks/cache/covers"
 #define AUDIOBOOK_RUN_DIR       "/usr/data/audiobooks/run"
@@ -106,6 +114,15 @@ int audiobook_db_open(const char *db_path, sqlite3 **db_out);
 
 /* Close the database. */
 void audiobook_db_close(sqlite3 *db);
+
+/* Write mutex for the shared library.db (now on SD/exFAT). Since the build is
+ * -DSQLITE_THREADSAFE=0, each connection is single-thread-owned, but exFAT
+ * fcntl locks may be no-ops. This app-level mutex serializes the two writers
+ * (scan on the event thread + save_progress on the player thread) so they
+ * never collide in the WAL. Readers do NOT take this lock — WAL readers always
+ * see a consistent committed snapshot regardless of a concurrent writer. */
+void audiobook_db_write_lock(void);
+void audiobook_db_write_unlock(void);
 
 /* ---- Book queries ------------------------------------------------------- */
 

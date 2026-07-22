@@ -70,19 +70,64 @@ static uint32_t saved_insns_b[4];
 /* ---- Forward declarations ----------------------------------------------- */
 static int hook_b(void *arg0, void *arg1);
 
-/* ---- Utilities ---------------------------------------------------------- */
+/* ---- Persistent log fd (eliminate per-call open/close) -------------------- */
+/* All log calls share this persistent fd. O_APPEND ensures concurrent writes
+ * don't interleave. Only reopens on EIO/EBADF — the fd is never closed during
+ * normal operation. This eliminates 10-50 ms fs stalls that were blocking the
+ * event loop when held during key-repeat volume bursts or rapid navigation. */
+static int g_log_fd = -1;
+#define LOG_PATH "/tmp/.audiobook_hook.log"
+
+static void log_open(void) {
+    if (g_log_fd >= 0) return;  /* already open */
+    g_log_fd = open(LOG_PATH, O_WRONLY | O_CREAT | O_APPEND, 0644);
+}
 
 static void logmsg(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    int fd = open("/tmp/.audiobook_hook.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
-    if (fd >= 0) {
+
+    if (g_log_fd < 0) log_open();  /* defer first open until first use */
+    if (g_log_fd >= 0) {
         char buf[256];
         int n = vsnprintf(buf, sizeof(buf), fmt, ap);
-        if (n > 0) write(fd, buf, n);
-        close(fd);
+        if (n > 0) {
+            ssize_t w = write(g_log_fd, buf, n);
+            (void)w;
+            /* On error, close so next call retries. O_APPEND guarantees atomic appends. */
+            if (w < 0) { close(g_log_fd); g_log_fd = -1; }
+        }
+    } else {
+        /* Fallback: open a temporary fd (first boot or /tmp unavailable). */
+        int fd = open(LOG_PATH, O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (fd >= 0) {
+            char buf[256];
+            int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+            if (n > 0) write(fd, buf, n);
+            close(fd);
+        }
     }
     va_end(ap);
+}
+
+static void ui_log_raw(const char *buf, int len) {
+    /* Write raw pre-formatted buffer — avoids double-vsnprintf in callers. */
+    if (g_log_fd < 0) log_open();
+    if (g_log_fd >= 0) {
+        ssize_t w = write(g_log_fd, buf, len);
+        (void)w;
+        if (w < 0) { close(g_log_fd); g_log_fd = -1; }
+    } else {
+        int fd = open(LOG_PATH, O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (fd >= 0) { write(fd, buf, len); close(fd); }
+    }
+}
+
+/* Expose the persistent log fd for ui.c to use directly. */
+__attribute__((visibility("default")))
+int get_log_fd(void) {
+    if (g_log_fd < 0) log_open();
+    return g_log_fd;
 }
 
 static void flush_icache(void *addr, size_t len) {

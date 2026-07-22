@@ -19,9 +19,18 @@
 #define MP4_AUDIO_H
 
 #include <stdint.h>
+#include <stddef.h>   /* size_t for moov_map_len */
 
 typedef struct {
     int fd;                 /* kept-open file fd for pread of AAC frames */
+
+    /* moov body mmap (PROT_READ MAP_PRIVATE, page-aligned). When non-NULL the
+     * moov is demand-paged from the SD file (no eager 16MB heap slurp) and
+     * stays mapped for the playback lifetime, munmap'd on close. NULL/0 when
+     * read_moov_fd fell back to malloc (small moov) — in that case the moov
+     * buffer is freed at the end of open (it is not retained). */
+    uint8_t *moov_map;
+    size_t   moov_map_len;
 
     uint32_t timescale;     /* soun trak mdhd timescale (ticks/sec) */
     uint32_t sample_count;  /* total AAC frames (from stsz count) */

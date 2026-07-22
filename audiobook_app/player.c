@@ -66,13 +66,22 @@ static void plog(const char *fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    int fd = open("/tmp/.audiobook_hook.log",
-                  O_WRONLY | O_CREAT | O_APPEND, 0644);
+    /* Use persistent log fd (open-once with O_APPEND) — avoid per-call open/close stalls. */
+    extern int get_log_fd(void);
+    int fd = get_log_fd();
     if (fd >= 0) {
         write(fd, "[player] ", 9);
         write(fd, buf, strlen(buf));
         write(fd, "\n", 1);
-        close(fd);
+    } else {
+        /* Fallback for when persistent fd isn't ready. */
+        int t = open("/tmp/.audiobook_hook.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (t >= 0) {
+            write(t, "[player] ", 9);
+            write(t, buf, strlen(buf));
+            write(t, "\n", 1);
+            close(t);
+        }
     }
 }
 
@@ -327,6 +336,9 @@ static struct {
     int volume_pct;          /* 0..100, 100 = loudest */
     int mixer_ok;
 
+    int64_t vol_save_mono_ms;   /* last monotonic ms when we actually saved */
+    int   vol_last_saved;        /* persisted pct value (avoid redundant writes) */
+
     /* Bluetooth output (BlueALSA A2DP). output selects the active sink; the
      * BT mixer (ctl.bluealsa) is opened lazily on first BT output and closed
      * when we switch back to wired. bt_pcm_path is the org.bluealsa PCM path
@@ -340,6 +352,13 @@ static struct {
     void *bt_mix_elem;       /* first playback-volume element in bt_mixer */
     long bt_mix_min, bt_mix_max;
 } g_pl;
+
+/* Set by save_progress (player thread) to tell the UI event loop that the
+ * current book's progress changed, so it can refresh the cached progress + home
+ * counts WITHOUT the render thread touching the DB. Polled + cleared on the
+ * event thread. Plain volatile int — a stale/lost transition just means the UI
+ * refreshes one tick later. Defined in ui.c. */
+extern volatile int g_progress_dirty;
 
 /* ---- minimp3_ex I/O callbacks (wired to g_pl.track_fd) ------------------ */
 /* minimp3_ex reads the file through these; we own the fd. Defined after g_pl
@@ -378,10 +397,21 @@ static long pct_to_mix(int pct) {
 #endif
 }
 
-/* Persist volume so it survives app restarts. */
-#define VOL_FILE "/usr/data/.audiobook_volume"
+/* Persist volume so it survives app restarts. Kept in /tmp (RAM, tmpfs):
+ * /usr/data is chronically full; SD exFAT O_CREAT|O_TRUNC on every volume
+ * step stalls the event loop for 10-50 ms under garbage-collection delays,
+ * which blocks ALL input events (volume keys are handled on the same thread).
+ * /tmp is tmpfs — zero fs overhead, instant writes. Survives within a session;
+ * we also keep an SD fallback in case someone reboots mid-listen (rare). */
+#define VOL_FILE_RAM  "/tmp/.audiobook_volume"
+#define VOL_FILE_SD   "/usr/data/mnt/sd_0/Audiobooks/.audiobook_volume"
+#define VOL_FILE_OLD  "/usr/data/.audiobook_volume"  /* pre-SD legacy location */
 static int vol_load_saved(void) {
-    int fd = open(VOL_FILE, O_RDONLY);
+    /* Try /tmp first (RAM, tmpfs — instant). Fall back to SD for post-reboot
+     * recovery when the app hasn't been run since reboot. */
+    int fd = open(VOL_FILE_RAM, O_RDONLY);
+    if (fd < 0) fd = open(VOL_FILE_SD, O_RDONLY);
+    if (fd < 0) fd = open(VOL_FILE_OLD, O_RDONLY);  /* legacy */
     if (fd < 0) return -1;
     char b[16]; ssize_t n = read(fd, b, sizeof(b) - 1); close(fd);
     if (n <= 0) return -1;
@@ -390,11 +420,38 @@ static int vol_load_saved(void) {
     if (v < 0 || v > 100) return -1;
     return v;
 }
-static void vol_save(int pct) {
-    int fd = open(VOL_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) return;
+
+/* Minimum interval between actual volume saves: 150 ms. Key-repeat from the
+ * kernel fires every ~30-70 ms when holding a button; we want to debounce all
+ * those down to at most one fs write per 150 ms. Also skip writes when the
+ * value hasn't changed (user ramps past it). All volume writes go to /tmp
+ * (tmpfs, zero fs overhead) — never SD or UBIFS during playback. */
+#define VOL_SAVE_MIN_INTERVAL_MS  150
+
+static uint64_t mono_ms(void);  /* forward decl — vol_save needs it; full def after player_volume_set */
+
+static int vol_save(int pct) {
+    uint64_t now = mono_ms();
+    if (pct == g_pl.vol_last_saved &&
+        now - g_pl.vol_save_mono_ms < VOL_SAVE_MIN_INTERVAL_MS) {
+        return 0;  /* skipped — too soon or value unchanged */
+    }
+    g_pl.vol_save_mono_ms = now;
+    g_pl.vol_last_saved = pct;
+
+    /* Always write to /tmp first (instant tmpfs). Also copy to SD as backup for
+     * post-reboot survival if someone reboots mid-session. /tmp fires every volume
+     * step (fast); SD fires only on actual value changes (debounced 150ms). */
     char b[16]; int len = snprintf(b, sizeof(b), "%d\n", pct);
-    write(fd, b, len); close(fd);
+
+    /* /tmp primary — instant, never blocks the event loop. */
+    int fd = open(VOL_FILE_RAM, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) { write(fd, b, len); close(fd); }
+
+    /* SD backup — debounced to value changes + 150ms interval. Acceptable rare stall. */
+    fd = open(VOL_FILE_SD, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) { write(fd, b, len); close(fd); }
+    return 0;
 }
 
 static void mix_apply(void) {
@@ -450,8 +507,15 @@ static void mixer_init(void) {
 void player_volume_set(int vol) {
     if (vol < 0) vol = 0; if (vol > 100) vol = 100;
     g_pl.volume_pct = vol;
+    /* Diag: measure where a volume press spends time. A multi-second mix or
+     * save stall blocks the event thread -> delayed/dead keys (vol + playpause). */
+    uint64_t t0 = mono_ms();
     mix_apply();
+    uint64_t t1 = mono_ms();
     vol_save(vol);
+    uint64_t t2 = mono_ms();
+    plog("vol_set pct=%d out=%d mix=%llums save=%llums", vol, g_pl.output,
+         (unsigned long long)(t1 - t0), (unsigned long long)(t2 - t1));
 }
 
 void player_volume_step(int dir) {
@@ -483,14 +547,15 @@ void player_volume_step(int dir) {
     player_volume_set(new_pct);
 }
 
-int player_volume(void) {
-    return g_pl.mixer_ok ? g_pl.volume_pct : -1;
-}
-
+/* Time helper for volume debounce + sleep timer checks. */
 static uint64_t mono_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+int player_volume(void) {
+    return g_pl.mixer_ok ? g_pl.volume_pct : -1;
 }
 
 /* ---- track listing ----------------------------------------------------- */
@@ -598,32 +663,44 @@ static void save_progress(int completed) {
      * the mirror goes stale but the SD file holds the real position. */
     pos_save_sd(g_pl.book_id, p.track_ordinal, p.position_ms,
                 p.total_book_elapsed_ms, completed);
-    /* Free-space guard on the library.db mirror. /usr/data on this device is
-     * chronically ~95% full (the stock music DB rebuilds on every boot). A
-     * sqlite write that hits SQLITE_FULL mid-WAL can leave the connection in
-     * an error state, so the very next read (audiobook_get_book in the
-     * Now-Playing draw) fails and the screen flips to "Book not found". This
-     * was observed during the resume double-play thrash, where two rapid
-     * CMD_PLAYs + their periodic saves exhausted the last bytes. Skip the DB
-     * mirror entirely when free space is critically low — the SD store is
-     * authoritative and the list-view "%" just goes a little stale until space
-     * frees up. Threshold mirrors scan.c's SCAN_MIN_FREE_BYTES (1 MB): below
-     * it sqlite can't safely grow the WAL, so don't even try. */
+    /* Signal the UI to refresh its cached progress + home counts. Set
+     * unconditionally (the SD save above always reflects new progress) so a
+     * low-/usr/data early return below still updates the UI once space frees. */
+    g_progress_dirty = 1;
+    /* Free-space guard on the library.db (now on SD). The SD has gigabytes
+     * free, but a nearly-full card could still fail a write. Skip the DB
+     * mirror when free space is critically low — the SD .pos store is
+     * authoritative and the list-view "%" just goes a little stale until
+     * space frees up. Threshold mirrors scan.c's SCAN_MIN_FREE_BYTES (1 MB). */
     struct statvfs vfs;
-    if (statvfs(AUDIOBOOK_DATA_DIR, &vfs) == 0) {
+    if (statvfs(AUDIOBOOK_DB_DIR, &vfs) == 0) {
         unsigned long long free_bytes = (unsigned long long)vfs.f_bavail
                                         * (unsigned long long)vfs.f_frsize;
         if (free_bytes < (unsigned long long)(1 * 1024 * 1024)) {
             return;  /* SD already saved; skip the DB mirror to avoid poisoning */
         }
     }
-    audiobook_save_progress(g_pl.db, &p);
+    /* Take the write mutex so we don't collide with a concurrent scan
+     * (event thread) in the WAL. exFAT fcntl locks may be no-ops, so this
+     * app-level mutex is the real serialization. */
+    audiobook_db_write_lock();
+    int rc = audiobook_save_progress(g_pl.db, &p);
+    audiobook_db_write_unlock();
+    if (rc < 0) {
+        /* SQLITE_BUSY (a scan holds the WAL writer lock) or SQLITE_FULL
+         * (SD full). Non-fatal: SD .pos above is the authoritative
+         * copy, and the list-view "%" mirror just goes stale until the next
+         * successful save. Don't fail playback over a best-effort mirror. */
+        plog("save skipped (db busy/full) — SD .pos authoritative");
+    }
 }
 
 /* Add a bookmark at the current playback position. Uses the same track + book
- * math as save_progress. Called from the Now Playing "Mark" button. */
-int player_add_bookmark(const char *label) {
-    if (!g_pl.db || g_pl.book_id <= 0 || g_pl.track_count == 0) return -1;
+ * math as save_progress. Called from the Now Playing "Mark" button (event
+ * thread). `db` is the caller's connection — the UI passes ui->db so the write
+ * happens on the event thread and never touches the player thread's g_pl.db. */
+int player_add_bookmark(sqlite3 *db, const char *label) {
+    if (!db || !g_pl.db || g_pl.book_id <= 0 || g_pl.track_count == 0) return -1;
     int idx = g_pl.track_idx;
     if (idx < 0 || idx >= g_pl.track_count) idx = 0;
     int track_id = g_pl.tracks[idx].track_id;
@@ -632,7 +709,7 @@ int player_add_bookmark(const char *label) {
     const char *lab = (label && label[0]) ? label : "Bookmark";
     plog("add bookmark book=%d track=%d pos=%lld bookpos=%lld",
          g_pl.book_id, track_id, (long long)track_pos, (long long)book_pos);
-    return audiobook_add_bookmark(g_pl.db, g_pl.book_id, track_id,
+    return audiobook_add_bookmark(db, g_pl.book_id, track_id,
                                   track_pos, book_pos, lab);
 }
 
@@ -1621,9 +1698,9 @@ static void *player_thread(void *arg) {
                  * .pos was already missing/stale, the next session resumes ~5s
                  * in and the periodic save then overwrites it with ~0, which
                  * looks like "the resume reset to the beginning". Saving here
-                 * makes exit authoritative. Safe: save_progress no-opss when no
+                 * makes exit authoritative. Safe: save_progress no-ops when no
                  * book is loaded, and g_pl.db is still open (audiobook_db_close
-                 * runs in ui_run AFTER player_shutdown returns). */
+                 * runs in player_shutdown AFTER this thread exits). */
                 save_progress(0);
                 g_pl.running = 0;
                 break;
@@ -1676,16 +1753,36 @@ static void submit_play(int book_id, int64_t start_ms) {
 
 /* ---- public API -------------------------------------------------------- */
 
-int player_init(sqlite3 *db) {
+int player_init(void) {
     if (g_pl.thread_alive) return 0;
     memset(&g_pl, 0, sizeof(g_pl));
-    g_pl.db = db;
     g_pl.track_fd = -1;
     g_pl.speed_permille = 1000;
+    /* Volume debounce init: vol_last_saved=-1 means "first save always writes" */
+    g_pl.vol_last_saved = -1;
+    /* Open the player's OWN library DB connection. The build is
+     * -DSQLITE_THREADSAFE=0, so this connection is touched ONLY by the player
+     * thread (the UI/event thread has its own, ui->db). This kills the data
+     * race that sharing one sqlite3* across the render/player/event threads
+     * caused under THREADSAFE=0. The DB is WAL on /usr/data, so the player's
+     * writes never block the UI's reads; the only contention is scan
+     * (event-thread write) vs save (player-thread write), handled by a short
+     * busy_timeout + skip in save_progress. */
+    if (audiobook_db_open(AUDIOBOOK_DB_PATH, &g_pl.db) < 0) {
+        plog("player_init: library DB open failed — playback unavailable");
+        g_pl.db = NULL;
+        return -1;
+    }
+    /* Short busy_timeout: a scan holds the WAL writer lock for its whole
+     * transaction, so a save during a scan would otherwise block the decode
+     * loop (audio glitch) for the full 5s default. 300ms gives a genuine
+     * contender a fair shot, then save_progress skips (SD .pos is
+     * authoritative) — bounded glitch, no data loss. */
+    sqlite3_busy_timeout(g_pl.db, 300);
     /* Restore last-used playback speed (persisted by player_set_speed). */
     {
         char sbuf[16];
-        if (audiobook_get_setting(db, "playback_speed", sbuf, sizeof(sbuf)) == 0) {
+        if (audiobook_get_setting(g_pl.db, "playback_speed", sbuf, sizeof(sbuf)) == 0) {
             int v = atoi(sbuf);
             if (v >= 800 && v <= 2000) g_pl.speed_permille = v;
         }
@@ -1734,6 +1831,11 @@ void player_shutdown(void) {
      * accepts the auto-resume since stock music can't be manually stopped on
      * this firmware (only paused, which doesn't free the slot). */
     bt_hand_back_to_stock();
+    /* The player owns its own DB connection (opened in player_init); close it
+     * now that the thread has exited and no one else uses it. (The UI closes
+     * its own ui->db separately in ui_run.) */
+    audiobook_db_close(g_pl.db);
+    g_pl.db = NULL;
 }
 
 int player_play_book(int book_id, int resume) {

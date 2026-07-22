@@ -19,6 +19,7 @@
 #include <stdint.h>
 #include "scan.h"
 #include "tags.h"
+#include "cover.h"         /* cover_precache: pre-decode covers to .r565 at scan */
 #include "posstore.h"      /* pos_remove_sd: drop stale SD .pos for pruned books */
 #include "bookmark_sd.h"   /* bookmark_remove_book_sd: drop stale SD .bm */
 
@@ -630,13 +631,13 @@ int audiobook_scan_library(sqlite3 *db, const char *root_path,
         return -1;
     }
 
-    /* Pre-scan free-space guard on the partition holding library.db. If
-     * /usr/data is full, sqlite writes fail mid-scan and leave a half-written
-     * DB; abort loudly here instead of silently producing a broken library.
-     * Best-effort: if statvfs itself fails, fall through and let sqlite
-     * surface any real write error rather than blocking the scan. */
+    /* Pre-scan free-space guard on the partition holding library.db (now on
+     * SD). If the SD is full, sqlite writes fail mid-scan; abort loudly here
+     * instead of silently producing a broken library. Best-effort: if statvfs
+     * itself fails, fall through and let sqlite surface any real write error
+     * rather than blocking the scan. */
     struct statvfs vfs;
-    if (statvfs(AUDIOBOOK_DATA_DIR, &vfs) == 0) {
+    if (statvfs(AUDIOBOOK_DB_DIR, &vfs) == 0) {
         unsigned long long free_bytes = (unsigned long long)vfs.f_bavail
                                         * (unsigned long long)vfs.f_frsize;
         if (free_bytes < (unsigned long long)SCAN_MIN_FREE_BYTES) {
@@ -680,7 +681,7 @@ int audiobook_scan_library(sqlite3 *db, const char *root_path,
 
     /* Wrap the entire scan (library_roots marker + per-book upserts + orphan
      * cleanup) in a single transaction. Without this, each INSERT/UPDATE runs
-     * as its own autocommit transaction and appends to the WAL; if /usr/data
+     * as its own autocommit transaction and appends to the WAL; if the storage
      * fills mid-scan (SQLITE_FULL) the scan aborts and leaves a multi-MB stale
      * WAL that persists across reboots and blocks library.db on next open —
      * the recurring "freeze" (see Hiby-R1-wal-scan-abort). One transaction
@@ -688,7 +689,12 @@ int audiobook_scan_library(sqlite3 *db, const char *root_path,
      * to the last committed state, so no stale large WAL survives the abort.
      * VACUUM below must stay OUTSIDE the transaction (it cannot run inside
      * one). Best-effort: if BEGIN itself fails, fall through to the old
-     * autocommit behavior rather than blocking the scan. */
+     * autocommit behavior rather than blocking the scan.
+     *
+     * The write mutex serializes this scan (event thread) with save_progress
+     * (player thread) so two writers never collide in the WAL — important now
+     * that the DB lives on exFAT where fcntl locks may be no-ops. */
+    audiobook_db_write_lock();
     int tx_active = (sqlite3_exec(db, "BEGIN", NULL, NULL, NULL) == SQLITE_OK);
 
     int changed_count = 0;
@@ -793,6 +799,19 @@ int audiobook_scan_library(sqlite3 *db, const char *root_path,
         if (book_id < 0) continue;
 
         changed_count++;
+
+        /* Pre-decode the cover to both sizes and persist the small .r565
+         * caches on the SD (next to the source). This runs on the event thread
+         * (scan is invoked from handle_home_touch), so it's off the render
+         * thread by construction, and makes the first on-screen view of each
+         * book a cheap load_r565 hit — no libjpeg decode stall on the event
+         * thread when the user opens it. Best-effort: a missing/undecodable
+         * cover just means a later lazy decode. Each call has its own jmp_buf,
+         * so this is re-entrant with the event-thread thumbnail pre-warm. */
+        if (cover_path[0]) {
+            cover_precache(cover_path, COVER_PX);
+            cover_precache(cover_path, COVER_THUMB_PX);
+        }
 
         /* Accumulate chapter titles across all tracks for the FTS index. */
         char chapter_titles[4096];
@@ -931,18 +950,19 @@ int audiobook_scan_library(sqlite3 *db, const char *root_path,
         int commit_rc = sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
         if (commit_rc != SQLITE_OK) {
             sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+            audiobook_db_write_unlock();
             if (progress) progress(5, 0, 0, "scan aborted (storage full)", ctx);
             free(books);
             return -1;
         }
     }
+    audiobook_db_write_unlock();
 
     /* Compact library.db after prunes. SQLite keeps freed pages inside the
      * file unless VACUUM'd, so over many card swaps (each leaving pruned
-     * rows behind) the file would only grow on the tiny /usr/data partition.
-     * VACUUM rebuilds it in place. Best-effort: it needs ~DB-size free temp
-     * space (we just confirmed >= SCAN_MIN_FREE_BYTES at scan start, and the
-     * DB is <1 MB), and a failure leaves the DB working — just not compact.
+     * rows behind) the file would only grow. VACUUM rebuilds it in place.
+     * Best-effort: it needs ~DB-size free temp space (the SD has gigabytes),
+     * and a failure leaves the DB working — just not compact.
      * No active transaction is open here (COMMIT above closed it). */
     sqlite3_exec(db, "VACUUM", NULL, NULL, NULL);
 
@@ -970,6 +990,7 @@ int audiobook_cleanup_orphans(sqlite3 *db, scan_progress_cb progress,
     int dead_count = 0;
     int dead_cap = 64;
     dead_ids = malloc(dead_cap * sizeof(int));
+    int dead_ok = (dead_ids != NULL);   /* OOM → skip recording (best-effort) */
 
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         int book_id = sqlite3_column_int(stmt, 0);
@@ -977,10 +998,11 @@ int audiobook_cleanup_orphans(sqlite3 *db, scan_progress_cb progress,
         if (!rpath) continue;
         struct stat st;
         if (stat(rpath, &st) < 0 || !S_ISDIR(st.st_mode)) {
+            if (!dead_ok) continue;
             if (dead_count >= dead_cap) {
                 dead_cap *= 2;
                 int *new_ids = realloc(dead_ids, dead_cap * sizeof(int));
-                if (!new_ids) break;
+                if (!new_ids) { dead_ok = 0; continue; }
                 dead_ids = new_ids;
             }
             dead_ids[dead_count++] = book_id;
@@ -1018,6 +1040,7 @@ int audiobook_cleanup_orphans(sqlite3 *db, scan_progress_cb progress,
         int *dead_tracks = NULL;
         int dt_count = 0, dt_cap = 64;
         dead_tracks = malloc(dt_cap * sizeof(int));
+        int dt_ok = (dead_tracks != NULL);   /* OOM → skip recording */
 
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             int track_id = sqlite3_column_int(stmt, 0);
@@ -1025,10 +1048,11 @@ int audiobook_cleanup_orphans(sqlite3 *db, scan_progress_cb progress,
             if (!tpath) continue;
             struct stat st;
             if (stat(tpath, &st) < 0) {
+                if (!dt_ok) continue;
                 if (dt_count >= dt_cap) {
                     dt_cap *= 2;
                     int *nt = realloc(dead_tracks, dt_cap * sizeof(int));
-                    if (!nt) break;
+                    if (!nt) { dt_ok = 0; continue; }
                     dead_tracks = nt;
                 }
                 dead_tracks[dt_count++] = track_id;

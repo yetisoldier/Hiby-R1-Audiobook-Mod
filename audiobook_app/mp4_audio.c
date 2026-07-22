@@ -12,8 +12,13 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/mman.h>      /* mmap/munmap for the moov body */
 
 #define MOOV_MAX_BYTES (16 * 1024 * 1024)   /* OOM guard — >16MB => reject */
+/* If mmap of the moov region fails (e.g. the SD file can't be mapped), fall
+ * back to malloc+read only for moovs up to this size — never re-introduce the
+ * OOM-thrash hang on a big moov (the original eager-malloc path). */
+#define MOOV_MALLOC_MAX (8 * 1024 * 1024)
 #define CHUNK_MAX       100000              /* chunks; ~1.6MB index ceiling */
 #define STTS_ENTRY_MAX  8192               /* RLE entries; AAC usually 1 */
 
@@ -61,13 +66,25 @@ static int qt_find_child(const uint8_t *buf, int start, int end, uint32_t type,
     return 0;
 }
 
-/* Slurp the moov atom body into a malloc'd buffer, keeping the fd open for
- * later sample preads. Sets *out_body_file_off to the absolute file offset of
- * the moov body (buffer byte 0 == that file offset, so a box at buffer offset X
- * lives at file offset out_body_file_off + X). Returns NULL on failure.
- * Rejects moov bodies larger than MOOV_MAX_BYTES (graceful, not an OOM freeze). */
+/* Slurp the moov atom body, keeping the fd open for later sample preads. The
+ * body is mapped read-only + demand-paged (mmap PROT_READ MAP_PRIVATE) so the
+ * up-to-16MB moov is NEVER slurped into anonymous heap — only the pages
+ * actually walked during open fault in, and they're file-backed (evictable
+ * under RAM pressure, shared with the fs page cache). If mmap fails, fall back
+ * to malloc+read for small moovs only (MOOV_MALLOC_MAX) — never the old eager
+ * 16MB malloc on a big moov (that OOM-thrashed the device).
+ *
+ * Sets *out_body_file_off to the absolute file offset of the moov body (buffer
+ * byte 0 == that file offset, so a box at buffer offset X lives at file offset
+ * out_body_file_off + X). out_map and out_map_len get the page-aligned mmap base
+ * + length (NULL/0 when the malloc fallback was used) so the caller can munmap
+ * it on close. Returns NULL on failure. Rejects moov bodies larger than
+ * MOOV_MAX_BYTES (graceful, not an OOM freeze). */
 static uint8_t *read_moov_fd(const char *path, int *out_fd,
-                             int64_t *out_len, int64_t *out_body_file_off) {
+                             int64_t *out_len, int64_t *out_body_file_off,
+                             uint8_t **out_map, size_t *out_map_len) {
+    *out_map = NULL;
+    *out_map_len = 0;
     int fd = open(path, O_RDONLY);
     if (fd < 0) return NULL;
     int64_t off = 0;
@@ -90,6 +107,26 @@ static uint8_t *read_moov_fd(const char *path, int *out_fd,
         if (type == 0x6d6f6f76 /* 'moov' */) {
             int64_t body = atom_size - hdrsz;
             if (body <= 0 || body > MOOV_MAX_BYTES) break;
+            int64_t body_off = off + hdrsz;   /* absolute file offset of moov body */
+            /* Page-align the offset; `skew` is the bytes before the body in the
+             * first mapped page (mirrors tags.c:460). buf byte 0 == body_off. */
+            long page = sysconf(_SC_PAGESIZE);
+            if (page <= 0) page = 4096;
+            int64_t map_off = (body_off / page) * page;
+            int64_t skew = body_off - map_off;
+            size_t map_len = (size_t)(body + skew);
+            void *map = mmap(NULL, map_len, PROT_READ, MAP_PRIVATE, fd, map_off);
+            if (map != MAP_FAILED) {
+                *out_fd = fd;                  /* keep open for preads */
+                *out_len = body;
+                *out_body_file_off = body_off;
+                *out_map = (uint8_t *)map;    /* page-aligned base, for munmap */
+                *out_map_len = map_len;
+                return (uint8_t *)map + skew;
+            }
+            /* mmap failed — malloc+read fallback, small moovs only. */
+            if (body > MOOV_MALLOC_MAX) break;
+            if (lseek(fd, body_off, SEEK_SET) < 0) break;
             uint8_t *buf = malloc((size_t)body);
             if (!buf) break;
             size_t got = 0;
@@ -99,9 +136,10 @@ static uint8_t *read_moov_fd(const char *path, int *out_fd,
                 got += (size_t)r;
             }
             if (got != (size_t)body) { free(buf); break; }
-            *out_fd = fd;                  /* keep open */
+            *out_fd = fd;                      /* keep open */
             *out_len = body;
-            *out_body_file_off = off + hdrsz;
+            *out_body_file_off = body_off;
+            /* *out_map stays NULL → caller frees buf itself */
             return buf;
         }
         off += atom_size;
@@ -270,8 +308,14 @@ int mp4_audio_open(const char *path, mp4_audio_t *m) {
 
     int fd;
     int64_t moov_len, moov_body_file_off;
-    uint8_t *moov = read_moov_fd(path, &fd, &moov_len, &moov_body_file_off);
+    uint8_t *moov_map = NULL; size_t moov_map_len = 0;
+    uint8_t *moov = read_moov_fd(path, &fd, &moov_len, &moov_body_file_off,
+                                 &moov_map, &moov_map_len);
     if (!moov) return -1;
+    /* Remember the mmap base so mp4_audio_close can munmap it (the malloc
+     * fallback leaves moov_map NULL; that buffer is freed at done: instead). */
+    m->moov_map = moov_map;
+    m->moov_map_len = moov_map_len;
 
     int rv = -1;  /* fail-closed; cleared only on full success */
     int trak_b, trak_e;
@@ -394,10 +438,17 @@ int mp4_audio_open(const char *path, mp4_audio_t *m) {
     rv = 0;
 
 done:
-    free(moov);
+    if (moov_map) {
+        /* mmap'd moov: keep mapped for the playback lifetime (read-only,
+         * file-backed → evictable under RAM pressure); munmap on close. */
+    } else {
+        free(moov);   /* malloc fallback: the moov buffer is transient */
+        m->moov_map = NULL;
+        m->moov_map_len = 0;
+    }
     if (rv != 0) {
         close(fd);
-        mp4_audio_close(m);
+        mp4_audio_close(m);   /* munmaps m->moov_map if set, frees index */
     }
     return rv;
 }
@@ -460,6 +511,10 @@ uint32_t mp4_audio_seek_sample(mp4_audio_t *m, int64_t ms) {
 
 void mp4_audio_close(mp4_audio_t *m) {
     if (m->fd > 0) { close(m->fd); m->fd = 0; }
+    if (m->moov_map && m->moov_map_len) {
+        munmap(m->moov_map, m->moov_map_len);
+        m->moov_map = NULL; m->moov_map_len = 0;
+    }
     free(m->chunk_off);       m->chunk_off = NULL;
     free(m->chunk_samples);   m->chunk_samples = NULL;
     free(m->chunk_first);     m->chunk_first = NULL;

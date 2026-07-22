@@ -102,12 +102,17 @@ static int load_libjpeg(void) {
 }
 
 /* ---- error handling (longjmp instead of the default exit()) ------------- */
-static jmp_buf g_jmp;
+/* Per-decode jmp_buf stored in cinfo.client_data so each decode has its OWN
+ * recovery target. This makes decode_cover_to re-entrant — safe for the scan-
+ * time pre-decode (cover_precache) to coexist with the event-thread thumbnail
+ * pre-warm (cover_thumb_prewarm) — and removes the old shared static g_jmp
+ * cross-thread longjmp hazard. */
+struct cover_err_ctx { jmp_buf jmp; };
 static void my_error_exit(j_common_ptr cinfo) {
     /* On error, abort this decode; cover_get returns NULL (no cover). We do
      * NOT call the default error_exit (which calls exit() and would kill
      * hiby_player). */
-    longjmp(g_jmp, 1);
+    longjmp(((struct cover_err_ctx *)cinfo->client_data)->jmp, 1);
 }
 
 /* Current free RAM in kB (MemAvailable from /proc/meminfo). Used to cap how
@@ -148,10 +153,12 @@ static int decode_cover_to(const char *cover_path, int px, uint16_t *out) {
 
     struct jpeg_decompress_struct cinfo;
     struct jpeg_error_mgr jerr;
+    struct cover_err_ctx ctx;     /* per-decode longjmp target (see my_error_exit) */
     cinfo.err = x_std_error(&jerr);
     jerr.error_exit = my_error_exit;
+    cinfo.client_data = &ctx;     /* so any libjpeg error can find THIS decode's jmp */
 
-    if (setjmp(g_jmp)) {
+    if (setjmp(ctx.jmp)) {
         /* Any libjpeg error lands here. Clean up what we can and bail. */
         x_destroy_decompress(&cinfo);
         fclose(fp);
@@ -191,11 +198,11 @@ static int decode_cover_to(const char *cover_path, int px, uint16_t *out) {
     x_start_decompress(&cinfo);
 
     int ow = (int)cinfo.output_width, oh = (int)cinfo.output_height;
-    if (ow <= 0 || oh <= 0) longjmp(g_jmp, 1);
+    if (ow <= 0 || oh <= 0) longjmp(ctx.jmp, 1);
 
     JSAMPARRAY rowbuf = (*cinfo.mem->alloc_sarray)((j_common_ptr)&cinfo,
                             JPOOL_IMAGE, (JDIMENSION)(ow * 3), (JDIMENSION)1);
-    if (!rowbuf) longjmp(g_jmp, 1);
+    if (!rowbuf) longjmp(ctx.jmp, 1);
 
     /* Stream row-by-row; for each source row, fill the dest row(s) that
      * nearest-map to it. */
@@ -309,6 +316,38 @@ const uint16_t *cover_get(sqlite3 *db, int book_id) {
 
     s_cache_buf = load_or_decode(b.cover_path, COVER_PX);
     return s_cache_buf;
+}
+
+/* Pre-decode cover_path to px*px RGB565 and persist it as "<cover>.<px>.r565"
+ * next to the source on the SD — so the first time the user opens/views a
+ * book, cover_get is a cheap load_r565 hit (no libjpeg decode, no transient
+ * buffer, no decode stall on the event thread). Best-effort: a non-image path
+ * or a decode failure simply leaves no .r565 (a later lazy decode retries).
+ * Called from the scanner (event thread) per book; re-entrant with the
+ * event-thread thumbnail pre-warm thanks to the per-decode jmp_buf. Returns 1
+ * if a usable .r565 now exists (was cached or just decoded), 0 otherwise. */
+int cover_precache(const char *cover_path, int px) {
+    if (!cover_path || !cover_path[0]) return 0;
+
+    /* Only bother with image covers we can decode (mirror cover_get's check). */
+    const char *dot = strrchr(cover_path, '.');
+    if (!dot) return 0;
+    if (strcmp(dot, ".jpg") != 0 && strcmp(dot, ".JPG") != 0 &&
+        strcmp(dot, ".jpeg") != 0 && strcmp(dot, ".JPEG") != 0 &&
+        strcmp(dot, ".png") != 0 && strcmp(dot, ".PNG") != 0)
+        return 0;
+
+    /* Already cached on SD? Skip the malloc+decode entirely. */
+    char rpath[600];
+    build_r565_path(cover_path, px, rpath, sizeof(rpath));
+    FILE *test = fopen(rpath, "rb");
+    if (test) { fclose(test); return 1; }
+
+    /* Miss: decode + persist (save_r565 is the side effect we want). */
+    uint16_t *buf = load_or_decode(cover_path, px);
+    if (!buf) return 0;
+    free(buf);
+    return 1;
 }
 
 /* ---- small-thumbnail LRU cache (for the list view) ---------------------- */

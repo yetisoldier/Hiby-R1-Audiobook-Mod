@@ -22,6 +22,7 @@
 #include <sys/ioctl.h>
 #include <errno.h>
 #include <time.h>
+#include <pthread.h>
 #include <linux/input.h>
 #include <linux/fb.h>
 #include "ui.h"
@@ -107,6 +108,24 @@ static void navigate_to(ui_state_t *ui, ui_screen_t screen,
                         list_mode_t mode, int book_id);
 static void navigate_back(ui_state_t *ui);
 
+/* ---- Render-cache rebuild (event thread) --------------------------------
+ * Each rebuild does its DB I/O OUTSIDE g_cache_lock, builds a fresh heap
+ * buffer, then swaps it under the lock and frees the old buffer. The render
+ * thread reads the cache under the same lock during its draw. */
+static void rebuild_home(ui_state_t *ui);
+static void rebuild_list(ui_state_t *ui);
+static void rebuild_current_book(ui_state_t *ui, int with_cover);
+static void rebuild_cur_prog(ui_state_t *ui);
+static void rebuild_bookmarks(ui_state_t *ui);
+static void rebuild_chapters(ui_state_t *ui);
+static void rebuild_screen(ui_state_t *ui);
+static void free_render_cache(ui_state_t *ui);
+
+/* Collector callbacks defined later (Bookmarks/Chapters sections) —
+ * forward-declared so the rebuild block can reference them. */
+static int bm_collect_cb(const audiobook_bookmark_t *bm, void *ctx);
+static int ch_collect_cb(const audiobook_chapter_t *ch, void *ctx);
+
 /* ---- Thumbnail pre-warm failed-set -------------------------------------- *
  * cover_thumb_prewarm fails permanently for some covers (a progressive JPEG
  * bails at read_header; missing/non-JPEG covers bail too). Without this set,
@@ -132,14 +151,23 @@ static void thumb_mark_failed(ui_state_t *ui, int book_id) {
 
 /* ---- Utility ------------------------------------------------------------ */
 
+/* Persistent log fd — avoids per-call open/close on /tmp (was causing fs stalls).
+ * Exported from hook.c; -1 means "not yet opened" or "needs retry after error". */
+extern int get_log_fd(void);
+
 static void ui_log(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     char buf[256];
     vsnprintf(buf, sizeof(buf), fmt, ap);
-    /* Write to hook log */
-    int fd = open("/tmp/.audiobook_hook.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
-    if (fd >= 0) { write(fd, buf, strlen(buf)); close(fd); }
+    /* Write to persistent hook log fd (open-once with O_APPEND). */
+    int fd = get_log_fd();
+    if (fd >= 0) { write(fd, buf, strlen(buf)); }
+    else {
+        /* Fallback: the fd failed — retry open and write. Rare, transient. */
+        fd = open("/tmp/.audiobook_hook.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (fd >= 0) { write(fd, buf, strlen(buf)); close(fd); }
+    }
     va_end(ap);
 }
 
@@ -565,6 +593,22 @@ static int process_touch_event(ui_state_t *ui, struct input_event *ev) {
 static ui_state_t g_ui;
 static volatile int g_ui_active = 0;
 
+/* Render cache lock. The render/pan thread (hiby_player's render thread OR our
+ * event-loop manual pan, both via the ioctl hook → ui_draw_frame) holds this
+ * across its whole memory-walk draw of the cached rows; the event thread does
+ * all its DB I/O OUTSIDE the lock, then takes it only long enough to swap the
+ * cache pointer + free the old buffer. Single, non-nested lock → no deadlock,
+ * and the render thread never observes a half-swapped/freed buffer. The event
+ * thread NEVER holds this lock across a pan ioctl (which would re-enter the
+ * hook → ui_draw_frame → draw → lock → deadlock), so rebuilds are kept short
+ * and lock-free outside the swap. */
+static pthread_mutex_t g_cache_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* Set by the player thread (save_progress) when the current book's progress
+ * changes; polled + cleared by the event loop each tick so it can refresh the
+ * cached progress + home counts without the render thread touching the DB. */
+volatile int g_progress_dirty = 0;
+
 void ui_draw_frame(uint16_t *buf) {
     if (!g_ui_active || !buf) return;
     /* Temporarily point the renderer at this buffer, clear, and draw. */
@@ -600,8 +644,14 @@ int ui_run(uint16_t *fb, int fb_fd) {
     }
     ui_log("[ui] DB opened, starting event loop\n");
 
-    /* Start the playback engine (dlopens mpg123 + ALSA on first use). */
-    if (player_init(ui->db) < 0)
+    /* Build the initial screen's render cache (HOME) before enabling the draw
+     * hook, so the first frame the render thread draws has valid data. */
+    rebuild_screen(ui);
+
+    /* Start the playback engine (dlopens mpg123 + ALSA on first use). The
+     * engine opens its OWN library DB connection — it does NOT share ui->db
+     * (THREADSAFE=0: one connection per thread). */
+    if (player_init() < 0)
         ui_log("[ui] player_init failed — playback unavailable\n");
 
     g_ui_active = 1;  /* ioctl hook starts drawing our UI */
@@ -723,10 +773,11 @@ int ui_run(uint16_t *fb, int fb_fd) {
                     if (ev.type != EV_KEY) continue;
                     /* Diagnostic: log the first ~40 key events so we can
                      * identify the exact power keycode. */
-                    if (key_log_count < 40 && ev.value == 1) {
+                    if (key_log_count < 200 && ev.value == 1) {
                         key_log_count++;
-                        ui_log("[ui] KEY press code=%d (0x%x) value=%d fd=%d\n",
-                               ev.code, ev.code, ev.value, ui->key_fds[i]);
+                        ui_log("[ui] KEY press code=%d (0x%x) value=%d fd=%d t=%llu\n",
+                               ev.code, ev.code, ev.value, ui->key_fds[i],
+                               (unsigned long long)now_ms());
                     }
                     /* Any key press (except power, which toggles) wakes the
                      * screen if it is dark — matches stock player behavior. */
@@ -831,11 +882,25 @@ int ui_run(uint16_t *fb, int fb_fd) {
             if (!cover_thumb_prewarm(ui->db, bid))
                 thumb_mark_failed(ui, bid);  /* don't retry; let walk advance */
         }
+
+        /* If the player saved progress (g_progress_dirty, set in save_progress),
+         * refresh the cached current-book progress + home counts so the UI
+         * updates without the render thread touching the DB. Done here on the
+         * event thread, outside the pan ioctl and outside the cache lock's draw
+         * critical section. The list's per-book progress is intentionally NOT
+         * rebuilt here (that would re-run the per-book query storm we just
+         * killed); it refreshes on the next navigate/scan. */
+        if (g_progress_dirty) {
+            g_progress_dirty = 0;
+            rebuild_cur_prog(ui);
+            rebuild_home(ui);
+        }
     }
 
     g_ui_active = 0;  /* stop drawing */
     set_blanked(ui, 0, fb_fd);  /* restore backlight on exit */
     close_input(ui);
+    free_render_cache(ui);  /* free the list/bookmark/chapter caches */
     player_shutdown();   /* stop playback + save progress (uses db) */
     cover_shutdown();   /* free the cached cover art */
     audiobook_db_close(ui->db);
@@ -864,6 +929,10 @@ static void navigate_to(ui_state_t *ui, ui_screen_t screen,
     ui->scrub_active = 0;  /* a scrub can't span screen changes */
     ui->thumb_warm_target = 0;  /* don't pre-warm a stale book_id */
     thumb_failed_clear(ui);  /* re-try covers on a fresh screen visit */
+    /* Build the entered screen's render cache now (event thread) so the next
+     * frame the render thread draws has valid data. For Detail/Now-Playing this
+     * also pre-decodes the cover off the render thread. */
+    rebuild_screen(ui);
 }
 
 static void navigate_back(ui_state_t *ui) {
@@ -877,6 +946,8 @@ static void navigate_back(ui_state_t *ui) {
         ui->folder_path[sizeof(ui->folder_path) - 1] = '\0';
         ui->selected_idx = 0;
         ui->scroll_offset = 0;
+        /* Restore rendered the screen we came from; rebuild its cache. */
+        rebuild_screen(ui);
     } else {
         /* No more back — exit to launcher */
         ui->running = 0;
@@ -942,6 +1013,15 @@ static void draw_home(ui_state_t *ui) {
     render_text(r, 18, 16, "Audiobooks", FONT_SCALE_2, COL_WHITE);
     render_draw_hline(r, 0, TITLE_BAR_H - 1, RENDER_FB_W, COL_DIVIDER);
 
+    /* Cached home counts (built by rebuild_home on the event thread). Read
+     * under the cache lock; stale-by-one-frame is harmless. */
+    int home_cont, home_fin, home_total;
+    pthread_mutex_lock(&g_cache_lock);
+    home_cont = ui->home_continue_n;
+    home_fin = ui->home_finished_n;
+    home_total = ui->home_total_n;
+    pthread_mutex_unlock(&g_cache_lock);
+
     /* Items */
     int y = TITLE_BAR_H;
     for (int i = 0; i < HOME_ITEM_COUNT; i++) {
@@ -952,7 +1032,7 @@ static void draw_home(ui_state_t *ui) {
 
         /* Show continue count */
         if (i == HOME_CONTINUE) {
-            int count = audiobook_list_continue(ui->db, NULL, NULL);
+            int count = home_cont;
             if (count > 0) {
                 char buf[16];
                 snprintf(buf, sizeof(buf), "%d", count);
@@ -960,7 +1040,7 @@ static void draw_home(ui_state_t *ui) {
                                   FONT_SCALE_2, COL_GRAY_LT);
             }
         } else if (i == HOME_FINISHED) {
-            int count = audiobook_list_finished(ui->db, NULL, NULL);
+            int count = home_fin;
             if (count > 0) {
                 char buf[16];
                 snprintf(buf, sizeof(buf), "%d", count);
@@ -985,9 +1065,8 @@ static void draw_home(ui_state_t *ui) {
     }
 
     /* Footer */
-    int total = audiobook_list_books(ui->db, NULL, NULL);
     char footer[64];
-    snprintf(footer, sizeof(footer), "%d books in library", total);
+    snprintf(footer, sizeof(footer), "%d books in library", home_total);
     render_text_centered(r, 0, RENDER_FB_H - FOOTER_H + 10, RENDER_FB_W,
                         footer, FONT_SCALE_1, COL_GRAY_LT);
 }
@@ -1045,6 +1124,14 @@ static int handle_home_touch(ui_state_t *ui, int x, int y) {
             } else {
                 ui->refresh_msg_until_ms = now_ms() + 2500;  /* confirmation flash */
             }
+            /* The scan rewrote the library (counts, progress, cover paths) —
+             * refresh every cache so the next frame reflects it. The home
+             * counts + current list + current-book all rebuild here on the
+             * event thread (scan itself ran here, blocking the loop). */
+            rebuild_home(ui);
+            if (ui->screen == SCREEN_LIST) rebuild_list(ui);
+            if (ui->screen == SCREEN_DETAIL || ui->screen == SCREEN_NOW_PLAYING)
+                rebuild_current_book(ui, 1);
             break;
         }
         case HOME_BACK:
@@ -1056,17 +1143,7 @@ static int handle_home_touch(ui_state_t *ui, int x, int y) {
 
 /* ---- Screen drawing: List ---------------------------------------------- */
 
-typedef struct {
-    int book_id;
-    int is_folder;       /* 1 = folder row, 0 = book row */
-    char title[256];
-    char author[256];
-    int64_t duration_ms;
-    int completed;
-    int has_progress;
-    int64_t elapsed_ms;
-} list_item_t;
-
+/* list_item_t is defined in ui.h (shared with the render cache). */
 typedef struct {
     list_item_t *items;
     int count;
@@ -1122,13 +1199,27 @@ static void collect_list_books(ui_state_t *ui, list_ctx_t *lc) {
             const char *prefix = ui->folder_path[0] ? ui->folder_path
                                                     : AUDIOBOOK_LIBRARY_ROOT;
             size_t plen = strlen(prefix);
-            char folder_names[128][256];
+            /* Heap-allocate the 32 KB folder-name table (was a 128*256 stack
+             * frame). This runs on the event thread now (Stage 2), but heap +
+             * NULL-check keeps it bounded and avoids a large stack frame. */
+            char (*folder_names)[256] = malloc((size_t)128 * 256);
             int folder_count = 0;
+            if (!folder_names) break;   /* OOM: leave this view empty */
 
             sqlite3_stmt *stmt = NULL;
+            /* NOTE: the books table has NO `author` column — author is a FK
+             * (author_id) into the separate `authors` table. Selecting a bare
+             * `author` here made sqlite3_prepare_v2 fail with "no such column:
+             * author", so the row loop never ran and Folders showed nothing
+             * (folders=0 books=0). Join authors like every other list query
+             * (SQL_LIST_BOOKS) does. Column indices are unchanged: 0=book_id,
+             * 1=title, 2=author display name, 3=total_duration_ms, 4=completed,
+             * 5=root_path. */
             const char *sql =
-                "SELECT book_id, title, author, total_duration_ms, completed, root_path "
-                "FROM books ORDER BY root_path, sort_title";
+                "SELECT b.book_id, b.title, COALESCE(a.display_name,''), "
+                "b.total_duration_ms, b.completed, b.root_path "
+                "FROM books b LEFT JOIN authors a ON a.author_id=b.author_id "
+                "ORDER BY b.root_path, b.sort_title";
             if (sqlite3_prepare_v2(ui->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
                 while (sqlite3_step(stmt) == SQLITE_ROW) {
                     int bid = sqlite3_column_int(stmt, 0);
@@ -1184,6 +1275,8 @@ static void collect_list_books(ui_state_t *ui, list_ctx_t *lc) {
                 }
                 sqlite3_finalize(stmt);
             }
+            ui_log("[ui] FOLDERS prefix='%s' folders=%d books=%d\n",
+                   prefix, folder_count, lc->count);
 
             /* Sort folders alphabetically (case-insensitive). */
             for (int i = 0; i < folder_count - 1; i++) {
@@ -1226,6 +1319,7 @@ static void collect_list_books(ui_state_t *ui, list_ctx_t *lc) {
                     lc->count = total;
                 }
             }
+            free(folder_names);
             break;
         }
         default:
@@ -1263,6 +1357,172 @@ static void free_strlist(strlist_ctx_t *sc) {
     sc->count = sc->capacity = 0;
 }
 
+/* ---- Render-cache rebuild (event thread) --------------------------------
+ * Each rebuild does its DB I/O OUTSIDE g_cache_lock, builds a fresh heap
+ * buffer, then swaps the cached pointer under the lock and frees the OLD
+ * buffer OUTSIDE the lock (the render thread, which reads under the same lock,
+ * only ever sees the new pointer, so freeing the old one can't race it). */
+
+static void rebuild_home(ui_state_t *ui) {
+    int cont = audiobook_list_continue(ui->db, NULL, NULL);
+    int fin = audiobook_list_finished(ui->db, NULL, NULL);
+    int total = audiobook_list_books(ui->db, NULL, NULL);
+    pthread_mutex_lock(&g_cache_lock);
+    ui->home_continue_n = cont;
+    ui->home_finished_n = fin;
+    ui->home_total_n = total;
+    pthread_mutex_unlock(&g_cache_lock);
+}
+
+static void rebuild_list(ui_state_t *ui) {
+    int is_str = (ui->list_mode == LIST_AUTHORS || ui->list_mode == LIST_SERIES);
+    if (is_str) {
+        strlist_ctx_t sc;
+        memset(&sc, 0, sizeof(sc));
+        sc.capacity = 64;
+        sc.names = calloc(sc.capacity, sizeof(char *));
+        if (sc.names) {
+            if (ui->list_mode == LIST_AUTHORS)
+                audiobook_list_authors(ui->db, strlist_collect_cb, &sc);
+            else
+                audiobook_list_series(ui->db, strlist_collect_cb, &sc);
+        }
+        list_item_t *old_items = NULL;
+        char **old_names = NULL;
+        int old_nc = 0;
+        pthread_mutex_lock(&g_cache_lock);
+        old_items = ui->list_items;
+        ui->list_items = NULL; ui->list_count = ui->list_cap = 0;
+        old_names = ui->strlist; old_nc = ui->strlist_count;
+        ui->strlist = sc.names; ui->strlist_count = sc.count;
+        ui->strlist_cap = sc.capacity;
+        ui->list_is_strlist = 1;
+        pthread_mutex_unlock(&g_cache_lock);
+        free(old_items);
+        for (int i = 0; i < old_nc; i++) free(old_names[i]);
+        free(old_names);
+    } else {
+        list_ctx_t lc;
+        memset(&lc, 0, sizeof(lc));
+        lc.capacity = 64;
+        lc.items = calloc(lc.capacity, sizeof(list_item_t));
+        lc.db = ui->db;
+        if (lc.items) collect_list_books(ui, &lc);
+        list_item_t *old_items = NULL;
+        char **old_names = NULL;
+        int old_nc = 0;
+        pthread_mutex_lock(&g_cache_lock);
+        old_items = ui->list_items;
+        old_names = ui->strlist; old_nc = ui->strlist_count;
+        ui->strlist = NULL; ui->strlist_count = ui->strlist_cap = 0;
+        ui->list_items = lc.items; ui->list_count = lc.count;
+        ui->list_cap = lc.capacity;
+        ui->list_is_strlist = 0;
+        pthread_mutex_unlock(&g_cache_lock);
+        free(old_items);
+        for (int i = 0; i < old_nc; i++) free(old_names[i]);
+        free(old_names);
+    }
+}
+
+/* Rebuild the current-book cache (Detail / Now-Playing). with_cover=1 does
+ * the (slow, event-thread) cover decode + copy into cur_cover_buf; pass 0 for
+ * a progress-only refresh (leaves the cover untouched). */
+static void rebuild_current_book(ui_state_t *ui, int with_cover) {
+    audiobook_book_t b;
+    audiobook_progress_t p;
+    int bok = 0, pok = 0;
+    const uint16_t *cov = NULL;
+    memset(&b, 0, sizeof(b));
+    memset(&p, 0, sizeof(p));
+    if (ui->current_book_id > 0) {
+        if (audiobook_get_book(ui->db, ui->current_book_id, &b) > 0) bok = 1;
+        if (audiobook_get_progress(ui->db, ui->current_book_id, &p) > 0) pok = 1;
+        if (with_cover && bok)
+            cov = cover_get(ui->db, ui->current_book_id);  /* event-thread decode */
+    }
+    pthread_mutex_lock(&g_cache_lock);
+    ui->cur_book = b; ui->cur_book_ok = bok;
+    ui->cur_prog = p; ui->cur_prog_ok = pok;
+    if (with_cover) {
+        if (cov) {
+            memcpy(ui->cur_cover_buf, cov, sizeof(ui->cur_cover_buf));
+            ui->cur_cover_ok = 1;
+        } else {
+            ui->cur_cover_ok = 0;
+        }
+    }
+    pthread_mutex_unlock(&g_cache_lock);
+}
+
+/* Progress-only refresh of the current-book cache (used on g_progress_dirty
+ * ticks — the cover and book metadata don't change, so skip the decode). */
+static void rebuild_cur_prog(ui_state_t *ui) {
+    audiobook_progress_t p;
+    int pok = 0;
+    memset(&p, 0, sizeof(p));
+    if (ui->current_book_id > 0)
+        pok = (audiobook_get_progress(ui->db, ui->current_book_id, &p) > 0);
+    pthread_mutex_lock(&g_cache_lock);
+    ui->cur_prog = p; ui->cur_prog_ok = pok;
+    pthread_mutex_unlock(&g_cache_lock);
+}
+
+static void rebuild_bookmarks(ui_state_t *ui) {
+    bm_ctx_t c;
+    memset(&c, 0, sizeof(c));
+    c.capacity = 64;
+    c.rows = calloc(c.capacity, sizeof(bookmark_row_t));
+    if (c.rows)
+        audiobook_list_bookmarks(ui->db, ui->current_book_id, bm_collect_cb, &c);
+    bookmark_row_t *old = NULL;
+    pthread_mutex_lock(&g_cache_lock);
+    old = ui->bm_rows;
+    ui->bm_rows = c.rows; ui->bm_count = c.count; ui->bm_cap = c.capacity;
+    pthread_mutex_unlock(&g_cache_lock);
+    free(old);
+}
+
+static void rebuild_chapters(ui_state_t *ui) {
+    ch_ctx_t c;
+    memset(&c, 0, sizeof(c));
+    c.capacity = 64;
+    c.rows = calloc(c.capacity, sizeof(chapter_row_t));
+    if (c.rows)
+        audiobook_get_chapters(ui->db, ui->current_book_id, ch_collect_cb, &c);
+    chapter_row_t *old = NULL;
+    pthread_mutex_lock(&g_cache_lock);
+    old = ui->ch_rows;
+    ui->ch_rows = c.rows; ui->ch_count = c.count; ui->ch_cap = c.capacity;
+    pthread_mutex_unlock(&g_cache_lock);
+    free(old);
+}
+
+static void rebuild_screen(ui_state_t *ui) {
+    switch (ui->screen) {
+        case SCREEN_HOME:        rebuild_home(ui); break;
+        case SCREEN_LIST:        rebuild_list(ui); break;
+        case SCREEN_DETAIL:      rebuild_current_book(ui, 1); break;
+        case SCREEN_NOW_PLAYING: rebuild_current_book(ui, 1); break;
+        case SCREEN_BOOKMARKS:   rebuild_bookmarks(ui); break;
+        case SCREEN_CHAPTERS:    rebuild_chapters(ui); break;
+    }
+}
+
+static void free_render_cache(ui_state_t *ui) {
+    pthread_mutex_lock(&g_cache_lock);
+    free(ui->list_items); ui->list_items = NULL;
+    ui->list_count = ui->list_cap = 0;
+    for (int i = 0; i < ui->strlist_count; i++) free(ui->strlist[i]);
+    free(ui->strlist); ui->strlist = NULL;
+    ui->strlist_count = ui->strlist_cap = 0;
+    free(ui->bm_rows); ui->bm_rows = NULL; ui->bm_count = ui->bm_cap = 0;
+    free(ui->ch_rows); ui->ch_rows = NULL; ui->ch_count = ui->ch_cap = 0;
+    ui->list_is_strlist = 0;
+    ui->cur_book_ok = 0; ui->cur_prog_ok = 0; ui->cur_cover_ok = 0;
+    pthread_mutex_unlock(&g_cache_lock);
+}
+
 static void draw_list(ui_state_t *ui) {
     renderer_t *r = &ui->rend;
     /* Clear each frame; the book-row loop records the first uncached visible
@@ -1286,34 +1546,34 @@ static void draw_list(ui_state_t *ui) {
     render_text_right(r, RENDER_FB_W - 18, 16, title, FONT_SCALE_2, COL_WHITE);
     render_draw_hline(r, 0, TITLE_BAR_H - 1, RENDER_FB_W, COL_DIVIDER);
 
-    /* Authors/Series: render distinct names as a simple string list. */
-    if (ui->list_mode == LIST_AUTHORS || ui->list_mode == LIST_SERIES) {
-        strlist_ctx_t sc;
-        memset(&sc, 0, sizeof(sc));
-        sc.capacity = 64;
-        sc.names = calloc(sc.capacity, sizeof(char *));
-        if (ui->list_mode == LIST_AUTHORS)
-            audiobook_list_authors(ui->db, strlist_collect_cb, &sc);
-        else
-            audiobook_list_series(ui->db, strlist_collect_cb, &sc);
+    /* Draw from the render cache (built by rebuild_list on the event thread).
+     * Hold the cache lock across the whole iteration so the event thread's
+     * swap-and-free can't race us. Branch on the cache's own flag (not
+     * ui->list_mode) so we always render exactly what the cache holds, even
+     * across a one-frame mode change. No DB I/O happens here. */
+    pthread_mutex_lock(&g_cache_lock);
 
-        ui->scroll_max = sc.count * LIST_ITEM_H - LIST_VIEWPORT_H;
+    if (ui->list_is_strlist) {
+        char **names = ui->strlist;
+        int count = ui->strlist_count;
+
+        ui->scroll_max = count * LIST_ITEM_H - LIST_VIEWPORT_H;
         if (ui->scroll_max < 0) ui->scroll_max = 0;
         if (ui->scroll_offset > ui->scroll_max) ui->scroll_offset = ui->scroll_max;
 
         int y = TITLE_BAR_H - ui->scroll_offset;
-        if (sc.count == 0) {
+        if (count == 0) {
             render_text_centered(r, 0, RENDER_FB_H / 2, RENDER_FB_W,
                                 "None found", FONT_SCALE_2, COL_GRAY_LT);
         }
-        for (int i = 0; i < sc.count; i++) {
+        for (int i = 0; i < count; i++) {
             int item_top = y;
             if (item_top + LIST_ITEM_H < TITLE_BAR_H) { y += LIST_ITEM_H; continue; }
             if (item_top >= RENDER_FB_H - FOOTER_H) break;
             if (i == ui->selected_idx)
                 render_fill_rect(r, 0, item_top, 4, LIST_ITEM_H, COL_ACCENT);
             char name_buf[256];
-            strncpy(name_buf, sc.names[i], sizeof(name_buf) - 1);
+            strncpy(name_buf, names[i], sizeof(name_buf) - 1);
             name_buf[sizeof(name_buf) - 1] = '\0';
             while (render_text_width(name_buf, FONT_SCALE_2) > RENDER_FB_W - 48 &&
                    strlen(name_buf) > 1)
@@ -1325,30 +1585,27 @@ static void draw_list(ui_state_t *ui) {
         }
 
         char footer[64];
-        snprintf(footer, sizeof(footer), "%d items", sc.count);
+        snprintf(footer, sizeof(footer), "%d items", count);
         render_draw_hline(r, 0, RENDER_FB_H - FOOTER_H, RENDER_FB_W, COL_DIVIDER);
         render_text_centered(r, 0, RENDER_FB_H - FOOTER_H + 10, RENDER_FB_W,
                             footer, FONT_SCALE_1, COL_GRAY_LT);
-        free_strlist(&sc);
+        pthread_mutex_unlock(&g_cache_lock);
         return;
     }
 
-    /* Otherwise: collect book rows for the mode. */
-    list_ctx_t lc;
-    memset(&lc, 0, sizeof(lc));
-    lc.capacity = 64;
-    lc.items = calloc(lc.capacity, sizeof(list_item_t));
-    lc.db = ui->db;
-    collect_list_books(ui, &lc);
+    /* Book rows (Titles / Folders / Finished / Continue / author- or series-
+     * filtered). Read from the cache; the lock is still held from above. */
+    list_item_t *items = ui->list_items;
+    int count = ui->list_count;
 
-    ui->scroll_max = lc.count * LIST_ITEM_H - LIST_VIEWPORT_H;
+    ui->scroll_max = count * LIST_ITEM_H - LIST_VIEWPORT_H;
     if (ui->scroll_max < 0) ui->scroll_max = 0;
     if (ui->scroll_offset > ui->scroll_max) ui->scroll_offset = ui->scroll_max;
 
     /* Draw items */
     int y = TITLE_BAR_H - ui->scroll_offset;
 
-    for (int i = 0; i < lc.count; i++) {
+    for (int i = 0; i < count; i++) {
         int item_top = y;
         if (item_top + LIST_ITEM_H < TITLE_BAR_H) { y += LIST_ITEM_H; continue; }
         if (item_top >= RENDER_FB_H - FOOTER_H) break;
@@ -1357,10 +1614,10 @@ static void draw_list(ui_state_t *ui) {
         if (is_selected)
             render_fill_rect(r, 0, item_top, 4, LIST_ITEM_H, COL_ACCENT);
 
-        if (lc.items[i].is_folder) {
+        if (items[i].is_folder) {
             /* Folder row: name only, vertically centered, truncated to fit. */
             char name_buf[256];
-            strncpy(name_buf, lc.items[i].title, sizeof(name_buf) - 1);
+            strncpy(name_buf, items[i].title, sizeof(name_buf) - 1);
             name_buf[sizeof(name_buf) - 1] = '\0';
             while (render_text_width(name_buf, FONT_SCALE_2) > RENDER_FB_W - 48 &&
                    strlen(name_buf) > 1)
@@ -1372,7 +1629,7 @@ static void draw_list(ui_state_t *ui) {
          * read the cache here (cover_thumb_cached) — never decode — so the
          * render/pan hook can't block on a libjpeg decode. The event loop
          * pre-warms one uncached thumbnail per tick (cover_thumb_prewarm). */
-        int bid = lc.items[i].book_id;
+        int bid = items[i].book_id;
         const uint16_t *thumb = cover_thumb_cached(bid);
         if (!thumb && ui->thumb_warm_target == 0 && !thumb_is_failed(ui, bid))
             ui->thumb_warm_target = bid;   /* ask the event loop to decode this */
@@ -1390,17 +1647,17 @@ static void draw_list(ui_state_t *ui) {
 
         /* Title (truncate to fit, reserving room for "Done" if completed) */
         int title_max_w = avail_w;
-        if (lc.items[i].completed)
+        if (items[i].completed)
             title_max_w -= render_text_width("Done", FONT_SCALE_1) + 16;
         char title_buf[256];
-        strncpy(title_buf, lc.items[i].title, sizeof(title_buf) - 1);
+        strncpy(title_buf, items[i].title, sizeof(title_buf) - 1);
         title_buf[sizeof(title_buf) - 1] = '\0';
         while (render_text_width(title_buf, FONT_SCALE_2) > title_max_w &&
                strlen(title_buf) > 1) {
             title_buf[strlen(title_buf) - 1] = '\0';
         }
         /* If we truncated, strip trailing spaces and add ellipsis */
-        if (strcmp(title_buf, lc.items[i].title) != 0) {
+        if (strcmp(title_buf, items[i].title) != 0) {
             int len = (int)strlen(title_buf);
             while (len > 0 && title_buf[len - 1] == ' ') { title_buf[--len] = '\0'; }
             if (len > 3) { title_buf[len - 3] = '.'; title_buf[len - 2] = '.';
@@ -1411,14 +1668,14 @@ static void draw_list(ui_state_t *ui) {
         /* Second line: author + duration */
         char line2[256];
         char dur[32];
-        int total_sec = (int)(lc.items[i].duration_ms / 1000);
+        int total_sec = (int)(items[i].duration_ms / 1000);
         int h = total_sec / 3600;
         int m = (total_sec % 3600) / 60;
         if (h > 0) snprintf(dur, sizeof(dur), "%dh %dm", h, m);
         else snprintf(dur, sizeof(dur), "%dm", m);
 
-        if (lc.items[i].has_progress && lc.items[i].elapsed_ms > 0) {
-            int done_sec = (int)(lc.items[i].elapsed_ms / 1000);
+        if (items[i].has_progress && items[i].elapsed_ms > 0) {
+            int done_sec = (int)(items[i].elapsed_ms / 1000);
             int dh = done_sec / 3600;
             int dm = (done_sec % 3600) / 60;
             char done[32];
@@ -1429,23 +1686,23 @@ static void draw_list(ui_state_t *ui) {
             snprintf(line2, sizeof(line2), "%s", dur);
         }
 
-        if (lc.items[i].author[0]) {
+        if (items[i].author[0]) {
             strncat(line2, "  -  ", sizeof(line2) - strlen(line2) - 1);
-            strncat(line2, lc.items[i].author, sizeof(line2) - strlen(line2) - 1);
+            strncat(line2, items[i].author, sizeof(line2) - strlen(line2) - 1);
         }
 
         render_text(r, text_x, item_top + 62, line2, FONT_SCALE_1, COL_GRAY_LT);
 
         /* Progress bar */
-        if (lc.items[i].has_progress && lc.items[i].duration_ms > 0) {
-            double frac = (double)lc.items[i].elapsed_ms /
-                          lc.items[i].duration_ms;
+        if (items[i].has_progress && items[i].duration_ms > 0) {
+            double frac = (double)items[i].elapsed_ms /
+                          items[i].duration_ms;
             render_progress_bar(r, text_x, item_top + LIST_ITEM_H - 12,
                                avail_w, 4, frac,
                                COL_ACCENT, COL_GRAY_DK);
         }
 
-        if (lc.items[i].completed) {
+        if (items[i].completed) {
             render_text_right(r, RENDER_FB_W - 18, item_top + 10, "Done",
                              FONT_SCALE_1, COL_GREEN);
         }
@@ -1459,14 +1716,14 @@ static void draw_list(ui_state_t *ui) {
     /* Footer */
     char footer[64];
     if (ui->list_mode == LIST_FOLDERS)
-        snprintf(footer, sizeof(footer), "%d items", lc.count);
+        snprintf(footer, sizeof(footer), "%d items", count);
     else
-        snprintf(footer, sizeof(footer), "%d books", lc.count);
+        snprintf(footer, sizeof(footer), "%d books", count);
     render_draw_hline(r, 0, RENDER_FB_H - FOOTER_H, RENDER_FB_W, COL_DIVIDER);
     render_text_centered(r, 0, RENDER_FB_H - FOOTER_H + 10, RENDER_FB_W,
                         footer, FONT_SCALE_1, COL_GRAY_LT);
 
-    free(lc.items);
+    pthread_mutex_unlock(&g_cache_lock);
 }
 
 static int handle_list_touch(ui_state_t *ui, int x, int y) {
@@ -1488,10 +1745,12 @@ static int handle_list_touch(ui_state_t *ui, int x, int y) {
         memset(&sc, 0, sizeof(sc));
         sc.capacity = 64;
         sc.names = calloc(sc.capacity, sizeof(char *));
-        if (ui->list_mode == LIST_AUTHORS)
-            audiobook_list_authors(ui->db, strlist_collect_cb, &sc);
-        else
-            audiobook_list_series(ui->db, strlist_collect_cb, &sc);
+        if (sc.names) {
+            if (ui->list_mode == LIST_AUTHORS)
+                audiobook_list_authors(ui->db, strlist_collect_cb, &sc);
+            else
+                audiobook_list_series(ui->db, strlist_collect_cb, &sc);
+        }
         if (idx < sc.count && sc.names[idx]) {
             strncpy(ui->list_filter, sc.names[idx],
                     sizeof(ui->list_filter) - 1);
@@ -1511,10 +1770,18 @@ static int handle_list_touch(ui_state_t *ui, int x, int y) {
     lc.capacity = 64;
     lc.items = calloc(lc.capacity, sizeof(list_item_t));
     lc.db = ui->db;
-    collect_list_books(ui, &lc);
+    if (lc.items) collect_list_books(ui, &lc);
     if (idx < lc.count) {
         if (lc.items[idx].is_folder) {
-            /* Folder row: descend into prefix/<folder name>. */
+            /* Folder row: descend into prefix/<folder name>. navigate_to()
+             * pushes the CURRENT (parent) folder_path onto the nav stack (so
+             * Back ascends) and rebuilds the list cache — but it rebuilds
+             * BEFORE we update folder_path below, so the cache would still
+             * reflect the parent level and the view would not descend (the
+             * "Folders shows nothing / tapping a folder does nothing" bug).
+             * Update folder_path after the push, then rebuild the cache again
+             * so it matches the new level. The one stale rebuild inside
+             * navigate_to is harmless (a tap, not per-frame). */
             const char *prefix = ui->folder_path[0] ? ui->folder_path
                                                     : AUDIOBOOK_LIBRARY_ROOT;
             char new_path[512];
@@ -1522,6 +1789,7 @@ static int handle_list_touch(ui_state_t *ui, int x, int y) {
             navigate_to(ui, SCREEN_LIST, LIST_FOLDERS, 0);
             strncpy(ui->folder_path, new_path, sizeof(ui->folder_path) - 1);
             ui->folder_path[sizeof(ui->folder_path) - 1] = '\0';
+            rebuild_list(ui);
         } else {
             navigate_to(ui, SCREEN_DETAIL, ui->list_mode, lc.items[idx].book_id);
         }
@@ -1545,8 +1813,20 @@ static void draw_cover_bordered(renderer_t *r, int x, int y, int size,
 
 static void draw_detail(ui_state_t *ui) {
     renderer_t *r = &ui->rend;
-    audiobook_book_t b;
-    if (audiobook_get_book(ui->db, ui->current_book_id, &b) <= 0) {
+
+    /* Read the current-book cache (built by rebuild_current_book on the event
+     * thread). Hold the cache lock across the whole draw — the cover blit
+     * reads cur_cover_buf, which the event thread overwrites under this same
+     * lock, so it can't race a re-decode. No DB I/O here. */
+    pthread_mutex_lock(&g_cache_lock);
+    audiobook_book_t b = ui->cur_book;
+    int book_ok = ui->cur_book_ok;
+    int prog_ok = ui->cur_prog_ok;
+    audiobook_progress_t p = ui->cur_prog;
+    int has_cover = ui->cur_cover_ok;
+
+    if (!book_ok) {
+        pthread_mutex_unlock(&g_cache_lock);
         render_text(r, 16, 100, "Book not found", FONT_SCALE_2, COL_WHITE);
         return;
     }
@@ -1558,13 +1838,12 @@ static void draw_detail(ui_state_t *ui) {
     /* Cover art on the left (bordered, 200px). When a cover is present the
      * title/author/duration form a right-hand column beside it; with no cover
      * the title falls back to full width (the original layout). */
-    const uint16_t *cov = cover_get(ui->db, ui->current_book_id);
     const int DETAIL_COVER = 200;
     const int cover_top = TITLE_BAR_H + 8;            /* 84 */
     int text_x = 16, text_w = RENDER_FB_W - 32;
     int cover_bottom = 0;
-    if (cov) {
-        draw_cover_bordered(r, 16, cover_top, DETAIL_COVER, cov);
+    if (has_cover) {
+        draw_cover_bordered(r, 16, cover_top, DETAIL_COVER, ui->cur_cover_buf);
         text_x = 16 + DETAIL_COVER + 16;              /* 232 */
         text_w = RENDER_FB_W - text_x - 16;           /* 232 */
         cover_bottom = cover_top + DETAIL_COVER;      /* 284 */
@@ -1572,7 +1851,7 @@ static void draw_detail(ui_state_t *ui) {
 
     /* Title + author + duration (right column if cover, else full width). */
     int y = cover_top + 4;
-    int title_scale = cov ? FONT_SCALE_2 : FONT_SCALE_3;
+    int title_scale = has_cover ? FONT_SCALE_2 : FONT_SCALE_3;
     y = render_text_wrap(r, text_x, y, text_w, 3, b.title, title_scale,
                          COL_WHITE);
     y += 10;
@@ -1585,10 +1864,9 @@ static void draw_detail(ui_state_t *ui) {
 
     /* Progress block, full width, below the cover (or below the text if no
      * cover). Anchored so it never overlaps the cover. */
-    audiobook_progress_t p;
-    if (audiobook_get_progress(ui->db, b.book_id, &p) > 0) {
+    if (prog_ok) {
         int py = y;
-        if (cov && py < cover_bottom + 18) py = cover_bottom + 18;
+        if (has_cover && py < cover_bottom + 18) py = cover_bottom + 18;
         render_text(r, 16, py, "Progress:", FONT_SCALE_1, COL_GRAY_LT);
         py += 30;
         render_time(r, 16, py, p.total_book_elapsed_ms, FONT_SCALE_2,
@@ -1622,6 +1900,8 @@ static void draw_detail(ui_state_t *ui) {
     render_fill_rect(r, 32 + btn_w, btn_y, btn_w, 64, COL_GRAY_DK);
     render_text_centered(r, 32 + btn_w, btn_y + 18, btn_w, "Menu",
                          FONT_SCALE_4, COL_WHITE);
+
+    pthread_mutex_unlock(&g_cache_lock);
 }
 
 static int handle_detail_touch(ui_state_t *ui, int x, int y) {
@@ -1666,8 +1946,20 @@ static int handle_detail_touch(ui_state_t *ui, int x, int y) {
 
 static void draw_now_playing(ui_state_t *ui) {
     renderer_t *r = &ui->rend;
-    audiobook_book_t b;
-    if (audiobook_get_book(ui->db, ui->current_book_id, &b) <= 0) {
+
+    /* Read the current-book cache (built by rebuild_current_book on the event
+     * thread). Hold the lock across the whole draw — the cover blit reads
+     * cur_cover_buf. Live playback state (player_position_ms etc.) is
+     * lock-free and safe to read under the lock. No DB I/O here. */
+    pthread_mutex_lock(&g_cache_lock);
+    audiobook_book_t b = ui->cur_book;
+    int book_ok = ui->cur_book_ok;
+    int prog_ok = ui->cur_prog_ok;
+    audiobook_progress_t prog = ui->cur_prog;
+    int has_cover = ui->cur_cover_ok;
+
+    if (!book_ok) {
+        pthread_mutex_unlock(&g_cache_lock);
         render_text(r, 16, 100, "Book not found", FONT_SCALE_2, COL_WHITE);
         return;
     }
@@ -1682,13 +1974,12 @@ static void draw_now_playing(ui_state_t *ui) {
     ui->seek_bar_y = -1;   /* no scrub target unless we draw the bar below */
 
     /* Cover art: cached RGB565 (COVER_PX square), centered, with a 1px border.
-     * The cache loads on first request for this book and auto-replaces when the
-     * book changes. If the book has no cover or the decode fails, cover_get
-     * returns NULL and we skip with no gap — the existing layout follows. */
-    const uint16_t *cov = cover_get(ui->db, ui->current_book_id);
-    if (cov) {
+     * Blitted from cur_cover_buf (event-thread pre-decoded). If the book has no
+     * cover or the decode failed, has_cover is 0 and we skip with no gap — the
+     * existing layout follows. */
+    if (has_cover) {
         int cx = (RENDER_FB_W - COVER_PX) / 2;
-        draw_cover_bordered(r, cx, y, COVER_PX, cov);
+        draw_cover_bordered(r, cx, y, COVER_PX, ui->cur_cover_buf);
         y += COVER_PX + 10;
     }
 
@@ -1719,10 +2010,8 @@ static void draw_now_playing(ui_state_t *ui) {
     if (engine_live) {
         pos_ms = player_position_ms();
         total_ms = player_total_ms() ? player_total_ms() : total_ms;
-    } else {
-        audiobook_progress_t p;
-        if (audiobook_get_progress(ui->db, b.book_id, &p) > 0)
-            pos_ms = p.total_book_elapsed_ms;
+    } else if (prog_ok) {
+        pos_ms = prog.total_book_elapsed_ms;
     }
 
     /* While scrubbing, show the finger's target position live (the handle
@@ -1845,6 +2134,8 @@ static void draw_now_playing(ui_state_t *ui) {
     render_fill_rect(r, b3, ctrl_y, w2, 52, COL_GRAY_DK);
     render_text_centered(r, b3, ctrl_y + 12, w2, "Chaps",
                          FONT_SCALE_4, COL_WHITE);
+
+    pthread_mutex_unlock(&g_cache_lock);
 }
 
 /* ---- Now Playing scrub-drag (handle press / drag) --------------------- */
@@ -1854,20 +2145,20 @@ static void draw_now_playing(ui_state_t *ui) {
  * is loaded, 0 otherwise. */
 static int now_playing_pos_total(ui_state_t *ui, int64_t *pos_ms,
                                  int64_t *total_ms) {
-    audiobook_book_t b;
+    /* Event-thread only (scrub handlers): reads the render cache directly — no
+     * lock needed since rebuilds also run on the event thread (never concurrent
+     * with this), and the render thread only reads. */
     *pos_ms = 0; *total_ms = 0;
-    if (audiobook_get_book(ui->db, ui->current_book_id, &b) <= 0) return 0;
-    *total_ms = b.total_duration_ms;
+    if (!ui->cur_book_ok) return 0;
+    *total_ms = ui->cur_book.total_duration_ms;
     player_state_t pst = player_state();
     int engine_live = (player_current_book() == ui->current_book_id &&
                        pst != PLAYER_STOPPED);
     if (engine_live) {
         *pos_ms = player_position_ms();
         if (player_total_ms()) *total_ms = player_total_ms();
-    } else {
-        audiobook_progress_t p;
-        if (audiobook_get_progress(ui->db, b.book_id, &p) > 0)
-            *pos_ms = p.total_book_elapsed_ms;
+    } else if (ui->cur_prog_ok) {
+        *pos_ms = ui->cur_prog.total_book_elapsed_ms;
     }
     return 1;
 }
@@ -1943,7 +2234,7 @@ static int handle_now_playing_touch(ui_state_t *ui, int x, int y) {
 
         if (x >= b0 && x < b0 + w2) {
             const char *label = player_current_track_title();
-            int bid = player_add_bookmark(label);
+            int bid = player_add_bookmark(ui->db, label);
             ui_log("[ui] add bookmark -> id=%d label=\"%s\"\n", bid,
                    label ? label : "");
             ui->mark_flash_until_ms = now_ms() + 800;
@@ -1978,18 +2269,7 @@ static int handle_now_playing_touch(ui_state_t *ui, int x, int y) {
 
 /* ---- Screen drawing: Bookmarks ----------------------------------------- */
 
-typedef struct {
-    int bookmark_id;
-    char label[256];
-    int64_t position_ms;       /* total-book position for display */
-} bookmark_row_t;
-
-typedef struct {
-    bookmark_row_t *rows;
-    int count;
-    int capacity;
-} bm_ctx_t;
-
+/* bookmark_row_t + bm_ctx_t are defined in ui.h (shared with the render cache). */
 static int bm_collect_cb(const audiobook_bookmark_t *bm, void *ctx) {
     bm_ctx_t *c = (bm_ctx_t *)ctx;
     if (c->count >= c->capacity) {
@@ -2016,25 +2296,26 @@ static void draw_bookmarks(ui_state_t *ui) {
                       COL_WHITE);
     render_draw_hline(r, 0, TITLE_BAR_H - 1, RENDER_FB_W, COL_DIVIDER);
 
-    bm_ctx_t c;
-    memset(&c, 0, sizeof(c));
-    c.capacity = 64;
-    c.rows = calloc(c.capacity, sizeof(bookmark_row_t));
-    audiobook_list_bookmarks(ui->db, ui->current_book_id, bm_collect_cb, &c);
+    /* Draw from the render cache (built by rebuild_bookmarks on the event
+     * thread). Hold the lock across the iteration so the event thread's
+     * swap-and-free can't race us. */
+    pthread_mutex_lock(&g_cache_lock);
+    bookmark_row_t *rows = ui->bm_rows;
+    int count = ui->bm_count;
 
-    if (c.count == 0) {
+    if (count == 0) {
+        pthread_mutex_unlock(&g_cache_lock);
         render_text_centered(r, 0, RENDER_FB_H / 2, RENDER_FB_W,
                             "No bookmarks yet", FONT_SCALE_2, COL_GRAY_LT);
-        free(c.rows);
         return;
     }
 
-    ui->scroll_max = c.count * LIST_ITEM_H - LIST_VIEWPORT_H;
+    ui->scroll_max = count * LIST_ITEM_H - LIST_VIEWPORT_H;
     if (ui->scroll_max < 0) ui->scroll_max = 0;
     if (ui->scroll_offset > ui->scroll_max) ui->scroll_offset = ui->scroll_max;
 
     int y = TITLE_BAR_H - ui->scroll_offset;
-    for (int i = 0; i < c.count; i++) {
+    for (int i = 0; i < count; i++) {
         int item_top = y;
         if (item_top + LIST_ITEM_H < TITLE_BAR_H) { y += LIST_ITEM_H; continue; }
         if (item_top >= RENDER_FB_H - FOOTER_H) break;
@@ -2042,14 +2323,14 @@ static void draw_bookmarks(ui_state_t *ui) {
             render_fill_rect(r, 0, item_top, 4, LIST_ITEM_H, COL_ACCENT);
 
         char label_buf[256];
-        strncpy(label_buf, c.rows[i].label, sizeof(label_buf) - 1);
+        strncpy(label_buf, rows[i].label, sizeof(label_buf) - 1);
         label_buf[sizeof(label_buf) - 1] = '\0';
         while (render_text_width(label_buf, FONT_SCALE_2) > RENDER_FB_W - 160 &&
                strlen(label_buf) > 1)
             label_buf[strlen(label_buf) - 1] = '\0';
         render_text(r, 24, item_top + 10, label_buf, FONT_SCALE_2, COL_WHITE);
 
-        render_time(r, 24, item_top + 62, c.rows[i].position_ms, FONT_SCALE_1,
+        render_time(r, 24, item_top + 62, rows[i].position_ms, FONT_SCALE_1,
                     COL_GRAY_LT);
 
         y += LIST_ITEM_H;
@@ -2059,11 +2340,11 @@ static void draw_bookmarks(ui_state_t *ui) {
 
     char footer[96];
     snprintf(footer, sizeof(footer), "Tap: jump   Hold: delete   |   %d bookmark%s",
-             c.count, c.count == 1 ? "" : "s");
+             count, count == 1 ? "" : "s");
     render_draw_hline(r, 0, RENDER_FB_H - FOOTER_H, RENDER_FB_W, COL_DIVIDER);
     render_text_centered(r, 0, RENDER_FB_H - FOOTER_H + 10, RENDER_FB_W,
                         footer, FONT_SCALE_1, COL_GRAY_LT);
-    free(c.rows);
+    pthread_mutex_unlock(&g_cache_lock);
 }
 
 /* Tap a bookmark → jump to it (seek + play) and go to Now Playing. */
@@ -2082,7 +2363,8 @@ static int handle_bookmarks_touch(ui_state_t *ui, int x, int y) {
     memset(&c, 0, sizeof(c));
     c.capacity = 64;
     c.rows = calloc(c.capacity, sizeof(bookmark_row_t));
-    audiobook_list_bookmarks(ui->db, ui->current_book_id, bm_collect_cb, &c);
+    if (c.rows)
+        audiobook_list_bookmarks(ui->db, ui->current_book_id, bm_collect_cb, &c);
     int hit = (idx < c.count);
     int64_t target = hit ? c.rows[idx].position_ms : 0;
     int book_id = ui->current_book_id;
@@ -2106,7 +2388,8 @@ static int handle_bookmarks_longpress(ui_state_t *ui, int x, int y) {
     memset(&c, 0, sizeof(c));
     c.capacity = 64;
     c.rows = calloc(c.capacity, sizeof(bookmark_row_t));
-    audiobook_list_bookmarks(ui->db, ui->current_book_id, bm_collect_cb, &c);
+    if (c.rows)
+        audiobook_list_bookmarks(ui->db, ui->current_book_id, bm_collect_cb, &c);
     if (idx < c.count) {
         audiobook_delete_bookmark(ui->db, ui->current_book_id,
                                   c.rows[idx].bookmark_id);
@@ -2115,22 +2398,13 @@ static int handle_bookmarks_longpress(ui_state_t *ui, int x, int y) {
     }
     free(c.rows);
     ui->selected_idx = 0;
+    rebuild_bookmarks(ui);   /* refresh the cached list so the row disappears */
     return 1;
 }
 
 /* ---- Screen drawing: Chapters ------------------------------------------ */
 
-typedef struct {
-    char title[256];
-    int64_t start_ms;
-} chapter_row_t;
-
-typedef struct {
-    chapter_row_t *rows;
-    int count;
-    int capacity;
-} ch_ctx_t;
-
+/* chapter_row_t + ch_ctx_t are defined in ui.h (shared with the render cache). */
 static int ch_collect_cb(const audiobook_chapter_t *ch, void *ctx) {
     ch_ctx_t *c = (ch_ctx_t *)ctx;
     /* Hard cap: stop collecting beyond MAX_CHAPTER_ROWS so the render allocation
@@ -2159,25 +2433,25 @@ static void draw_chapters(ui_state_t *ui) {
                       COL_WHITE);
     render_draw_hline(r, 0, TITLE_BAR_H - 1, RENDER_FB_W, COL_DIVIDER);
 
-    ch_ctx_t c;
-    memset(&c, 0, sizeof(c));
-    c.capacity = 64;
-    c.rows = calloc(c.capacity, sizeof(chapter_row_t));
-    audiobook_get_chapters(ui->db, ui->current_book_id, ch_collect_cb, &c);
+    /* Draw from the render cache (built by rebuild_chapters on the event
+     * thread). Hold the lock across the iteration. */
+    pthread_mutex_lock(&g_cache_lock);
+    chapter_row_t *rows = ui->ch_rows;
+    int count = ui->ch_count;
 
-    if (c.count == 0) {
+    if (count == 0) {
+        pthread_mutex_unlock(&g_cache_lock);
         render_text_centered(r, 0, RENDER_FB_H / 2, RENDER_FB_W,
                             "No chapters", FONT_SCALE_2, COL_GRAY_LT);
-        free(c.rows);
         return;
     }
 
-    ui->scroll_max = c.count * LIST_ITEM_H - LIST_VIEWPORT_H;
+    ui->scroll_max = count * LIST_ITEM_H - LIST_VIEWPORT_H;
     if (ui->scroll_max < 0) ui->scroll_max = 0;
     if (ui->scroll_offset > ui->scroll_max) ui->scroll_offset = ui->scroll_max;
 
     int y = TITLE_BAR_H - ui->scroll_offset;
-    for (int i = 0; i < c.count; i++) {
+    for (int i = 0; i < count; i++) {
         int item_top = y;
         if (item_top + LIST_ITEM_H < TITLE_BAR_H) { y += LIST_ITEM_H; continue; }
         if (item_top >= RENDER_FB_H - FOOTER_H) break;
@@ -2185,14 +2459,14 @@ static void draw_chapters(ui_state_t *ui) {
             render_fill_rect(r, 0, item_top, 4, LIST_ITEM_H, COL_ACCENT);
 
         char title_buf[256];
-        strncpy(title_buf, c.rows[i].title, sizeof(title_buf) - 1);
+        strncpy(title_buf, rows[i].title, sizeof(title_buf) - 1);
         title_buf[sizeof(title_buf) - 1] = '\0';
         while (render_text_width(title_buf, FONT_SCALE_2) > RENDER_FB_W - 160 &&
                strlen(title_buf) > 1)
             title_buf[strlen(title_buf) - 1] = '\0';
         render_text(r, 24, item_top + 10, title_buf, FONT_SCALE_2, COL_WHITE);
 
-        render_time(r, 24, item_top + 62, c.rows[i].start_ms, FONT_SCALE_1,
+        render_time(r, 24, item_top + 62, rows[i].start_ms, FONT_SCALE_1,
                     COL_GRAY_LT);
 
         y += LIST_ITEM_H;
@@ -2201,11 +2475,11 @@ static void draw_chapters(ui_state_t *ui) {
     }
 
     char footer[64];
-    snprintf(footer, sizeof(footer), "%d chapters", c.count);
+    snprintf(footer, sizeof(footer), "%d chapters", count);
     render_draw_hline(r, 0, RENDER_FB_H - FOOTER_H, RENDER_FB_W, COL_DIVIDER);
     render_text_centered(r, 0, RENDER_FB_H - FOOTER_H + 10, RENDER_FB_W,
                         footer, FONT_SCALE_1, COL_GRAY_LT);
-    free(c.rows);
+    pthread_mutex_unlock(&g_cache_lock);
 }
 
 /* Collect chapter start_ms (by list position) for chapter-tap seek. */

@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include "render.h"
 #include "library.h"
+#include "cover.h"   /* COVER_PX for the cover cache buffer */
 
 /* ---- Screen identifiers ------------------------------------------------ */
 typedef enum {
@@ -39,6 +40,50 @@ typedef enum {
     LIST_AUTHOR_BOOKS,
     LIST_SERIES_BOOKS,
 } list_mode_t;
+
+/* ---- Render-cache row structs (built by the event thread, read by the
+ * render thread under g_cache_lock) --------------------------------------- */
+
+/* A row in the List screen. is_folder distinguishes folder rows (drill-down)
+ * from book rows. For book rows, has_progress/elapsed_ms drive the "%" line and
+ * progress bar. */
+typedef struct {
+    int book_id;
+    int is_folder;       /* 1 = folder row, 0 = book row */
+    char title[256];
+    char author[256];
+    int64_t duration_ms;
+    int completed;
+    int has_progress;
+    int64_t elapsed_ms;
+} list_item_t;
+
+/* A row in the Bookmarks screen. */
+typedef struct {
+    int bookmark_id;
+    char label[256];
+    int64_t position_ms;       /* total-book position for display */
+} bookmark_row_t;
+
+/* A row in the Chapters screen. */
+typedef struct {
+    char title[256];
+    int64_t start_ms;
+} chapter_row_t;
+
+/* Collector contexts used while (re)building the Bookmarks/Chapters caches.
+ * Defined here so the event-thread rebuild functions (early in ui.c) can use
+ * them before the collector callbacks are defined. */
+typedef struct {
+    bookmark_row_t *rows;
+    int count;
+    int capacity;
+} bm_ctx_t;
+typedef struct {
+    chapter_row_t *rows;
+    int count;
+    int capacity;
+} ch_ctx_t;
 
 /* ---- UI state ----------------------------------------------------------- */
 typedef struct {
@@ -162,6 +207,49 @@ typedef struct {
      * would either open a book or navigate back. */
     int scroll_max;
     int did_scroll;
+
+    /* ---- Render cache ----------------------------------------------------
+     * The render/pan thread never touches the DB. The event thread rebuilds
+     * these per-screen snapshots (all DB I/O done BEFORE taking g_cache_lock),
+     * then swaps the pointer under g_cache_lock and frees the old buffer. The
+     * render thread holds g_cache_lock across its whole memory-walk draw of the
+     * cached rows — so it can never observe a half-swapped/freed buffer and
+     * never races the event thread. Single non-nested lock → no deadlock. */
+    /* Home screen counts. */
+    int home_continue_n;
+    int home_finished_n;
+    int home_total_n;
+
+    /* List screen cache. list_is_strlist selects the active array: Authors/
+     * Series use strlist (+strlist_count); all other modes use list_items (+
+     * list_count). draw_list branches on this flag (not ui->list_mode) so it
+     * always renders exactly what the cache holds, even across a one-frame
+     * mode change. */
+    list_item_t *list_items;
+    int list_count;
+    int list_cap;
+    char **strlist;
+    int strlist_count;
+    int strlist_cap;
+    int list_is_strlist;
+
+    /* Detail / Now-Playing cache for current_book_id. cur_cover_buf holds the
+     * decoded RGB565 cover (copied from cover_get's single-book buffer under
+     * the lock, so the render blit can never race a re-decode of that buffer). */
+    audiobook_book_t cur_book;
+    int cur_book_ok;
+    audiobook_progress_t cur_prog;
+    int cur_prog_ok;
+    uint16_t cur_cover_buf[COVER_PX * COVER_PX];
+    int cur_cover_ok;
+
+    /* Bookmarks / Chapters screen caches. */
+    bookmark_row_t *bm_rows;
+    int bm_count;
+    int bm_cap;
+    chapter_row_t *ch_rows;
+    int ch_count;
+    int ch_cap;
 } ui_state_t;
 
 /* Main entry — called from hook_b. Runs until user taps "back to menu".

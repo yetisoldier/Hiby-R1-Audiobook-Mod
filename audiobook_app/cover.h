@@ -30,6 +30,13 @@ typedef struct sqlite3 sqlite3;
  * handle (used to read the book's cover_path). */
 const uint16_t *cover_get(sqlite3 *db, int book_id);
 
+/* Pre-decode cover_path to px*px RGB565 and persist it as "<cover>.<px>.r565"
+ * on the SD, so the first on-screen view is a cache hit (no decode stall).
+ * Best-effort: ignores failure (a missing .r565 just means a later lazy
+ * decode). Called from the scanner (event thread) per book. px should be
+ * COVER_PX or COVER_THUMB_PX. Returns 1 if a usable .r565 now exists. */
+int cover_precache(const char *cover_path, int px);
+
 /* Small list-thumbnail size (square). Shown next to each book row in the
  * list view. Kept small so an LRU cache of several thumbnails fits in RAM
  * (COVER_THUMB_PX*COVER_THUMB_PX*2 bytes each). */

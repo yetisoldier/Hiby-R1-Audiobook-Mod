@@ -11,6 +11,7 @@
 #include <ctype.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <errno.h>
@@ -407,6 +408,29 @@ static int fill_progress_from_stmt(sqlite3_stmt *stmt, audiobook_progress_t *p) 
 
 /* ---- DB open/close ------------------------------------------------------ */
 
+/* In-process write mutex. The build is -DSQLITE_THREADSAFE=0 so each connection
+ * is single-thread-owned, but exFAT fcntl locks may be no-ops. This mutex
+ * serializes the two writers (scan on the event thread + save_progress on the
+ * player thread) so they never collide in the WAL. */
+static pthread_mutex_t g_db_write_lock = PTHREAD_MUTEX_INITIALIZER;
+
+void audiobook_db_write_lock(void)   { pthread_mutex_lock(&g_db_write_lock); }
+void audiobook_db_write_unlock(void) { pthread_mutex_unlock(&g_db_write_lock); }
+
+/* Best-effort file copy (small files only — the DB is <1 MB). */
+static void copy_file(const char *src_path, const char *dst_path) {
+    int src = open(src_path, O_RDONLY);
+    if (src < 0) return;
+    int dst = open(dst_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (dst < 0) { close(src); return; }
+    char buf[8192];
+    ssize_t n;
+    while ((n = read(src, buf, sizeof(buf))) > 0)
+        write(dst, buf, (size_t)n);
+    close(dst);
+    close(src);
+}
+
 int audiobook_db_open(const char *db_path, sqlite3 **db_out) {
     if (!db_path || !db_out) return -1;
 
@@ -417,6 +441,23 @@ int audiobook_db_open(const char *db_path, sqlite3 **db_out) {
     if (slash) {
         *slash = '\0';
         mkdir_p(dir);
+    }
+
+    /* One-time migration: if the SD path doesn't exist yet but the old
+     * /usr/data DB does, copy it (and -wal/-shm if present) to SD. The
+     * SD directory was just created by mkdir_p above. Best-effort: if the
+     * copy fails (e.g. SD read-only), we still try to open the SD path —
+     * sqlite3_open will create a fresh DB, and the user can re-scan. */
+    struct stat sd_st, old_st;
+    if (stat(db_path, &sd_st) < 0 && stat(AUDIOBOOK_DB_PATH_OLD, &old_st) == 0) {
+        copy_file(AUDIOBOOK_DB_PATH_OLD, db_path);
+        char old_aux[512], new_aux[512];
+        snprintf(old_aux, sizeof(old_aux), "%s-wal", AUDIOBOOK_DB_PATH_OLD);
+        snprintf(new_aux, sizeof(new_aux), "%s-wal", db_path);
+        copy_file(old_aux, new_aux);
+        snprintf(old_aux, sizeof(old_aux), "%s-shm", AUDIOBOOK_DB_PATH_OLD);
+        snprintf(new_aux, sizeof(new_aux), "%s-shm", db_path);
+        copy_file(old_aux, new_aux);
     }
 
     sqlite3 *db = NULL;
@@ -445,6 +486,13 @@ int audiobook_db_open(const char *db_path, sqlite3 **db_out) {
     /* Set busy timeout to handle concurrent access */
     sqlite3_busy_timeout(db, 5000);
 
+    /* Cap the page cache at ~512 KB (default ~2 MB). On this ~56 MB / handful-
+     * of-MB-free device the default cache is a big chunk of resident heap per
+     * connection, and we now open two (event ui->db + player g_pl.db). The DB
+     * is tiny (<1 MB) so a 512 KB cache is plenty; this saves ~1.5 MB ×2.
+     * Negative value = KB (per SQLite docs). Keep WAL (set in SCHEMA_SQL). */
+    sqlite3_exec(db, "PRAGMA cache_size=-512;", NULL, NULL, NULL);
+
     *db_out = db;
     return 0;
 }
@@ -471,6 +519,7 @@ int audiobook_get_book_by_key(sqlite3 *db, const char *book_key,
 }
 
 int audiobook_get_book(sqlite3 *db, int book_id, audiobook_book_t *out) {
+    if (!db) return 0;
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db, SQL_GET_BOOK_BY_ID, -1, &stmt, NULL) != SQLITE_OK)
         return -1;
@@ -596,6 +645,7 @@ int audiobook_list_books_by_series(sqlite3 *db, const char *series,
 int audiobook_get_tracks(sqlite3 *db, int book_id,
                         int (*cb)(const audiobook_track_t *track, void *ctx),
                         void *ctx) {
+    if (!db) return 0;
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db, SQL_GET_TRACKS, -1, &stmt, NULL) != SQLITE_OK)
         return -1;
@@ -635,6 +685,7 @@ int audiobook_get_chapters(sqlite3 *db, int book_id,
 
 int audiobook_get_progress(sqlite3 *db, int book_id,
                            audiobook_progress_t *out) {
+    if (!db) return 0;
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db, SQL_GET_PROGRESS, -1, &stmt, NULL) != SQLITE_OK)
         return -1;
@@ -649,6 +700,7 @@ int audiobook_get_progress(sqlite3 *db, int book_id,
 }
 
 int audiobook_save_progress(sqlite3 *db, const audiobook_progress_t *p) {
+    if (!db) return -1;
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db, SQL_SAVE_PROGRESS, -1, &stmt, NULL) != SQLITE_OK)
         return -1;
@@ -867,6 +919,7 @@ int audiobook_load_book_json(const char *root_path, const char *book_key,
 /* ---- Settings ----------------------------------------------------------- */
 
 int audiobook_get_setting(sqlite3 *db, const char *key, char *out, int out_len) {
+    if (!db) return -1;
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db, "SELECT value FROM settings WHERE key=?", -1,
                           &stmt, NULL) != SQLITE_OK)

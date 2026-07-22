@@ -24,10 +24,13 @@ typedef enum {
     PLAYER_PAUSED,
 } player_state_t;
 
-/* Start the engine thread. Idempotent. db is the library DB handle (used for
- * track listing, book duration, and progress save/load). Returns 0 on
- * success, -1 if the decode/output libs can't be loaded. */
-int player_init(sqlite3 *db);
+/* Start the engine thread. Idempotent. The engine opens its OWN connection to
+ * the library DB (AUDIOBOOK_DB_PATH) so it never shares a sqlite3* with the
+ * UI — the build is -DSQLITE_THREADSAFE=0, so each connection must be used by
+ * exactly one thread (the UI's connection by the event thread, this one by the
+ * player thread). Returns 0 on success, -1 if the DB can't be opened or the
+ * decode/output libs can't be loaded. */
+int player_init(void);
 
 /* Stop the engine thread, save progress, close libs. */
 void player_shutdown(void);
@@ -61,8 +64,12 @@ int player_rw(void);
 /* ---- Bookmarks ---- */
 /* Add a bookmark at the current playback position (current track + book-elapsed
  * position). `label` is shown in the bookmark list (may be NULL/empty →
- * "Bookmark"). Returns the new bookmark_id, or -1 if no book is loaded. */
-int player_add_bookmark(const char *label);
+ * "Bookmark"). `db` is the CALLER's library connection — the UI passes its own
+ * event-thread ui->db so the write stays on the event thread and never shares
+ * the player thread's g_pl.db (THREADSAFE=0: one connection per thread). The
+ * current track/position are read from the engine's live state. Returns the
+ * new bookmark_id, or -1 if no book is loaded. */
+int player_add_bookmark(sqlite3 *db, const char *label);
 
 /* ---- Playback speed ---- */
 /* Set playback speed in milli-units (1000 = 1.0x, 1100 = 1.1x, 1250 = 1.25x,
