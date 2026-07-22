@@ -127,10 +127,20 @@ numid=7 at 0.
 ### Volume step granularity
 Stepping `volume_pct` by 10% per press = ~25 mixer codes/press (~12 dB if
 0.5 dB/code) = too coarse. Step in RAW MIXER UNITS (`MIX_STEP = 5`, ~51 steps
-end-to-end, ~2-2.5 dB/press). Also act on `ev.value == 2` (autorepeat) for
-`KEY_VOLUMEUP`/`KEY_VOLUMEDOWN` so hold-to-ramp works; other keys are
-press-only (`ev.value == 1`) so Play/Pause doesn't toggle-repeat. See
-[input_keys_hardware.md](./input_keys_hardware.md).
+end-to-end, ~2-2.5 dB/press). The R1 does not reliably emit `ev.value == 2`,
+so v2.0.22 treats value 1/0 as hold start/release and generates repeat steps
+from the UI timer. Mixer work is queued to the player thread; the UI only shows
+an immediate preview percentage. Other keys are press-only so Play/Pause does
+not toggle-repeat. See [input_keys_hardware.md](./input_keys_hardware.md).
+
+### Wired and Bluetooth volume are separate
+
+BlueALSA can expose its mixer after the PCM path becomes available. Accepting a
+failed first read as a real percentage caused quiet startup, a sudden loud jump
+on Volume Down, and a reset after pause/resume. The player now retries the BT
+mixer open/read, keeps `wired_volume_pct` and `bt_volume_pct` separately, and
+restores the appropriate value when the output changes. All read/write/reopen
+operations run on the player thread so they cannot race decode or UI input.
 
 ### CS43131 zero-cross ramp
 The 1-2 s "sometimes" delay on volume changes is the DAC waiting for a zero

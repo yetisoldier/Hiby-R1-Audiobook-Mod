@@ -26,7 +26,7 @@ the original resume/sequential-playback foundation:
   skip), title/author/duration, draggable progress handle (scrub seek).
 - Hardware buttons: power (backlight toggle), play/pause, prev/next, vol±
   (fine-stepped + hold-to-ramp).
-- **Playback speed 1.0/1.1/1.25/1.5× via WSOLA time-stretch** (pitch
+- **Playback speed 1.0/1.1/1.25/1.5/2.0x via WSOLA time-stretch** (pitch
   preserved; 1.0× exact passthrough). Persists via `playback_speed` setting.
 - **Sleep timer** (Off/15/30/60 min, live countdown, auto-pause + save).
 - **Bookmarks**: add from Now Playing ("Mark"), tap to jump, long-press to

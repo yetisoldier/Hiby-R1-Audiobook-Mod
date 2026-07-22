@@ -30,12 +30,25 @@ Ha  = Hs * speed                 (hop, analysis — speedup -> Ha > Hs
 delta = rate * 15 / 1000         (search radius)
 ```
 
-Re-init on track open (both MP3 + AAC paths, AFTER `setup_alsa`) AND on
-`player_set_speed` when a track is open (flushes ~40 ms; tiny glitch).
+Re-init on track open (both MP3 + AAC paths, AFTER `setup_alsa`) and on the
+player thread after a queued `player_set_speed` request (flushes ~40 ms; tiny
+glitch without racing the decoder).
 Position credit is UNCHANGED: `content_frames = wr_total * speed`,
 `advanced = content_frames * 1000 / rate`. Speed cycle `{1000, 1100, 1250,
-1500}`. **1.0x is EXACT passthrough** (WSOLA bypassed) so the confirmed-clean
+1500, 2000}`. **1.0x is EXACT passthrough** (WSOLA bypassed) so the confirmed-clean
 1.0x path can't regress.
+
+## v2.0.22 player command and snapshot model
+
+The former single pending-command slot could be overwritten by rapid hardware
+or AVRCP input. The player now owns a bounded FIFO (`CMD_QUEUE_CAP = 16`) for
+play, pause, toggle, seek, rewind/forward, stop, and quit. Volume and speed have
+coalesced pending values but are also applied only by the player thread.
+
+The UI no longer combines several unlocked getters into a possibly impossible
+state. `player_get_snapshot` copies state, book, track, media status, track/book
+position, total duration, and title under one mutex. Now Playing, bookmarks,
+progress drawing, and resume decisions consume that coherent snapshot.
 
 ## The MP3 1.5x "cut off speech" bug
 

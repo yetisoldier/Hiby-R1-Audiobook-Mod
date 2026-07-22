@@ -37,6 +37,10 @@ LD_PRELOAD hook (libaudiobook_hook.so, ~1.6 MB)
             fds of event0/2/3) + AVRCP (eventN) in hiby_player's main thread.
   - Player engine: decodes MP3 (minimp3_ex) / M4B-AAC (dlopen libfdk-aac)
             and writes PCM to ALSA wired (plughw:0,0) or BlueALSA (BT).
+  - Player control: bounded FIFO command queue + one mutex-protected snapshot;
+            decode, seek, speed, and mixer work stay on the player thread.
+  - Refresh worker: scans on a private SQLite connection while the event loop,
+            playback, and hardware controls continue running.
   - Library scan / chapters / bookmarks / positions (audiobook_app/).
 
 Native helper (r1_audiobook_smoke)
@@ -112,7 +116,7 @@ See [`modding/audio_decode_alsa.md`](./modding/audio_decode_alsa.md) and
 
 ## Playback speed, seek, resume
 
-- **WSOLA time-stretch** (pitch preserved) for 1.0/1.1/1.25/1.5x; 1.0x is
+- **WSOLA time-stretch** (pitch preserved) for 1.0/1.1/1.25/1.5/2.0x; 1.0x is
   exact passthrough. See [`modding/wsola_seek_resume.md`](./modding/wsola_seek_resume.md).
 - **Resume** is per-book + multipart across reboots, with a 5 s smart rewind.
   Positions are SD-primary; the exact final position is saved on quit.
@@ -120,7 +124,10 @@ See [`modding/audio_decode_alsa.md`](./modding/audio_decode_alsa.md) and
 
 ## Library scan / chapters / storage
 
-- Scan walks `/Audiobooks`, builds `library.db`, caches chapters.
+- Scan walks `/Audiobooks`, builds `library.db`, and caches chapters on a
+  private worker connection. Catalog writes are transactional and serialized;
+  SD-primary progress saves skip their optional DB mirror while the scanner owns
+  the writer lock, so a refresh cannot stall audio decoding.
 - M4B chapters parsed from the embedded QuickTime chapter track
   (stsc-aware) or Nero `chpl`. See
   [`modding/library_scan_storage.md`](./modding/library_scan_storage.md).
@@ -129,6 +136,9 @@ See [`modding/audio_decode_alsa.md`](./modding/audio_decode_alsa.md) and
 - `/usr/data` is chronically near-full (the stock music DB rebuilds there
   every boot); app-level guards abort a scan cleanly with a red flash if free
   space is too low.
+- Media read/seek errors are checked against path availability before an EOF is
+  treated as completion. Removing or losing the SD card preserves the last good
+  resume point and reports `SD card unavailable`.
 
 ## Audio unlocks (since v2.0.17)
 

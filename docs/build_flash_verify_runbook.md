@@ -6,9 +6,9 @@ firmware, not for normal end users.
 
 ## Current Release Reference
 
-- Public release: `v2.0.17`
-- About-screen label: `HiBy R1 2.0.17`
-- Package: `r1-audiobooks-2.0.17.upt`
+- Public release: `v2.0.22`
+- About-screen label: `HiBy R1 2.0.22`
+- Package: `r1-audiobooks-2.0.22.upt`
 - Base firmware: stock HiBy R1 1.6 for the normal R1
 - Target device: normal HiBy R1 only, not R1 MIDI
 - Source branch: `codex/r1-hiby-modding-integration` (the `main` branch has no
@@ -90,15 +90,16 @@ that the pre-2.0 line carried and v2.0.17 restores:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File tools\build_r1_audiobook_firmware.ps1 `
-  -OutDir work\audiobook-firmware-2.0.17 `
-  -OutputUpt work\audiobook-firmware-2.0.17\r1-audiobooks-2.0.17.upt `
+  -OutDir work\audiobook-firmware-2.0.22 `
+  -OutputUpt work\audiobook-firmware-2.0.22\r1-audiobooks-2.0.22.upt `
   -IncludeAudiobookNativeApp `
+  -IncludeAudiobookLauncherIcon `
   -EnableBootAdb `
   -UnlockNativeDsd `
   -EnableBluetoothSbcXq `
   -UnlockUsbDacMode `
-  -CustomVersionId 2.0.17 `
-  -CustomVersionLabel "HiBy R1 2.0.17"
+  -CustomVersionId 2.0.22 `
+  -CustomVersionLabel "HiBy R1 2.0.22"
 ```
 
 The NativeApp pivot is mutually exclusive with the legacy resume-daemon switches
@@ -134,25 +135,25 @@ This checks:
 Run the release package verifier against the NativeApp build:
 
 ```powershell
-python tools\verify_r1_audiobook_build.py `
-  --out-dir work\audiobook-firmware-2.0.17 `
-  --upt-name r1-audiobooks-2.0.17.upt `
-  --expected-version 2.0.17 `
-  --expected-label "HiBy R1 2.0.17" `
+py -3 tools\verify_r1_audiobook_build.py `
+  --out-dir work\audiobook-firmware-2.0.22 `
+  --upt-name r1-audiobooks-2.0.22.upt `
+  --expected-version 2.0.22 `
+  --expected-label "HiBy R1 2.0.22" `
+  --expect-native-app `
+  --require-boot-adb `
+  --expect-audiobook-launcher-icon `
   --expect-native-dsd `
   --expect-sbc-xq `
-  --expect-usb-dac-mode `
-  --expect-current-hashes
+  --expect-usb-dac-mode
 ```
 
-The verifier is intentionally strict. It checks exact patch bytes, rootfs
-modes, hashes, scripts, resources, feature markers, and known-bad package
-hashes. **For NativeApp builds the legacy resume-runtime / DB-watcher checks
-FAIL — this is EXPECTED** (v2.0.16 fails them identically); only the
-unlock-specific and NativeApp checks need to pass. Do not add
-`--require-db-maintenance` / `--expect-native-hub-launcher` /
-`--expect-native-hub-view-rows` — those are v1.6.x legacy flags that
-contradict the NativeApp pivot.
+The verifier is intentionally strict. NativeApp mode checks the launcher
+callback and cave, stock Books hub preservation, wrapper, native app and hook
+modes, version/feature markers, launcher icons, rootfs paths/modes/symlinks,
+OTA rootfs hash, and known-bad package hashes. Do not add the legacy
+`--require-db-maintenance`, `--expect-native-hub-launcher`, or
+`--expect-native-hub-view-rows` flags; those contradict the NativeApp pivot.
 
 ## 5. Stage Firmware On The R1
 
@@ -165,9 +166,13 @@ verifies remote byte count + hashes:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File tools\adb_stage_verified_firmware.ps1 `
-  -Package work\audiobook-firmware-2.0.17\r1-audiobooks-2.0.17.upt `
-  -BuildOutDir work\audiobook-firmware-2.0.17 `
-  -ExpectCurrentHashes `
+  -Package work\audiobook-firmware-2.0.22\r1-audiobooks-2.0.22.upt `
+  -BuildOutDir work\audiobook-firmware-2.0.22 `
+  -ExpectedVersion 2.0.22 `
+  -ExpectedLabel "HiBy R1 2.0.22" `
+  -ExpectNativeApp `
+  -RequireBootAdb `
+  -ExpectAudiobookLauncherIcon `
   -ExpectNativeDsd `
   -ExpectBluetoothSbcXq `
   -ExpectUsbDacMode `

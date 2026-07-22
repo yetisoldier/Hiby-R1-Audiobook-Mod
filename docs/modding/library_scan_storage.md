@@ -161,6 +161,25 @@ any symlink). Can't redirect the 6 MB DB off `/usr/data`. Abandoned.
    storage full" flash (`COL_RED`) instead of the green "Library refreshed".
    `uint64_t refresh_err_until_ms` in `ui_state_t`.
 
+### v2.0.22: nonblocking, transactional refresh
+
+Refresh no longer runs on the UI/event thread. `scan_worker_main` opens a
+private SQLite connection and performs the scan there while touch, keys,
+framebuffer drawing, and audio continue. The event thread polls a small guarded
+result structure and rebuilds render caches only after the worker has closed its
+connection. Cover prewarming pauses during the scan to preserve RAM and SD I/O.
+
+The scanner wraps catalog mutation in `BEGIN`/`COMMIT`; every error path runs
+`ROLLBACK`. A failed or full-storage scan therefore leaves the previous complete
+catalog instead of a half-updated database or stale journal. The app also waits
+for an active worker before tearing down UI/DB state, avoiding the exit-time
+black screen seen when a refresh outlived the app.
+
+Catalog writers share `g_db_write_lock`. Progress is different: the SD `.pos`
+write happens first and remains authoritative, then `audiobook_db_write_trylock`
+attempts the optional DB mirror. If Refresh owns the writer lock, the mirror is
+skipped rather than blocking the decoder.
+
 ### The scan ALREADY self-cleans (scan.c)
 `upsert_book`/`upsert_track` use `INSERT ... ON CONFLICT(book_key) DO UPDATE`
 (re-scan overwrites, no duplication); `audiobook_cleanup_orphans()` runs at the
@@ -175,8 +194,9 @@ swaps.
 `pos_save_sd` writes `<book_id>.pos`
 (`track_ordinal/track_pos_ms/book_elapsed_ms/completed/ts`) to
 `/usr/data/mnt/sd_0/.audiobook_pos/` via tmp+rename. `save_progress` calls
-`pos_save_sd` (authoritative) AND `audiobook_save_progress` (best-effort
-library.db mirror; return ignored). `cmd_play` resume reads `pos_load_sd`
+`pos_save_sd` (authoritative) and then attempts `audiobook_save_progress`
+(best-effort library.db mirror). If the refresh worker owns the DB writer lock,
+the mirror is skipped instead of blocking playback. `cmd_play` resume reads `pos_load_sd`
 first, falls back to `library.db` only for pre-2.0.9 positions (migration).
 Bookmarks (v2.0.16) are likewise SD-primary —
 `/usr/data/mnt/sd_0/.audiobook_pos/<book_id>.bm`, atomic temp+rename; the

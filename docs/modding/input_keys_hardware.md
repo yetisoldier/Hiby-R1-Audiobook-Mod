@@ -21,6 +21,16 @@ grabbed fds are in our fd table. Scan `/proc/self/fd` readlinks to find
 drain the queued key events. Works even though we can't `EVIOCGRAB`
 (`hiby_player` holds it).
 
+The fd scan must not probe device identity on the live duplicated descriptor in
+a way that consumes queued input. v2.0.22 classifies the descriptor without
+stealing its first event, keeps each duplicate nonblocking, and closes/reopens a
+descriptor after a real read error. This fixed the intermittent case where the
+same physical buttons worked in stock Music but stopped inside Audiobooks.
+
+Player actions enter a bounded FIFO command queue. Play/pause is one toggle
+command evaluated on the player thread, so rapid presses and AVRCP input cannot
+race a stale UI-side state read or overwrite the previous command.
+
 ## Key devices and codes
 
 Empirically confirmed via injection (2026-07-17):
@@ -72,8 +82,17 @@ Persist to `/usr/data/.audiobook_volume` (0..100).
   [audio_decode_alsa.md](./audio_decode_alsa.md).
 - Step in raw mixer units (`MIX_STEP = 5`, ~2-2.5 dB/press) — 10% steps are
   too coarse (~12 dB/press).
-- Act on `ev.value == 2` (autorepeat) for `KEY_VOLUMEUP`/`KEY_VOLUMEDOWN` so
-  hold-to-ramp works; other keys are press-only (`ev.value == 1`).
+- The R1 driver does not reliably emit `ev.value == 2` repeats. Treat value 1
+  as hold-start and value 0 as release, then synthesize repeats from the UI
+  timer after a short delay. Other keys remain press-only.
+- Queue mixer changes to the player thread. The UI may show an immediate
+  preview percentage, but it must not call ALSA mixer functions while decode or
+  Bluetooth output is changing state.
+- Keep wired and Bluetooth percentages separately. Retry the BlueALSA mixer
+  read at open/resume before accepting a default value; otherwise the first
+  volume press can jump from quiet to loud.
+- The temporary volume overlay is UI feedback only. It reads the queued preview
+  value and does not resize or block the event loop.
 - The AVRCP device is `/dev/input/eventN` named `"<dev> (AVRCP)"` — see
   [bluetooth_avrcp.md](./bluetooth_avrcp.md).
 

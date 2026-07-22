@@ -2,6 +2,90 @@
 
 All public releases are for the normal HiBy R1 on stock firmware 1.6. Do not install these packages on the R1 MIDI.
 
+## v2.0.22 - 2026-07-22
+
+Firmware marker: `2.0.22` - About-screen label `HiBy R1 2.0.22`.
+
+Stability-focused release consolidating all work since the public v2.0.20
+build. It keeps the NativeApp audiobook player, SD-primary resume/bookmarks,
+MP3 and M4B playback, USB DAC mode, Native DSD, Bluetooth SBC XQ, and boot ADB.
+Library data, resume positions, bookmarks, and Bluetooth pairings are preserved
+when installing over an earlier v2.0.x build.
+
+### Hardware controls and volume
+
+- Replaced the single overwrite-prone player command slot with a bounded FIFO
+  queue. Rapid play/pause, seek, and hardware-key commands now execute in order
+  instead of racing or silently disappearing.
+- Play/pause is handled as one player-thread toggle command, avoiding stale UI
+  state checks when the button is pressed quickly or through Bluetooth AVRCP.
+- Fixed the root cause of intermittent physical controls inside the audiobook
+  app by reading the already-grabbed HiBy input descriptors without consuming
+  their identity probe events. Input still works after the screen is darkened.
+- Volume and playback-speed changes now run on the player thread, away from the
+  audio decoder and mixer critical sections. Holding either volume button ramps
+  smoothly, and a temporary on-screen percentage confirms every change.
+- Wired and Bluetooth volume are tracked independently. BlueALSA mixer reads
+  are retried at startup and after pause/resume, preventing the quiet-to-loud
+  jump and the volume reset reported during Bluetooth listening.
+
+### Playback and resume hardening
+
+- Added one locked player snapshot containing state, book, track, position,
+  duration, title, and media availability. UI rendering, progress, bookmarks,
+  and resume decisions now read a coherent point-in-time state.
+- Added 2.0x to the pitch-preserving WSOLA speed choices. Existing 1.0, 1.1,
+  1.25, and 1.5x choices remain unchanged.
+- Long multipart chapter names begin with `Part N` and can wrap to a second
+  line, so otherwise identical or truncated titles remain distinguishable.
+- If an SD read/seek fails or the current media path disappears, playback stops
+  with `SD card unavailable`. It does not interpret the failure as the end of
+  the book, mark the book complete, or overwrite the last good resume point.
+- MP3 resume keeps direct byte seeking and the 5-second smart rewind. The exact
+  position is still written to the SD card on exit.
+
+### Library and UI responsiveness
+
+- Folders is now a real drill-down view that follows the directory hierarchy
+  below `/Audiobooks` instead of presenting one flattened list.
+- Refresh Library now uses a private worker thread and private SQLite
+  connection. Playback, touch, drawing, and hardware controls remain responsive
+  while a scan runs; the UI shows `Refreshing library...` and a completion or
+  failure indication.
+- Refresh holds a short DB writer lock only while committing catalog changes.
+  Position saves remain SD-primary and skip their optional DB mirror while that
+  lock is busy, so a scan cannot stall audio decoding.
+- Library scans are transactional: success commits the complete new catalog;
+  storage or scan failure rolls back instead of leaving a partial catalog or
+  stale journal.
+- A quick integrity check quarantines a malformed catalog before opening a new
+  empty database. Per-connection SQLite cache size is capped for the R1's small
+  RAM budget.
+- Leaving the app while a refresh is active is guarded until the worker closes
+  cleanly, preventing the black or frozen screen caused by tearing down UI/DB
+  state underneath the scanner.
+
+### Packaging and verification
+
+- The build verifier has a NativeApp-aware mode that checks the launcher hook,
+  wrapper, app/library modes, version marker, launcher icon, boot ADB, audio
+  unlocks, stock rootfs path/mode preservation, OTA rootfs hash, and known-bad
+  firmware hashes.
+- Staging scripts forward the NativeApp and launcher-icon requirements so a
+  missing release flag is rejected before the package reaches the device.
+- Verified on the test R1 with wired and Bluetooth playback, pause/resume,
+  rapid physical-button input, held volume ramp, all speed choices, direct
+  multipart resume, Refresh Library during playback, repeated refreshes,
+  exit/reopen, clean reboot, and persistent ADB.
+
+### v2.0.20 compatibility note
+
+The public v2.0.20 tag came from an experimental UTF-8/Cyrillic side branch.
+That text-rendering experiment touched font caching, scanner strings, metadata
+decoding, and many UI paths and was not part of the RC11 stability test line.
+It is intentionally not carried into v2.0.22. Users who depend on Cyrillic
+audiobook filenames or tags should remain on v2.0.20 for now.
+
 ## v2.0.18 - 2026-07-20
 
 Firmware marker: `2.0.18` - About-screen label `HiBy R1 2.0.18`.

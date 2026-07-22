@@ -79,9 +79,33 @@ The previous public release was `v1.6.0`, firmware marker
 
 ---
 
+## v2.0.22 note (2026-07-22, NativeApp stability line)
+
+The current public release is **v2.0.22** (about-screen label "HiBy R1
+2.0.22"). Its hook is byte-identical to the hands-on-tested RC11 hook.
+
+- GitHub release: `v2.0.22`
+- Package: `r1-audiobooks-2.0.22.upt` (42,213,376 B)
+- MD5: `d5dfdf3e0977d9339ab0ae862f4b3bf5`
+- SHA256: `28dd05c76b203ea29298a7a59eafc036431e1c5b18760455913e751048f7f141`
+- Source branch: `codex/r1-hiby-modding-integration`
+
+The normal data-preserving ADB recovery flow is unchanged:
+
+```bash
+MSYS_NO_PATHCONV=1 adb -s ingenic_2233 push work/audiobook-firmware-2.0.22/r1-audiobooks-2.0.22.upt /usr/data/mnt/sd_0/r1.upt
+adb -s ingenic_2233 shell md5sum /usr/data/mnt/sd_0/r1.upt
+MSYS_NO_PATHCONV=1 adb -s ingenic_2233 shell /usr/bin/bootmode.sh Recovery
+adb -s ingenic_2233 reboot
+```
+
+The public v2.0.20 package came from a separate UTF-8/Cyrillic experiment and
+is not the base of this stability line. Users who require Cyrillic text should
+remain on v2.0.20; everyone else should use v2.0.22.
+
 ## v2.0.18 note (2026-07-20, NativeApp pivot)
 
-The current public release is **v2.0.18** (about-screen label "HiBy R1
+An earlier public release, **v2.0.18** (about-screen label "HiBy R1
 2.0.18"). It is the v2.0.x "NativeApp" pivot (in-process `LD_PRELOAD` hook into
 `hiby_player`), not the v1.6.x resume-daemon line described above. The sections
 above are retained as the historical v1.6.1 record.
