@@ -19,6 +19,8 @@ param(
 
     [switch]$SkipLocalVerification,
 
+    [switch]$ExpectNativeApp,
+
     [switch]$IUnderstandThisStagesFirmware
 )
 
@@ -68,14 +70,20 @@ function Invoke-LocalVerification([string]$PackagePath, [string]$BuildDir) {
     if (!$BuildDir) {
         $BuildDir = Split-Path -Parent $PackagePath
     }
-    python tools\verify_r1_audiobook_build.py `
-        --out-dir $BuildDir `
-        --upt-name (Split-Path -Leaf $PackagePath) `
-        --expected-version $ExpectedVersion `
-        --expected-label $ExpectedLabel `
-        --require-db-maintenance `
-        --expect-batd-disabled `
-        --expect-audiobook-launcher-icon
+    $verifyArgs = @(
+        "tools\verify_r1_audiobook_build.py",
+        "--out-dir", $BuildDir,
+        "--upt-name", (Split-Path -Leaf $PackagePath),
+        "--expected-version", $ExpectedVersion,
+        "--expected-label", $ExpectedLabel,
+        "--expect-audiobook-launcher-icon"
+    )
+    if ($ExpectNativeApp) {
+        $verifyArgs += "--expect-native-app"
+    } else {
+        $verifyArgs += @("--require-db-maintenance", "--expect-batd-disabled")
+    }
+    & py -3 @verifyArgs
     if ($LASTEXITCODE -ne 0) {
         throw "local firmware verification failed; refusing to stage"
     }
@@ -188,6 +196,10 @@ if (Test-AdbDevice $adbPath) {
         -BuildOutDir $buildOutDirPath `
         -ExpectedVersion $ExpectedVersion `
         -ExpectedLabel $ExpectedLabel `
+        -ExpectNativeApp:$ExpectNativeApp `
+        -RequireBootAdb:$ExpectNativeApp `
+        -ExpectAudiobookLauncherIcon `
+        -RequireDbMaintenance:(!$ExpectNativeApp) `
         -IUnderstandThisStagesFirmware `
         -SkipLocalVerification:$SkipLocalVerification
     exit $LASTEXITCODE

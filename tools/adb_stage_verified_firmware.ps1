@@ -41,6 +41,12 @@ param(
 
     [switch]$ExpectPrivateDirectRoute,
 
+    [switch]$ExpectNativeApp,
+
+    [switch]$RequireBootAdb,
+
+    [switch]$ExpectAudiobookLauncherIcon,
+
     [switch]$RequireDbMaintenance = $true,
 
     [switch]$SkipLocalVerification,
@@ -214,8 +220,16 @@ if (!$SkipLocalVerification) {
     if ($ExpectCurrentHashes) {
         $verifyArgs += "--expect-current-hashes"
     }
-    if ($RequireDbMaintenance) {
+    if ($ExpectNativeApp) {
+        $verifyArgs += "--expect-native-app"
+    } elseif ($RequireDbMaintenance) {
         $verifyArgs += "--require-db-maintenance"
+    }
+    if ($RequireBootAdb) {
+        $verifyArgs += "--require-boot-adb"
+    }
+    if ($ExpectAudiobookLauncherIcon) {
+        $verifyArgs += "--expect-audiobook-launcher-icon"
     }
     if ($ExpectNativeDsd) {
         $verifyArgs += "--expect-native-dsd"

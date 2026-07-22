@@ -87,6 +87,84 @@ static void draw_detail(ui_state_t *ui);
 static void draw_now_playing(ui_state_t *ui);
 static void draw_bookmarks(ui_state_t *ui);
 static void draw_chapters(ui_state_t *ui);
+static void draw_volume_overlay(ui_state_t *ui);
+
+typedef struct {
+    pthread_t thread;
+    pthread_mutex_t mu;
+    int running;
+    int done;
+    int result;
+} scan_worker_t;
+
+static scan_worker_t g_scan = {
+    .mu = PTHREAD_MUTEX_INITIALIZER,
+};
+
+static void *scan_worker_main(void *arg) {
+    (void)arg;
+    sqlite3 *db = NULL;
+    int rc = -1;
+    audiobook_db_write_lock();
+    int open_rc = audiobook_db_open(AUDIOBOOK_DB_PATH, &db);
+    audiobook_db_write_unlock();
+    if (open_rc == 0) {
+        rc = audiobook_scan_library(db, AUDIOBOOK_LIBRARY_ROOT, NULL, NULL);
+        audiobook_db_close(db);
+    }
+    pthread_mutex_lock(&g_scan.mu);
+    g_scan.result = rc;
+    g_scan.done = 1;
+    pthread_mutex_unlock(&g_scan.mu);
+    return NULL;
+}
+
+static int scan_worker_start(void) {
+    pthread_mutex_lock(&g_scan.mu);
+    if (g_scan.running) {
+        pthread_mutex_unlock(&g_scan.mu);
+        return 0;
+    }
+    g_scan.done = 0;
+    g_scan.result = -1;
+    g_scan.running = 1;
+    pthread_mutex_unlock(&g_scan.mu);
+    if (pthread_create(&g_scan.thread, NULL, scan_worker_main, NULL) != 0) {
+        pthread_mutex_lock(&g_scan.mu);
+        g_scan.running = 0;
+        pthread_mutex_unlock(&g_scan.mu);
+        return -1;
+    }
+    return 1;
+}
+
+/* Returns 1 once for a completed scan and joins its worker. */
+static int scan_worker_poll(int *result) {
+    int done;
+    pthread_mutex_lock(&g_scan.mu);
+    done = g_scan.running && g_scan.done;
+    if (done && result) *result = g_scan.result;
+    pthread_mutex_unlock(&g_scan.mu);
+    if (!done) return 0;
+    pthread_join(g_scan.thread, NULL);
+    pthread_mutex_lock(&g_scan.mu);
+    g_scan.running = 0;
+    g_scan.done = 0;
+    pthread_mutex_unlock(&g_scan.mu);
+    return 1;
+}
+
+static void scan_worker_join(void) {
+    pthread_mutex_lock(&g_scan.mu);
+    int running = g_scan.running;
+    pthread_mutex_unlock(&g_scan.mu);
+    if (!running) return;
+    pthread_join(g_scan.thread, NULL);
+    pthread_mutex_lock(&g_scan.mu);
+    g_scan.running = 0;
+    g_scan.done = 0;
+    pthread_mutex_unlock(&g_scan.mu);
+}
 
 static int handle_home_touch(ui_state_t *ui, int x, int y);
 static int handle_list_touch(ui_state_t *ui, int x, int y);
@@ -179,6 +257,42 @@ static uint64_t now_ms(void) {
     return (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+static void show_volume_overlay(ui_state_t *ui) {
+    int pct = player_volume();
+    if (pct < 0) return;
+    if (pct > 100) pct = 100;
+    ui->volume_overlay_pct = pct;
+    ui->volume_overlay_until_ms = now_ms() + 1500;
+}
+
+static void volume_key_event(ui_state_t *ui, int dir, int value) {
+    uint64_t now = now_ms();
+    if (value == 0) {
+        if (ui->volume_hold_dir == dir) ui->volume_hold_dir = 0;
+        return;
+    }
+    if (ui->volume_hold_dir == dir) return; /* duplicate down/repeat event */
+
+    player_volume_step(dir);
+    show_volume_overlay(ui);
+    ui->volume_hold_dir = dir;
+    ui->volume_hold_started_ms = now;
+    ui->volume_hold_next_ms = now + 400;
+}
+
+static void volume_hold_tick(ui_state_t *ui, uint64_t now) {
+    if (ui->volume_hold_dir == 0 || now < ui->volume_hold_next_ms) return;
+    /* Prevent a lost key-up event from ramping forever. Ten seconds is still
+     * long enough to traverse the complete fine-step volume range. */
+    if (now - ui->volume_hold_started_ms >= 10000) {
+        ui->volume_hold_dir = 0;
+        return;
+    }
+    player_volume_step(ui->volume_hold_dir);
+    show_volume_overlay(ui);
+    ui->volume_hold_next_ms = now + 120;
+}
+
 /* ---- Input handling ---------------------------------------------------- */
 
 /* Find one of hiby_player's already-open fds for a given input device path by
@@ -206,13 +320,79 @@ static int dup_hiby_input_fd(const char *devpath) {
         int srcfd = atoi(de->d_name);
         int newfd = dup(srcfd);
         if (newfd < 0) continue;
-        int fl = fcntl(newfd, F_GETFL, 0);
-        fcntl(newfd, F_SETFL, fl | O_NONBLOCK);
         out = newfd;
         break;
     }
     closedir(d);
     return out;
+}
+
+/* Transfer exclusive ownership of a physical-key device from hiby_player to
+ * the audiobook UI. Reading a dup of HiBy's fd lets two readers race for one
+ * queue; whichever thread reads first consumes the press. Releasing the stock
+ * grab through its dup and immediately grabbing a fresh fd gives each mode one
+ * deterministic reader. The retained stock dup restores HiBy's grab on exit. */
+static void take_over_key_device(ui_state_t *ui, const char *devpath) {
+    if (ui->n_key_fds >= 4) return;
+
+    int slot = ui->n_key_fds++;
+    ui->key_fds[slot] = -1;
+    ui->key_stock_fds[slot] = -1;
+    ui->key_stock_flags[slot] = -1;
+    ui->key_exclusive[slot] = 0;
+
+    int stock_fd = dup_hiby_input_fd(devpath);
+    int stock_flags = stock_fd >= 0 ? fcntl(stock_fd, F_GETFL, 0) : -1;
+
+    /* Most R1 builds leave these key devices ungrabbed. Prefer the simple,
+     * race-free path first: grab our fresh queue directly. EVIOCGRAB makes
+     * events exclusive to this fd even while HiBy keeps its own fd open. */
+    int own_fd = open(devpath, O_RDONLY | O_NONBLOCK);
+    if (own_fd >= 0 && ioctl(own_fd, EVIOCGRAB, 1) == 0) {
+        ui->key_fds[slot] = own_fd;
+        ui->key_exclusive[slot] = 1;
+        if (stock_fd >= 0) close(stock_fd);
+        ui_log("[ui] key direct-grab %s own=%d\n", devpath, own_fd);
+        return;
+    }
+
+    if (stock_fd >= 0 && ioctl(stock_fd, EVIOCGRAB, 0) == 0) {
+        if (own_fd < 0) own_fd = open(devpath, O_RDONLY | O_NONBLOCK);
+        if (own_fd >= 0 && ioctl(own_fd, EVIOCGRAB, 1) == 0) {
+            ui->key_fds[slot] = own_fd;
+            ui->key_stock_fds[slot] = stock_fd;
+            ui->key_stock_flags[slot] = stock_flags;
+            ui->key_exclusive[slot] = 1;
+            ui_log("[ui] key takeover %s own=%d stock=%d\n",
+                   devpath, own_fd, stock_fd);
+            return;
+        }
+        if (own_fd >= 0) { close(own_fd); own_fd = -1; }
+        ioctl(stock_fd, EVIOCGRAB, 1);
+    }
+    if (own_fd >= 0) { close(own_fd); own_fd = -1; }
+
+    /* Degraded fallback for an unexpected kernel/device state. Preserve the
+     * old behavior but restore the original status flags when the UI exits. */
+    if (stock_fd >= 0) {
+        if (stock_flags >= 0)
+            fcntl(stock_fd, F_SETFL, stock_flags | O_NONBLOCK);
+        ui->key_fds[slot] = stock_fd;
+        ui->key_stock_flags[slot] = stock_flags;
+        ui_log("[ui] WARNING: key takeover failed for %s; shared fd=%d\n",
+               devpath, stock_fd);
+        return;
+    }
+
+    own_fd = open(devpath, O_RDONLY | O_NONBLOCK);
+    if (own_fd >= 0) {
+        ui->key_exclusive[slot] = (ioctl(own_fd, EVIOCGRAB, 1) == 0);
+        ui->key_fds[slot] = own_fd;
+        ui_log("[ui] key fresh %s fd=%d exclusive=%d\n",
+               devpath, own_fd, ui->key_exclusive[slot]);
+    } else {
+        ui_log("[ui] no key fd for %s: %s\n", devpath, strerror(errno));
+    }
 }
 
 /* Find the Bluetooth AVRCP input device by scanning /sys/class/input for a
@@ -255,6 +435,8 @@ static void avrcp_open(ui_state_t *ui) {
     int fd = dup_hiby_input_fd(dev);   /* in case hiby_player grabbed it */
     if (fd < 0) fd = open(dev, O_RDONLY | O_NONBLOCK);
     if (fd >= 0) {
+        int fl = fcntl(fd, F_GETFL, 0);
+        if (fl >= 0) fcntl(fd, F_SETFL, fl | O_NONBLOCK);
         ui->avrcp_fd = fd;
         ui_log("[ui] AVRCP remote fd=%d (%s)\n", fd, dev);
     }
@@ -281,17 +463,7 @@ static int open_input(ui_state_t *ui) {
     ui->n_key_fds = 0;
     const char *keydevs[] = {"/dev/input/event0", "/dev/input/event2",
                              "/dev/input/event3"};
-    for (int i = 0; i < 3 && ui->n_key_fds < 4; i++) {
-        int fd = dup_hiby_input_fd(keydevs[i]);
-        const char *src = "hiby-dup";
-        if (fd < 0) { fd = open(keydevs[i], O_RDONLY | O_NONBLOCK); src = "fresh"; }
-        if (fd >= 0) {
-            ui->key_fds[ui->n_key_fds++] = fd;
-            ui_log("[ui] key fd for %s = %d (%s)\n", keydevs[i], fd, src);
-        } else {
-            ui_log("[ui] no key fd for %s\n", keydevs[i]);
-        }
-    }
+    for (int i = 0; i < 3; i++) take_over_key_device(ui, keydevs[i]);
     ui->key_fd = -1;  /* legacy field unused */
     ui->avrcp_fd = -1;
     avrcp_open(ui);   /* BT remote may already be connected at app start */
@@ -303,8 +475,24 @@ static void close_input(ui_state_t *ui) {
         ioctl(ui->input_fd, EVIOCGRAB, 0);  /* release exclusive grab */
         close(ui->input_fd);
     }
-    for (int i = 0; i < ui->n_key_fds; i++)
+    for (int i = 0; i < ui->n_key_fds; i++) {
+        if (ui->key_exclusive[i] && ui->key_fds[i] >= 0)
+            ioctl(ui->key_fds[i], EVIOCGRAB, 0);
+        if (ui->key_stock_fds[i] >= 0) {
+            if (ioctl(ui->key_stock_fds[i], EVIOCGRAB, 1) < 0)
+                ui_log("[ui] WARNING: restore stock grab fd=%d failed: %s\n",
+                       ui->key_stock_fds[i], strerror(errno));
+            if (ui->key_stock_flags[i] >= 0)
+                fcntl(ui->key_stock_fds[i], F_SETFL, ui->key_stock_flags[i]);
+            close(ui->key_stock_fds[i]);
+        } else if (!ui->key_exclusive[i] && ui->key_fds[i] >= 0
+                   && ui->key_stock_flags[i] >= 0) {
+            fcntl(ui->key_fds[i], F_SETFL, ui->key_stock_flags[i]);
+        }
         if (ui->key_fds[i] >= 0) close(ui->key_fds[i]);
+        ui->key_fds[i] = -1;
+        ui->key_stock_fds[i] = -1;
+    }
     ui->n_key_fds = 0;
     if (ui->key_fd >= 0) close(ui->key_fd);
     if (ui->avrcp_fd >= 0) { close(ui->avrcp_fd); ui->avrcp_fd = -1; }
@@ -624,6 +812,7 @@ void ui_draw_frame(uint16_t *buf) {
         case SCREEN_CHAPTERS:   draw_chapters(&g_ui); break;
         default:                draw_home(&g_ui); break;
     }
+    draw_volume_overlay(&g_ui);
     g_ui.rend.fb = saved_fb;
 }
 
@@ -734,7 +923,10 @@ int ui_run(uint16_t *fb, int fb_fd) {
         }
         if (now - last_key_reopen >= 5000) {
             last_key_reopen = now;
-            reopen_key_fds(ui);
+            /* Key ownership is transferred once for the lifetime of ui_run.
+             * Re-duplicating descriptors here would recreate the shared-queue
+             * race. The R1's built-in key devices do not re-enumerate while
+             * the screen is blanked. */
         }
         if (rv > 0) {
             if (ui->input_fd >= 0 && FD_ISSET(ui->input_fd, &rfds)) {
@@ -784,13 +976,13 @@ int ui_run(uint16_t *fb, int fb_fd) {
                     if (ev.value == 1 && ev.code != KEY_POWER && ui->blanked) {
                         set_blanked(ui, 0, fb_fd);
                     }
-                    /* Volume keys also act on key-repeat (value==2) so holding
-                     * the button ramps through the fine mixer-unit steps for
-                     * larger changes. Other keys act on press (value==1) only,
-                     * so e.g. holding Play/Pause doesn't toggle repeatedly. */
-                    if (ev.value == 2 &&
-                        (ev.code == KEY_VOLUMEUP || ev.code == KEY_VOLUMEDOWN)) {
-                        player_volume_step(ev.code == KEY_VOLUMEUP ? +1 : -1);
+                    /* The R1 driver does not reliably emit value=2 repeats.
+                     * Track volume down/up ourselves and let the event-loop
+                     * timer ramp while held. Consume all volume events here. */
+                    if (ev.code == KEY_VOLUMEUP || ev.code == KEY_VOLUMEDOWN) {
+                        volume_key_event(ui,
+                            ev.code == KEY_VOLUMEUP ? +1 : -1, ev.value);
+                        continue;
                     }
                     if (ev.value == 1) {
                         switch (ev.code) {
@@ -811,12 +1003,6 @@ int ui_run(uint16_t *fb, int fb_fd) {
                             case KEY_PREVIOUS:    /* 165 */
                             case KEY_REWIND:       /* 207 */
                                 player_rw();
-                                break;
-                            case KEY_VOLUMEUP:    /* 115 */
-                                player_volume_step(+1);
-                                break;
-                            case KEY_VOLUMEDOWN:  /* 114 */
-                                player_volume_step(-1);
                                 break;
                         }
                     }
@@ -859,6 +1045,7 @@ int ui_run(uint16_t *fb, int fb_fd) {
          * Keep panning even when blanked (backlight off) so the touch IC
          * stays alive for double-tap wake. */
         now = now_ms();
+        volume_hold_tick(ui, now);
         if (can_pan && (now - last_pan) >= PAN_INTERVAL_MS) {
             last_pan = now;
             vinfo.yoffset = (vinfo.yoffset == 0) ? vinfo.yres : 0;
@@ -876,7 +1063,7 @@ int ui_run(uint16_t *fb, int fb_fd) {
          * above) recorded the first uncached visible book_id; we decode it here,
          * OUTSIDE the render hook, so a slow libjpeg decode can't freeze the
          * display (decoding several thumbs in a single frame froze the device). */
-        if (ui->thumb_warm_target) {
+        if (ui->thumb_warm_target && !ui->refresh_scanning) {
             int bid = ui->thumb_warm_target;
             ui->thumb_warm_target = 0;
             if (!cover_thumb_prewarm(ui->db, bid))
@@ -895,11 +1082,27 @@ int ui_run(uint16_t *fb, int fb_fd) {
             rebuild_cur_prog(ui);
             rebuild_home(ui);
         }
+
+        int scan_rc = -1;
+        if (scan_worker_poll(&scan_rc)) {
+            ui->refresh_scanning = 0;
+            if (scan_rc < 0)
+                ui->refresh_err_until_ms = now_ms() + 3500;
+            else
+                ui->refresh_msg_until_ms = now_ms() + 2500;
+            /* The worker owns its DB connection. Rebuild caches here on the
+             * event thread after its transaction has committed. */
+            rebuild_home(ui);
+            if (ui->screen == SCREEN_LIST) rebuild_list(ui);
+            if (ui->screen == SCREEN_DETAIL || ui->screen == SCREEN_NOW_PLAYING)
+                rebuild_current_book(ui, 1);
+        }
     }
 
     g_ui_active = 0;  /* stop drawing */
     set_blanked(ui, 0, fb_fd);  /* restore backlight on exit */
     close_input(ui);
+    scan_worker_join();
     free_render_cache(ui);  /* free the list/bookmark/chapter caches */
     player_shutdown();   /* stop playback + save progress (uses db) */
     cover_shutdown();   /* free the cached cover art */
@@ -949,6 +1152,7 @@ static void navigate_back(ui_state_t *ui) {
         /* Restore rendered the screen we came from; rebuild its cache. */
         rebuild_screen(ui);
     } else {
+        if (ui->refresh_scanning) return;
         /* No more back — exit to launcher */
         ui->running = 0;
     }
@@ -1003,6 +1207,28 @@ int ui_handle_swipe(ui_state_t *ui, int dx, int dy) {
     return 0;
 }
 
+/* Compact system-style HUD for physical volume feedback. Drawn last so it is
+ * visible on every audiobook screen, including lists and Now Playing. */
+static void draw_volume_overlay(ui_state_t *ui) {
+    if (ui->volume_overlay_until_ms == 0 ||
+        now_ms() >= ui->volume_overlay_until_ms)
+        return;
+
+    int pct = ui->volume_overlay_pct;
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+
+    const int x = 56, y = 326, w = 368, h = 124;
+    char label[32];
+    snprintf(label, sizeof(label), "Volume %d%%", pct);
+    render_fill_rect(&ui->rend, x, y, w, h, COL_BLACK);
+    render_draw_rect(&ui->rend, x, y, w, h, COL_GRAY_LT);
+    render_text_centered(&ui->rend, x, y + 14, w, label,
+                         FONT_SCALE_2, COL_WHITE);
+    render_progress_bar(&ui->rend, x + 24, y + 84, w - 48, 16,
+                        (double)pct / 100.0, COL_ACCENT, COL_GRAY_DK);
+}
+
 /* ---- Screen drawing: Home ---------------------------------------------- */
 
 static void draw_home(ui_state_t *ui) {
@@ -1055,7 +1281,10 @@ static void draw_home(ui_state_t *ui) {
 
     /* "Library refreshed" confirmation flash (set in handle_home_touch after a
      * Refresh). Shows in green just above the footer for ~2.5s. */
-    if (ui->refresh_msg_until_ms && now_ms() < ui->refresh_msg_until_ms) {
+    if (ui->refresh_scanning) {
+        render_text_centered(r, 0, RENDER_FB_H - FOOTER_H - 36, RENDER_FB_W,
+                             "Refreshing library...", FONT_SCALE_2, COL_WHITE);
+    } else if (ui->refresh_msg_until_ms && now_ms() < ui->refresh_msg_until_ms) {
         render_text_centered(r, 0, RENDER_FB_H - FOOTER_H - 36, RENDER_FB_W,
                              "Library refreshed", FONT_SCALE_2, COL_GREEN);
     }
@@ -1101,41 +1330,18 @@ static int handle_home_touch(ui_state_t *ui, int x, int y) {
             navigate_to(ui, SCREEN_LIST, LIST_FINISHED, 0);
             break;
         case HOME_REFRESH: {
-            /* Run the (blocking) library scan. It can take a few seconds and
-             * gives no feedback by default, so show a "Scanning library…"
-             * banner first, then a green "Library refreshed" flash on Home.
-             * The scan blocks the event loop, so we pause the ioctl-hook
-             * redraw (g_ui_active=0) and manually push one frame to the
-             * display before scanning; the hook won't draw over it while
-             * inactive, and no pan fires during the blocking call. */
-            renderer_t *r = &ui->rend;
-            g_ui_active = 0;  /* hook skips redraw → our banner stays up */
-            render_clear(r);
-            render_text_centered(r, 0, RENDER_FB_H / 2 - 12, RENDER_FB_W,
-                                 "Scanning library...", FONT_SCALE_2, COL_WHITE);
-            render_flip(r);   /* pan our banner to the display (hook no-ops) */
-            int scan_rc = audiobook_scan_library(ui->db, AUDIOBOOK_LIBRARY_ROOT,
-                                                 NULL, NULL);
-            g_ui_active = 1;  /* resume normal hook redraw */
-            if (scan_rc < 0) {
-                /* Scan aborted (e.g. /usr/data too full to write the DB) —
-                 * show a red error flash instead of the green confirmation. */
+            int started = scan_worker_start();
+            if (started > 0) {
+                ui->refresh_scanning = 1;
+                ui->refresh_msg_until_ms = 0;
+                ui->refresh_err_until_ms = 0;
+            } else if (started < 0) {
                 ui->refresh_err_until_ms = now_ms() + 3500;
-            } else {
-                ui->refresh_msg_until_ms = now_ms() + 2500;  /* confirmation flash */
             }
-            /* The scan rewrote the library (counts, progress, cover paths) —
-             * refresh every cache so the next frame reflects it. The home
-             * counts + current list + current-book all rebuild here on the
-             * event thread (scan itself ran here, blocking the loop). */
-            rebuild_home(ui);
-            if (ui->screen == SCREEN_LIST) rebuild_list(ui);
-            if (ui->screen == SCREEN_DETAIL || ui->screen == SCREEN_NOW_PLAYING)
-                rebuild_current_book(ui, 1);
             break;
         }
         case HOME_BACK:
-            ui->running = 0;
+            if (!ui->refresh_scanning) ui->running = 0;
             break;
     }
     return 1;
@@ -1490,6 +1696,26 @@ static void rebuild_chapters(ui_state_t *ui) {
     c.rows = calloc(c.capacity, sizeof(chapter_row_t));
     if (c.rows)
         audiobook_get_chapters(ui->db, ui->current_book_id, ch_collect_cb, &c);
+
+    /* Metadata tools often put the distinguishing "pt01" suffix at the END of
+     * each filename/title, beyond the R1 screen's truncation point. If a book
+     * spans multiple physical tracks, prefix every row with its track's part
+     * number. A single-file M4B has only one track and keeps its chapter names
+     * unchanged. Rows are already ordered by disc/track/chapter. */
+    int track_count = c.count > 0 ? 1 : 0;
+    for (int i = 1; i < c.count; i++)
+        if (c.rows[i].track_id != c.rows[i - 1].track_id) track_count++;
+    int part = 1;
+    for (int i = 0; i < c.count; i++) {
+        if (i > 0 && c.rows[i].track_id != c.rows[i - 1].track_id) part++;
+        if (track_count > 1) {
+            char original[256];
+            strncpy(original, c.rows[i].title, sizeof(original) - 1);
+            original[sizeof(original) - 1] = '\0';
+            snprintf(c.rows[i].title, sizeof(c.rows[i].title),
+                     "Part %d - %.235s", part, original);
+        }
+    }
     chapter_row_t *old = NULL;
     pthread_mutex_lock(&g_cache_lock);
     old = ui->ch_rows;
@@ -1994,22 +2220,29 @@ static void draw_now_playing(ui_state_t *ui) {
         y += 32;
     }
 
+    player_snapshot_t snap;
+    player_get_snapshot(&snap);
+
     /* If this book's format isn't playable yet, say so. */
-    if (player_current_book() == ui->current_book_id &&
-        player_format_unsupported()) {
+    if (snap.book_id == ui->current_book_id &&
+        snap.format_unsupported) {
         render_text(r, 16, y, "M4B playback coming soon", FONT_SCALE_2,
                     COL_ORANGE);
+        y += 50;
+    }
+    if (snap.book_id == ui->current_book_id && snap.media_missing) {
+        render_text(r, 16, y, "SD card unavailable", FONT_SCALE_2, COL_RED);
         y += 50;
     }
 
     /* Live position from the engine (falls back to saved progress if idle). */
     int64_t pos_ms = 0, total_ms = b.total_duration_ms;
-    player_state_t pst = player_state();
-    int engine_live = (player_current_book() == ui->current_book_id &&
-                      pst != PLAYER_STOPPED);
+    player_state_t pst = snap.state;
+    int engine_live = (snap.book_id == ui->current_book_id &&
+                       snap.state != PLAYER_STOPPED);
     if (engine_live) {
-        pos_ms = player_position_ms();
-        total_ms = player_total_ms() ? player_total_ms() : total_ms;
+        pos_ms = snap.position_ms;
+        total_ms = snap.total_ms ? snap.total_ms : total_ms;
     } else if (prog_ok) {
         pos_ms = prog.total_book_elapsed_ms;
     }
@@ -2089,8 +2322,8 @@ static void draw_now_playing(ui_state_t *ui) {
 
     /* Row 2 (4 buttons, own tighter spacing than row 1): Mark / Sleep / Speed /
      * Chaps. Mark adds a bookmark (flashes green); Sleep cycles Off/15/30/60 min
-     * with a live countdown when armed; Speed cycles 1.0/1.1/1.25/1.5x; Chaps
-     * opens the chapter list. */
+     * with a live countdown when armed; Speed cycles
+     * 1.0/1.1/1.25/1.5/2.0x; Chaps opens the chapter list. */
     ctrl_y += 72;
     int g2 = 16, w2 = 100;
     int b0 = g2, b1 = g2 * 2 + w2, b2 = g2 * 3 + 2 * w2, b3 = g2 * 4 + 3 * w2;
@@ -2117,7 +2350,7 @@ static void draw_now_playing(ui_state_t *ui) {
                              FONT_SCALE_4, sleep_armed ? COL_BLACK : COL_WHITE);
     }
 
-    /* Speed: cycle 1.0/1.1/1.25/1.5x. Highlight when not 1.0x so the user sees
+    /* Speed: cycle 1.0/1.1/1.25/1.5/2.0x. Highlight when not 1.0x so the user sees
      * it's active. WSOLA time-stretch — tempo changes, pitch preserved. */
     int spd = player_get_speed();
     int spd_on = (spd != 1000);
@@ -2151,12 +2384,13 @@ static int now_playing_pos_total(ui_state_t *ui, int64_t *pos_ms,
     *pos_ms = 0; *total_ms = 0;
     if (!ui->cur_book_ok) return 0;
     *total_ms = ui->cur_book.total_duration_ms;
-    player_state_t pst = player_state();
-    int engine_live = (player_current_book() == ui->current_book_id &&
-                       pst != PLAYER_STOPPED);
+    player_snapshot_t snap;
+    player_get_snapshot(&snap);
+    int engine_live = (snap.book_id == ui->current_book_id &&
+                       snap.state != PLAYER_STOPPED);
     if (engine_live) {
-        *pos_ms = player_position_ms();
-        if (player_total_ms()) *total_ms = player_total_ms();
+        *pos_ms = snap.position_ms;
+        if (snap.total_ms) *total_ms = snap.total_ms;
     } else if (ui->cur_prog_ok) {
         *pos_ms = ui->cur_prog.total_book_elapsed_ms;
     }
@@ -2225,7 +2459,7 @@ static int handle_now_playing_touch(ui_state_t *ui, int x, int y) {
         }
     }
     /* Row 2: Mark (add bookmark) / Sleep (cycle 0/15/30/60 min) /
-     * Speed (cycle 1.0/1.1/1.25/1.5x) / Chaps. Uses the row-2 4-button layout
+     * Speed (cycle 1.0/1.1/1.25/1.5/2.0x) / Chaps. Uses the row-2 4-button layout
      * (g2=16, w2=100), independent of row 1's 3-button spacing. */
     int row2_y = ctrl_y + 72;
     if (y >= row2_y && y < row2_y + 52) {
@@ -2233,10 +2467,11 @@ static int handle_now_playing_touch(ui_state_t *ui, int x, int y) {
         int b0 = g2, b1 = g2 * 2 + w2, b2 = g2 * 3 + 2 * w2, b3 = g2 * 4 + 3 * w2;
 
         if (x >= b0 && x < b0 + w2) {
-            const char *label = player_current_track_title();
-            int bid = player_add_bookmark(ui->db, label);
+            player_snapshot_t snap;
+            player_get_snapshot(&snap);
+            int bid = player_add_bookmark(ui->db, snap.track_title);
             ui_log("[ui] add bookmark -> id=%d label=\"%s\"\n", bid,
-                   label ? label : "");
+                   snap.track_title);
             ui->mark_flash_until_ms = now_ms() + 800;
             return 1;
         }
@@ -2250,12 +2485,12 @@ static int handle_now_playing_touch(ui_state_t *ui, int x, int y) {
             return 1;
         }
         if (x >= b2 && x < b2 + w2) {
-            static const int sp[4] = {1000, 1100, 1250, 1500};
+            static const int sp[5] = {1000, 1100, 1250, 1500, 2000};
             int cur = player_get_speed();
             int i = 0;
-            for (int k = 0; k < 4; k++)
+            for (int k = 0; k < 5; k++)
                 if (sp[k] == cur) { i = k; break; }
-            player_set_speed(sp[(i + 1) % 4]);
+            player_set_speed(sp[(i + 1) % 5]);
             return 1;
         }
         if (x >= b3 && x < b3 + w2) {
@@ -2391,8 +2626,11 @@ static int handle_bookmarks_longpress(ui_state_t *ui, int x, int y) {
     if (c.rows)
         audiobook_list_bookmarks(ui->db, ui->current_book_id, bm_collect_cb, &c);
     if (idx < c.count) {
-        audiobook_delete_bookmark(ui->db, ui->current_book_id,
-                                  c.rows[idx].bookmark_id);
+        if (audiobook_db_write_trylock() == 0) {
+            audiobook_delete_bookmark(ui->db, ui->current_book_id,
+                                      c.rows[idx].bookmark_id);
+            audiobook_db_write_unlock();
+        }
         ui_log("[ui] deleted bookmark idx=%d id=%d\n", idx,
                c.rows[idx].bookmark_id);
     }
@@ -2419,6 +2657,7 @@ static int ch_collect_cb(const audiobook_chapter_t *ch, void *ctx) {
     }
     chapter_row_t *row = &c->rows[c->count++];
     row->start_ms = ch->start_ms;
+    row->track_id = ch->track_id;
     strncpy(row->title, ch->title[0] ? ch->title : "Chapter",
             sizeof(row->title) - 1);
     row->title[sizeof(row->title) - 1] = '\0';
@@ -2458,15 +2697,45 @@ static void draw_chapters(ui_state_t *ui) {
         if (i == ui->selected_idx)
             render_fill_rect(r, 0, item_top, 4, LIST_ITEM_H, COL_ACCENT);
 
-        char title_buf[256];
-        strncpy(title_buf, rows[i].title, sizeof(title_buf) - 1);
-        title_buf[sizeof(title_buf) - 1] = '\0';
-        while (render_text_width(title_buf, FONT_SCALE_2) > RENDER_FB_W - 160 &&
-               strlen(title_buf) > 1)
-            title_buf[strlen(title_buf) - 1] = '\0';
-        render_text(r, 24, item_top + 10, title_buf, FONT_SCALE_2, COL_WHITE);
+        /* Use the full row width and wrap once at a word boundary. Multipart
+         * labels begin with "Part N", so the distinguishing text is visible
+         * even when the metadata title itself is very long. */
+        const int title_w = RENDER_FB_W - 48;
+        char line1[256], line2[256] = {0};
+        strncpy(line1, rows[i].title, sizeof(line1) - 1);
+        line1[sizeof(line1) - 1] = '\0';
+        if (render_text_width(line1, FONT_SCALE_2) > title_w) {
+            int cut = (int)strlen(line1);
+            while (cut > 1) {
+                char saved = line1[cut];
+                line1[cut] = '\0';
+                if (render_text_width(line1, FONT_SCALE_2) <= title_w) {
+                    line1[cut] = saved;
+                    break;
+                }
+                line1[cut] = saved;
+                cut--;
+            }
+            int split = cut;
+            while (split > 0 && line1[split - 1] != ' ') split--;
+            if (split < cut / 2) split = cut;  /* avoid a tiny first line */
+            const char *rest = rows[i].title + split;
+            while (*rest == ' ') rest++;
+            line1[split] = '\0';
+            while (split > 0 && line1[split - 1] == ' ')
+                line1[--split] = '\0';
+            strncpy(line2, rest, sizeof(line2) - 1);
+            line2[sizeof(line2) - 1] = '\0';
+            while (render_text_width(line2, FONT_SCALE_2) > title_w &&
+                   strlen(line2) > 1)
+                line2[strlen(line2) - 1] = '\0';
+        }
+        render_text(r, 24, item_top + 8, line1, FONT_SCALE_2, COL_WHITE);
+        if (line2[0])
+            render_text(r, 24, item_top + 36, line2, FONT_SCALE_2, COL_WHITE);
 
-        render_time(r, 24, item_top + 62, rows[i].start_ms, FONT_SCALE_1,
+        render_time(r, 24, item_top + (line2[0] ? 76 : 62),
+                    rows[i].start_ms, FONT_SCALE_1,
                     COL_GRAY_LT);
 
         y += LIST_ITEM_H;

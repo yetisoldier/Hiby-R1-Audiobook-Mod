@@ -22,7 +22,8 @@
 /* ---- Schema bootstrap SQL (from orphaned binary) ----------------------- */
 
 static const char *SCHEMA_SQL =
-"PRAGMA journal_mode=WAL;"
+"PRAGMA journal_mode=DELETE;"
+"PRAGMA synchronous=NORMAL;"
 "PRAGMA foreign_keys=ON;"
 "CREATE TABLE IF NOT EXISTS schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);"
 "CREATE TABLE IF NOT EXISTS authors(author_id INTEGER PRIMARY KEY, sort_name TEXT NOT NULL, display_name TEXT NOT NULL UNIQUE);"
@@ -408,13 +409,14 @@ static int fill_progress_from_stmt(sqlite3_stmt *stmt, audiobook_progress_t *p) 
 
 /* ---- DB open/close ------------------------------------------------------ */
 
-/* In-process write mutex. The build is -DSQLITE_THREADSAFE=0 so each connection
- * is single-thread-owned, but exFAT fcntl locks may be no-ops. This mutex
- * serializes the two writers (scan on the event thread + save_progress on the
- * player thread) so they never collide in the WAL. */
+/* In-process write mutex. SQLite multi-thread mode protects global state while
+ * each connection remains thread-owned, but exFAT locks may be incomplete.
+ * Serialize the scan and progress writers; DELETE journaling avoids persistent
+ * WAL/SHM state on removable media. */
 static pthread_mutex_t g_db_write_lock = PTHREAD_MUTEX_INITIALIZER;
 
 void audiobook_db_write_lock(void)   { pthread_mutex_lock(&g_db_write_lock); }
+int audiobook_db_write_trylock(void) { return pthread_mutex_trylock(&g_db_write_lock); }
 void audiobook_db_write_unlock(void) { pthread_mutex_unlock(&g_db_write_lock); }
 
 /* Best-effort file copy (small files only — the DB is <1 MB). */
@@ -429,6 +431,33 @@ static void copy_file(const char *src_path, const char *dst_path) {
         write(dst, buf, (size_t)n);
     close(dst);
     close(src);
+}
+
+static int db_quick_check(sqlite3 *db) {
+    sqlite3_stmt *stmt = NULL;
+    int ok = 0;
+    if (sqlite3_prepare_v2(db, "PRAGMA quick_check(1);", -1, &stmt, NULL)
+            == SQLITE_OK && sqlite3_step(stmt) == SQLITE_ROW) {
+        const unsigned char *result = sqlite3_column_text(stmt, 0);
+        ok = result && strcmp((const char *)result, "ok") == 0;
+    }
+    if (stmt) sqlite3_finalize(stmt);
+    return ok;
+}
+
+/* Preserve a malformed catalog for desktop recovery, including any journal
+ * sidecars, then let the app create a fresh catalog at the original path. */
+static void quarantine_db_files(const char *db_path) {
+    time_t now = time(NULL);
+    const char *suffixes[] = {"", "-wal", "-shm", "-journal"};
+    for (size_t i = 0; i < sizeof(suffixes) / sizeof(suffixes[0]); i++) {
+        char src[640], dst[704];
+        snprintf(src, sizeof(src), "%s%s", db_path, suffixes[i]);
+        if (access(src, F_OK) != 0) continue;
+        snprintf(dst, sizeof(dst), "%s.corrupt.%ld%s",
+                 db_path, (long)now, suffixes[i]);
+        rename(src, dst);
+    }
 }
 
 int audiobook_db_open(const char *db_path, sqlite3 **db_out) {
@@ -467,6 +496,20 @@ int audiobook_db_open(const char *db_path, sqlite3 **db_out) {
         return -1;
     }
 
+    /* Older builds could use this SQLite instance from two threads without
+     * global mutexes. A malformed exFAT catalog must never crash hiby_player:
+     * quarantine it and rebuild an empty, valid database in place. */
+    if (!db_quick_check(db)) {
+        sqlite3_close(db);
+        db = NULL;
+        quarantine_db_files(db_path);
+        rc_open = sqlite3_open(db_path, &db);
+        if (rc_open != SQLITE_OK) {
+            if (db) sqlite3_close(db);
+            return -1;
+        }
+    }
+
     /* Bootstrap schema */
     char *err = NULL;
     int rc_schema = sqlite3_exec(db, SCHEMA_SQL, NULL, NULL, &err);
@@ -487,12 +530,12 @@ int audiobook_db_open(const char *db_path, sqlite3 **db_out) {
     /* Set busy timeout to handle concurrent access */
     sqlite3_busy_timeout(db, 5000);
 
-    /* Cap the page cache at ~512 KB (default ~2 MB). On this ~56 MB / handful-
+    /* Cap the page cache at ~256 KB (default ~2 MB). On this ~56 MB / handful-
      * of-MB-free device the default cache is a big chunk of resident heap per
      * connection, and we now open two (event ui->db + player g_pl.db). The DB
-     * is tiny (<1 MB) so a 512 KB cache is plenty; this saves ~1.5 MB ×2.
-     * Negative value = KB (per SQLite docs). Keep WAL (set in SCHEMA_SQL). */
-    sqlite3_exec(db, "PRAGMA cache_size=-512;", NULL, NULL, NULL);
+     * is tiny (<1 MB) so 256 KB is plenty; this saves ~1.75 MB per handle.
+     * Negative value = KB (per SQLite docs). */
+    sqlite3_exec(db, "PRAGMA cache_size=-256;", NULL, NULL, NULL);
 
     *db_out = db;
     return 0;

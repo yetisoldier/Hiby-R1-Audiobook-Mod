@@ -52,9 +52,10 @@ foreach ($src in $sources) {
     }
 }
 
-# SQLite compile options (smaller, single-threaded, FTS5 enabled)
+# SQLite compile options. THREADSAFE=2 protects SQLite global state while the
+# UI and player threads use separate connections concurrently.
 $sqliteDefines = @(
-    "-DSQLITE_THREADSAFE=0",
+    "-DSQLITE_THREADSAFE=2",
     "-DSQLITE_DEFAULT_MEMSTATUS=0",
     "-DSQLITE_OMIT_LOAD_EXTENSION=1",
     "-DSQLITE_ENABLE_FTS5=1",

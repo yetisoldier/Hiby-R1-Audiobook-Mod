@@ -24,9 +24,26 @@ typedef enum {
     PLAYER_PAUSED,
 } player_state_t;
 
+/* Coherent player state published by the audio thread. The R1 is a 32-bit
+ * MIPS device, so direct lock-free reads of int64_t position fields can tear.
+ * UI code should use this snapshot whenever multiple fields participate in a
+ * display or seek calculation. */
+typedef struct {
+    player_state_t state;
+    int book_id;
+    int format_unsupported;
+    int media_missing;
+    int track_index;
+    int track_id;
+    int64_t track_position_ms;
+    int64_t position_ms;
+    int64_t total_ms;
+    char track_title[256];
+} player_snapshot_t;
+
 /* Start the engine thread. Idempotent. The engine opens its OWN connection to
  * the library DB (AUDIOBOOK_DB_PATH) so it never shares a sqlite3* with the
- * UI — the build is -DSQLITE_THREADSAFE=0, so each connection must be used by
+ * UI — the build is -DSQLITE_THREADSAFE=2, so each connection must be used by
  * exactly one thread (the UI's connection by the event thread, this one by the
  * player thread). Returns 0 on success, -1 if the DB can't be opened or the
  * decode/output libs can't be loaded. */
@@ -46,7 +63,7 @@ int player_play_book_from(int book_id, int64_t book_ms);
 /* Play<->pause toggle. If stopped and a book was loaded before, resumes it. */
 void player_toggle(void);
 
-/* Pause (or stop if already paused). Saves progress. */
+/* Pause if currently playing. Saves progress. */
 void player_pause(void);
 
 /* Stop playback entirely; save progress. */
@@ -66,14 +83,14 @@ int player_rw(void);
  * position). `label` is shown in the bookmark list (may be NULL/empty →
  * "Bookmark"). `db` is the CALLER's library connection — the UI passes its own
  * event-thread ui->db so the write stays on the event thread and never shares
- * the player thread's g_pl.db (THREADSAFE=0: one connection per thread). The
+ * the player thread's g_pl.db (THREADSAFE=2: one connection per thread). The
  * current track/position are read from the engine's live state. Returns the
  * new bookmark_id, or -1 if no book is loaded. */
 int player_add_bookmark(sqlite3 *db, const char *label);
 
 /* ---- Playback speed ---- */
 /* Set playback speed in milli-units (1000 = 1.0x, 1100 = 1.1x, 1250 = 1.25x,
- * 1500 = 1.5x). Clamped to [800, 2000]. At 1.0x the decode loop passes PCM
+ * 1500 = 1.5x, 2000 = 2.0x). Clamped to [800, 2000]. At 1.0x the decode loop passes PCM
  * straight through (clean passthrough); at other speeds it time-stretches with
  * WSOLA (wsola.c) — tempo changes, PITCH PRESERVED. ALSA output rate stays at
  * the content rate (no DAC re-lock). WSOLA state is ~48 KB fixed (no malloc) and
@@ -100,12 +117,11 @@ void player_volume_set(int vol);
 int player_volume(void);
 
 /* ---- Live state (read by the UI each frame; volatile) ---- */
+void player_get_snapshot(player_snapshot_t *out);
 player_state_t player_state(void);
 int player_current_book(void);
 int64_t player_position_ms(void);   /* book-elapsed position */
 int64_t player_total_ms(void);      /* book total duration */
-const char *player_current_track_title(void);
-
 /* 0 = ok/supported, 1 = current book's format isn't playable (e.g. M4B but the
  * fdk-aac decode lib is missing, or an unsupported container/codec). */
 int player_format_unsupported(void);

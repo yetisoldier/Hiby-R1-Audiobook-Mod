@@ -629,6 +629,7 @@ def verify(
     expect_current_hashes: bool,
     expected_version: str,
     expected_label: str,
+    expect_native_app: bool,
     require_db_maintenance: bool,
     require_boot_adb: bool,
     expect_batd_disabled: bool,
@@ -654,6 +655,132 @@ def verify(
     player = root / "usr/bin/hiby_player"
     upt = find_upt(out_dir, upt_name)
     rootfs = out_dir / "rootfs.squashfs"
+
+    if expect_native_app:
+        native_required = [
+            upt,
+            rootfs,
+            player,
+            root / "usr/bin/hiby_player.sh",
+            root / "usr/bin/r1_audiobook_app",
+            root / "usr/lib/libaudiobook_hook.so",
+            root / "etc/r1_audiobook_version",
+        ]
+        if require_boot_adb:
+            native_required.append(root / "etc/init.d/S90adb")
+        for path in native_required:
+            require(path.exists(), f"exists: {path}", failures)
+
+        if player.exists():
+            data = player.read_bytes()
+            require(
+                data[0x482030:0x482034] == bytes.fromhex("ecda7500"),
+                "native-app launcher callback is installed",
+                failures,
+            )
+            cave = data[0x35DAEC:0x35DB80]
+            require(
+                b"/tmp/.r1_audiobook_launch" in cave,
+                "native-app launcher cave contains launch marker",
+                failures,
+            )
+            require(
+                data[0x140F20:0x140F28] == bytes.fromhex("7800063c7800053c"),
+                "stock Books hub entry remains unmodified",
+                failures,
+            )
+
+        wrapper = root / "usr/bin/hiby_player.sh"
+        if wrapper.exists():
+            text = wrapper.read_text(encoding="ascii", errors="replace")
+            require("\r" not in text, "native player wrapper uses LF line endings", failures)
+            require('LD_PRELOAD="$HOOK_LIB" "$PLAYER"' in text,
+                    "native player wrapper preloads audiobook hook", failures)
+            require("MAX_CRASHES=5" in text,
+                    "native player wrapper bounds restart loops", failures)
+
+        entries = squashfs_entries(rootfs, unsquashfs)
+        stock_entries = squashfs_entries(stock_rootfs, unsquashfs)
+        require(bool(entries), f"read rebuilt squashfs entries with {unsquashfs}", failures)
+        require(bool(stock_entries), f"read stock squashfs entries from {stock_rootfs}", failures)
+        if entries and stock_entries:
+            require_stock_modes(entries, stock_entries, failures)
+            require_all_root_owned(entries, failures)
+        native_modes = {
+            "squashfs-root/usr/bin/hiby_player.sh": "-rwxr-xr-x",
+            "squashfs-root/usr/bin/r1_audiobook_app": "-rwxr-xr-x",
+            "squashfs-root/usr/lib/libaudiobook_hook.so": "-rw-r--r--",
+            "squashfs-root/etc/r1_audiobook_version": "-rw-r--r--",
+        }
+        if require_boot_adb:
+            native_modes["squashfs-root/etc/init.d/S90adb"] = "-rwxr-xr-x"
+        for relative, expected_mode in native_modes.items():
+            actual_mode = entries.get(relative, SquashfsEntry("", "")).mode
+            mode_ok = actual_mode == expected_mode
+            if relative.endswith("/hiby_player.sh"):
+                mode_ok = actual_mode in ("-rwxr-xr-x", "-rwxrwxr-x")
+            require(mode_ok, f"{relative} mode {actual_mode}", failures)
+
+        marker = root / "etc/r1_audiobook_version"
+        if marker.exists():
+            marker_text = marker.read_text(encoding="ascii", errors="replace")
+            require(f"version={expected_version}" in marker_text,
+                    f"custom version marker has version={expected_version}", failures)
+            require(f"label={expected_label}" in marker_text,
+                    "custom version marker has visible label", failures)
+            require("base_firmware=1.6" in marker_text,
+                    "custom version marker records stock base firmware", failures)
+            if require_boot_adb:
+                require("boot_adb=enabled" in marker_text,
+                        "custom version marker records boot ADB enabled", failures)
+            if expect_audiobook_launcher_icon:
+                require("launcher_icon=audiobook" in marker_text,
+                        "custom version marker records audiobook launcher icon", failures)
+            if expect_native_dsd:
+                require("native_dsd=enabled" in marker_text,
+                        "custom version marker records native DSD", failures)
+            if expect_sbc_xq:
+                require("bluetooth_sbc_xq=enabled" in marker_text,
+                        "custom version marker records SBC XQ", failures)
+            if expect_usb_dac_mode:
+                require("usb_dac_mode=enabled" in marker_text,
+                        "custom version marker records USB DAC mode", failures)
+        if expect_audiobook_launcher_icon:
+            check_audiobook_launcher_icons(root, failures)
+
+        ota_dir_name = f"ota_v{expected_ota_version}"
+        ota_update = out_dir / "ota-tree" / ota_dir_name / "ota_update.in"
+        ota_config = out_dir / "ota-tree/ota_config.in"
+        ota_ok = out_dir / "ota-tree" / ota_dir_name / f"{ota_dir_name}.ok"
+        require(read_ini_value(ota_config, "current_version") == str(expected_ota_version),
+                f"ota_config.in current_version={expected_ota_version}", failures)
+        require(read_ini_value(ota_update, "ota_version") == str(expected_ota_version),
+                f"{ota_dir_name}/ota_update.in ota_version={expected_ota_version}", failures)
+        require(ota_ok.exists(), f"{ota_dir_name}/{ota_dir_name}.ok exists", failures)
+        if rootfs.exists():
+            ota_rootfs_md5 = ""
+            if ota_update.exists():
+                values = [line.strip() for line in ota_update.read_text(
+                    encoding="ascii", errors="replace").splitlines()]
+                rootfs_values = [
+                    values[i + 3] for i, value in enumerate(values)
+                    if value == "img_type=rootfs" and i + 3 < len(values)
+                ]
+                if rootfs_values:
+                    ota_rootfs_md5 = rootfs_values[0].removeprefix("img_md5=")
+            require(ota_rootfs_md5 == digest(rootfs, "md5"),
+                    "OTA metadata matches rebuilt rootfs", failures)
+        if upt.exists():
+            require(digest(upt, "md5") not in KNOWN_BAD_MD5,
+                    f"{upt.name} md5 is not in known-bad list", failures)
+
+        if failures:
+            print("\nVerification failed:")
+            for failure in failures:
+                print(f"  - {failure}")
+            return 1
+        print("\nNative-app verification passed.")
+        return 0
 
     required_paths = [upt, rootfs, player, root / "etc/init.d/S91audiobook_resume.sh"]
     if require_boot_adb:
@@ -736,8 +863,10 @@ def verify(
             text = boot_adb_script.read_text(errors="replace")
             require("\r" not in text, "boot ADB wrapper uses LF line endings", failures)
             require("skip=1856" in text, "boot ADB wrapper reads USB working mode offset", failures)
-            require('mode" != "1"' in text, "boot ADB wrapper requires Device USB working mode", failures)
+            require('0|1)' in text, "boot ADB wrapper accepts Auto and Device USB modes", failures)
             require("/etc/init.d/T90adb start" in text, "boot ADB wrapper delegates to stock helper", failures)
+            require("start_adb_with_retries" in text, "boot ADB wrapper retries after player USB setup", failures)
+            require('= "configured"' in text, "boot ADB wrapper verifies host USB enumeration", failures)
     else:
         for relative in BOOT_ADB_FILE_MODE_CHECKS:
             actual_mode = entries.get(relative, SquashfsEntry("", "")).mode
@@ -1379,6 +1508,11 @@ def main() -> int:
         default=Path(".deps/squashfs/tools/squashfs-tools/unsquashfs.exe"),
     )
     parser.add_argument(
+        "--expect-native-app",
+        action="store_true",
+        help="Verify the in-process native audiobook app build instead of the retired resume-daemon runtime.",
+    )
+    parser.add_argument(
         "--expect-current-hashes",
         action="store_true",
         help="Also require hashes to match the package currently documented in README.md.",
@@ -1472,6 +1606,7 @@ def main() -> int:
         expect_current_hashes=args.expect_current_hashes,
         expected_version=args.expected_version,
         expected_label=args.expected_label,
+        expect_native_app=args.expect_native_app,
         require_db_maintenance=args.require_db_maintenance,
         require_boot_adb=args.require_boot_adb,
         expect_batd_disabled=args.expect_batd_disabled,

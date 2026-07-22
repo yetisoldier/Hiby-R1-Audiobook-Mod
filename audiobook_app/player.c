@@ -129,6 +129,7 @@ static void *(*x_snd_mixer_elem_next)(void *);
 static const char *(*x_snd_mixer_selem_get_name)(void *);
 static int (*x_snd_mixer_selem_has_playback_volume)(void *);
 static int (*x_snd_mixer_selem_set_playback_volume_all)(void *, long);
+static int (*x_snd_mixer_selem_get_playback_volume)(void *, int, long *);
 static int (*x_snd_mixer_selem_get_playback_volume_range)(void *, long *, long *);
 
 /* ---- fdk-aac function pointers (dlopen'd, OPTIONAL) --------------------- */
@@ -207,8 +208,21 @@ static int load_libs(void) {
     SYM(g_alsa_lib, x_snd_mixer_selem_get_name, "snd_mixer_selem_get_name", const char *(*)(void *));
     SYM(g_alsa_lib, x_snd_mixer_selem_has_playback_volume, "snd_mixer_selem_has_playback_volume", int (*)(void *));
     SYM(g_alsa_lib, x_snd_mixer_selem_set_playback_volume_all, "snd_mixer_selem_set_playback_volume_all", int (*)(void *, long));
+    SYM(g_alsa_lib, x_snd_mixer_selem_get_playback_volume, "snd_mixer_selem_get_playback_volume", int (*)(void *, int, long *));
     SYM(g_alsa_lib, x_snd_mixer_selem_get_playback_volume_range, "snd_mixer_selem_get_playback_volume_range", int (*)(void *, long *, long *));
-    if (!x_snd_pcm_open || !x_snd_pcm_hw_params || !x_snd_pcm_writei) {
+    if (!x_snd_pcm_open || !x_snd_pcm_close || !x_snd_pcm_writei ||
+        !x_snd_pcm_prepare || !x_snd_pcm_drop ||
+        !x_snd_pcm_hw_params_malloc || !x_snd_pcm_hw_params_free ||
+        !x_snd_pcm_hw_params_any || !x_snd_pcm_hw_params_set_access ||
+        !x_snd_pcm_hw_params_set_format || !x_snd_pcm_hw_params_set_channels ||
+        !x_snd_pcm_hw_params_set_rate_near ||
+        !x_snd_pcm_hw_params_set_buffer_time_near ||
+        !x_snd_pcm_hw_params_set_period_time_near ||
+        !x_snd_pcm_hw_params_get_period_size || !x_snd_pcm_hw_params ||
+        !x_snd_pcm_sw_params_malloc || !x_snd_pcm_sw_params_free ||
+        !x_snd_pcm_sw_params_current ||
+        !x_snd_pcm_sw_params_set_start_threshold ||
+        !x_snd_pcm_sw_params_set_avail_min || !x_snd_pcm_sw_params) {
         plog("missing alsa symbols"); return -1;
     }
 
@@ -223,7 +237,8 @@ static int load_libs(void) {
         SYM(g_fdkaac_lib, x_aac_DecodeFrame,   "aacDecoder_DecodeFrame",   AAC_DECODER_ERROR (*)(HANDLE_AACDECODER, int16_t *, const int, const unsigned int));
         SYM(g_fdkaac_lib, x_aac_GetStreamInfo, "aacDecoder_GetStreamInfo", CStreamInfo *(*)(HANDLE_AACDECODER));
         SYM(g_fdkaac_lib, x_aac_Close,         "aacDecoder_Close",         void (*)(HANDLE_AACDECODER));
-        if (!x_aac_Open || !x_aac_DecodeFrame || !x_aac_ConfigRaw || !x_aac_Fill) {
+        if (!x_aac_Open || !x_aac_DecodeFrame || !x_aac_ConfigRaw ||
+            !x_aac_Fill || !x_aac_GetStreamInfo || !x_aac_Close) {
             plog("fdk-aac present but missing core symbols — AAC disabled");
             dlclose(g_fdkaac_lib); g_fdkaac_lib = NULL;
         } else {
@@ -249,9 +264,18 @@ typedef struct {
 
 enum {
     CMD_NONE = 0, CMD_PLAY, CMD_RESUME, CMD_PAUSE, CMD_STOP, CMD_SEEK,
-    CMD_FF, CMD_RW, CMD_QUIT,   /* row-1 skip buttons: FF +60s / RW -30s */
+    CMD_FF, CMD_RW, CMD_TOGGLE, CMD_QUIT,
+    /* row-1 skip buttons: FF +60s / RW -30s */
 };
 enum { DEC_MP3 = 0, DEC_AAC = 1 };
+
+#define CMD_QUEUE_CAP 16
+typedef struct {
+    int cmd;
+    int book_id;
+    int64_t seek_ms;
+    int64_t start_ms;
+} player_cmd_t;
 
 /* Audio output sink. WIRED = the CS43131 wired DAC (plughw:0,0/hw:0,0); BT =
  * BlueALSA A2DP (the predefined `pcm.bluealsa` plug device, auto rate/format
@@ -269,10 +293,10 @@ static struct {
     int thread_alive;
     int running;
 
-    int cmd;
-    int cmd_book_id;
-    int64_t cmd_seek_ms;
-    int64_t cmd_start_ms;   /* CMD_PLAY: -1 = resume from saved, >=0 = absolute book ms */
+    player_cmd_t cmd_queue[CMD_QUEUE_CAP];
+    int cmd_head;
+    int cmd_tail;
+    int cmd_count;
 
     volatile player_state_t state;
     volatile int book_id;
@@ -280,6 +304,7 @@ static struct {
     volatile int64_t position_ms;   /* book-elapsed */
     volatile int64_t total_ms;
     volatile int track_idx;
+    player_snapshot_t snapshot; /* published under mu for all UI readers */
 
     int last_book;     /* last loaded book, for toggle-resume */
 
@@ -292,6 +317,8 @@ static struct {
     mp3dec_io_t io;         /* read/seek callbacks wired to track_fd */
     int dec_open;           /* dec is open for the current track (MP3 path) */
     int track_fd;           /* fd we opened for the current track (we own it; MP3 path) */
+    int media_io_error;     /* read/seek failed; never treat this as book EOF */
+    int media_missing;      /* current SD media disappeared during playback */
     void *pcm;
     long rate;
     int channels;
@@ -318,6 +345,8 @@ static struct {
                                   * decode loop each chunk; set via
                                   * player_set_speed (int read = atomic on MIPS,
                                   * no torn-double worry). */
+    int requested_speed_permille; /* UI request, applied by player thread */
+    int speed_change_pending;
 
     /* WSOLA time-stretch state (pitch-preserving speed). Engaged only when
      * speed_permille != 1000; at 1.0x the decode loop passes PCM straight
@@ -334,7 +363,11 @@ static struct {
     void *mix_right;         /* snd_mixer_elem_t* for "Right Playback Volume" */
     long mix_min, mix_max;   /* mixer value range (0..255) */
     int volume_pct;          /* 0..100, 100 = loudest */
+    int wired_volume_pct;    /* persisted DAC volume; independent from BT */
     int mixer_ok;
+    int pending_volume_steps; /* accumulated by UI, consumed by player thread */
+    int pending_volume_set;   /* -1 or absolute 0..100 */
+    int volume_preview_pct;   /* immediate HUD value while work is queued */
 
     int64_t vol_save_mono_ms;   /* last monotonic ms when we actually saved */
     int   vol_last_saved;        /* persisted pct value (avoid redundant writes) */
@@ -351,6 +384,10 @@ static struct {
     void *bt_mixer;          /* snd_mixer_t* for ctl.bluealsa (NULL if none) */
     void *bt_mix_elem;       /* first playback-volume element in bt_mixer */
     long bt_mix_min, bt_mix_max;
+    int bt_volume_pct;       /* BlueALSA/remote level, 0..100 */
+    int bt_volume_valid;     /* initialized from the connected speaker */
+    int bt_mixer_live;       /* mixer read is trustworthy after our first set */
+    int bt_native_hold_released; /* stock BlueALSA socket was displaced */
 } g_pl;
 
 /* Set by save_progress (player thread) to tell the UI event loop that the
@@ -368,12 +405,13 @@ extern volatile int g_progress_dirty;
 static size_t mp3_io_read(void *buf, size_t size, void *user_data) {
     (void)user_data;
     ssize_t n = read(g_pl.track_fd, buf, size);
-    if (n < 0) return 0;
+    if (n < 0) { g_pl.media_io_error = 1; return 0; }
     return (size_t)n;
 }
 static int mp3_io_seek(uint64_t position, void *user_data) {
     (void)user_data;
     off_t r = lseek(g_pl.track_fd, (off_t)position, SEEK_SET);
+    if (r < 0) g_pl.media_io_error = 1;
     return (r < 0) ? -1 : 0;
 }
 
@@ -397,6 +435,21 @@ static long pct_to_mix(int pct) {
 #endif
 }
 
+static int mix_to_pct(long mix) {
+    long range = g_pl.mix_max - g_pl.mix_min;
+    if (range <= 0) range = 255;
+    if (mix < g_pl.mix_min) mix = g_pl.mix_min;
+    if (mix > g_pl.mix_max) mix = g_pl.mix_max;
+#if VOL_AT_ZERO_IS_MAX
+    int pct = (int)(100 - (mix - g_pl.mix_min) * 100 / range);
+#else
+    int pct = (int)((mix - g_pl.mix_min) * 100 / range);
+#endif
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    return pct;
+}
+
 /* Persist volume so it survives app restarts. Kept in /tmp (RAM, tmpfs):
  * /usr/data is chronically full; SD exFAT O_CREAT|O_TRUNC on every volume
  * step stalls the event loop for 10-50 ms under garbage-collection delays,
@@ -406,6 +459,27 @@ static long pct_to_mix(int pct) {
 #define VOL_FILE_RAM  "/tmp/.audiobook_volume"
 #define VOL_FILE_SD   "/usr/data/mnt/sd_0/Audiobooks/.audiobook_volume"
 #define VOL_FILE_OLD  "/usr/data/.audiobook_volume"  /* pre-SD legacy location */
+#define STOCK_USER_INI "/usr/data/user.ini"
+
+/* The stock HiBy volume shown in the launcher is a little-endian u32 at
+ * user.ini offset 0x10 (live-mapped on the R1: launcher 30 == file value 30).
+ * BlueALSA 4.1.1 initializes some A2DP transports at 127/127 before the first
+ * absolute-volume write even when the speaker is actually quiet. This stock
+ * value is the safest known baseline for that uninitialized state. */
+static int stock_volume_load(void) {
+    int fd = open(STOCK_USER_INI, O_RDONLY);
+    if (fd < 0) return -1;
+    unsigned char b[4];
+    if (lseek(fd, 0x10, SEEK_SET) < 0 || read(fd, b, sizeof(b)) != sizeof(b)) {
+        close(fd);
+        return -1;
+    }
+    close(fd);
+    unsigned int v = (unsigned int)b[0] | ((unsigned int)b[1] << 8) |
+                     ((unsigned int)b[2] << 16) | ((unsigned int)b[3] << 24);
+    return v <= 100 ? (int)v : -1;
+}
+
 static int vol_load_saved(void) {
     /* Try /tmp first (RAM, tmpfs — instant). Fall back to SD for post-reboot
      * recovery when the app hasn't been run since reboot. */
@@ -439,19 +513,23 @@ static int vol_save(int pct) {
     g_pl.vol_save_mono_ms = now;
     g_pl.vol_last_saved = pct;
 
-    /* Always write to /tmp first (instant tmpfs). Also copy to SD as backup for
-     * post-reboot survival if someone reboots mid-session. /tmp fires every volume
-     * step (fast); SD fires only on actual value changes (debounced 150ms). */
+    /* The input path writes only to tmpfs. Removable-media writes here can
+     * block the same event loop that handles volume and play/pause presses. */
     char b[16]; int len = snprintf(b, sizeof(b), "%d\n", pct);
 
     /* /tmp primary — instant, never blocks the event loop. */
     int fd = open(VOL_FILE_RAM, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd >= 0) { write(fd, b, len); close(fd); }
 
-    /* SD backup — debounced to value changes + 150ms interval. Acceptable rare stall. */
-    fd = open(VOL_FILE_SD, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd >= 0) { write(fd, b, len); close(fd); }
     return 0;
+}
+
+static void vol_save_sd(void) {
+    if (g_pl.wired_volume_pct < 0 || g_pl.wired_volume_pct > 100) return;
+    char b[16];
+    int len = snprintf(b, sizeof(b), "%d\n", g_pl.wired_volume_pct);
+    int fd = open(VOL_FILE_SD, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) { write(fd, b, len); close(fd); }
 }
 
 static void mix_apply(void) {
@@ -465,8 +543,10 @@ static void mix_apply(void) {
         v = g_pl.bt_mix_min + (long)(g_pl.volume_pct * range / 100);
         retries = 2;
         while (retries-- >= 0) {
-            if (x_snd_mixer_selem_set_playback_volume_all(g_pl.bt_mix_elem, v) >= 0)
+            if (x_snd_mixer_selem_set_playback_volume_all(g_pl.bt_mix_elem, v) >= 0) {
+                g_pl.bt_mixer_live = 1;
                 return;
+            }
         }
         return;
     }
@@ -501,7 +581,13 @@ static void mix_apply(void) {
  * once from player_init. Best-effort: volume buttons no-op if this fails. */
 static void mixer_init(void) {
     g_pl.mixer_ok = 0;
-    if (!x_snd_mixer_open || !x_snd_mixer_attach || !x_snd_mixer_load) return;
+    if (!x_snd_mixer_open || !x_snd_mixer_attach || !x_snd_mixer_load ||
+        !x_snd_mixer_close || !x_snd_mixer_selem_register ||
+        !x_snd_mixer_first_elem || !x_snd_mixer_elem_next ||
+        !x_snd_mixer_selem_has_playback_volume ||
+        !x_snd_mixer_selem_get_name ||
+        !x_snd_mixer_selem_set_playback_volume_all)
+        return;
     if (x_snd_mixer_open(&g_pl.mixer, 0) < 0) { g_pl.mixer = NULL; return; }
     if (x_snd_mixer_attach(g_pl.mixer, "default") < 0 ||
         x_snd_mixer_selem_register(g_pl.mixer, NULL, NULL) < 0 ||
@@ -522,38 +608,75 @@ static void mixer_init(void) {
     if (!g_pl.mix_left && !g_pl.mix_right) {
         x_snd_mixer_close(g_pl.mixer); g_pl.mixer = NULL; return;
     }
+    /* The stock UI and the raw DAC mixer can disagree while music is idle:
+     * stock may display 30% while the inactive mixer reads 0 attenuation
+     * (100%). Prefer the last volume selected in Audiobooks, then use the raw
+     * mixer only on first run. We still do not apply either value until audio
+     * starts or the user presses a volume key, so entering the app is silent. */
     int sv = vol_load_saved();
-    g_pl.volume_pct = (sv >= 0) ? sv : 60;   /* sane default if never set */
+    long current_mix = 0;
+    void *read_elem = g_pl.mix_left ? g_pl.mix_left : g_pl.mix_right;
+    if (sv < 0 && x_snd_mixer_selem_get_playback_volume && read_elem &&
+        x_snd_mixer_selem_get_playback_volume(read_elem, 0, &current_mix) >= 0)
+        sv = mix_to_pct(current_mix);
+    g_pl.volume_pct = (sv >= 0) ? sv : 60;
+    g_pl.wired_volume_pct = g_pl.volume_pct;
     g_pl.mixer_ok = 1;
-    mix_apply();
     plog("mixer ok: Left=%p Right=%p range=%ld..%ld vol=%d%%",
          g_pl.mix_left, g_pl.mix_right, g_pl.mix_min, g_pl.mix_max, g_pl.volume_pct);
 }
 
-void player_volume_set(int vol) {
+static void volume_set_apply(int vol) {
     if (vol < 0) vol = 0; if (vol > 100) vol = 100;
     g_pl.volume_pct = vol;
+    if (g_pl.output == OUT_BT) {
+        g_pl.bt_volume_pct = vol;
+        g_pl.bt_volume_valid = 1;
+    } else {
+        g_pl.wired_volume_pct = vol;
+    }
     /* Diag: measure where a volume press spends time. A multi-second mix or
      * save stall blocks the event thread -> delayed/dead keys (vol + playpause). */
     uint64_t t0 = mono_ms();
     mix_apply();
     uint64_t t1 = mono_ms();
-    vol_save(vol);
+    if (g_pl.output != OUT_BT) vol_save(vol);
     uint64_t t2 = mono_ms();
     plog("vol_set pct=%d out=%d mix=%llums save=%llums", vol, g_pl.output,
          (unsigned long long)(t1 - t0), (unsigned long long)(t2 - t1));
 }
 
-void player_volume_step(int dir) {
+static void volume_step_apply(int dir) {
+    if (g_pl.output == OUT_BT && g_pl.bt_mixer && g_pl.bt_mix_elem) {
+        /* BlueALSA is a normal linear 0..max control, unlike the wired DAC's
+         * inverted attenuation register. Start from the live mixer value when
+         * possible so a speaker-side volume change cannot make our next press
+         * jump. About 50 steps end-to-end matches the wired control. */
+        long range = g_pl.bt_mix_max - g_pl.bt_mix_min;
+        if (range <= 0) range = 127;
+        long cur = g_pl.bt_mix_min +
+            (long)(g_pl.volume_pct * range / 100);
+        if (g_pl.bt_mixer_live && x_snd_mixer_selem_get_playback_volume)
+            x_snd_mixer_selem_get_playback_volume(g_pl.bt_mix_elem, 0, &cur);
+        long step = (range + 49) / 50;
+        if (step < 1) step = 1;
+        long next = cur + (dir > 0 ? step : -step);
+        if (next < g_pl.bt_mix_min) next = g_pl.bt_mix_min;
+        if (next > g_pl.bt_mix_max) next = g_pl.bt_mix_max;
+        int pct = (int)((next - g_pl.bt_mix_min) * 100 / range);
+        if (pct < 0) pct = 0;
+        if (pct > 100) pct = 100;
+        volume_set_apply(pct);
+        return;
+    }
+
     /* Step in RAW MIXER UNITS for fine, gradual control. The CS43131 DAC
      * volume register (mix_min..mix_max, 0=loudest) is the actual attenuation
      * control; the old 10%-per-press stepped it ~25 codes at once (~12 dB if
      * the register is 0.5 dB/code) — the "jumps are pretty large" complaint.
      * Stepping the register by a small fixed count gives even, gradual changes
      * whether the register is dB- or amplitude-linear. ~5 units/press
-     * (~51 steps end-to-end; ~2-2.5 dB/press at 0.5 dB/code). The UI also acts
-     * on key-repeat (value==2) for the volume keys, so holding the button
-     * ramps through these fine steps for larger changes. */
+     * (~51 steps end-to-end; ~2-2.5 dB/press at 0.5 dB/code). */
     const long MIX_STEP = 5;
     long cur_mix = pct_to_mix(g_pl.volume_pct);
     long range = g_pl.mix_max - g_pl.mix_min;
@@ -570,7 +693,35 @@ void player_volume_step(int dir) {
 #endif
     if (new_pct < 0) new_pct = 0;
     if (new_pct > 100) new_pct = 100;
-    player_volume_set(new_pct);
+    volume_set_apply(new_pct);
+}
+
+void player_volume_set(int vol) {
+    if (!g_pl.thread_alive) return;
+    if (vol < 0) vol = 0;
+    if (vol > 100) vol = 100;
+    pthread_mutex_lock(&g_pl.mu);
+    g_pl.pending_volume_set = vol;
+    g_pl.pending_volume_steps = 0;
+    g_pl.volume_preview_pct = vol;
+    pthread_mutex_unlock(&g_pl.mu);
+}
+
+void player_volume_step(int dir) {
+    if (!g_pl.thread_alive || dir == 0) return;
+    dir = dir > 0 ? 1 : -1;
+    pthread_mutex_lock(&g_pl.mu);
+    int next = g_pl.pending_volume_steps + dir;
+    if (next > 16) next = 16;
+    if (next < -16) next = -16;
+    g_pl.pending_volume_steps = next;
+    /* Immediate visual estimate; the player thread replaces it with the exact
+     * mixer result as soon as the queued step is applied. */
+    int preview = g_pl.volume_preview_pct + dir * 2;
+    if (preview < 0) preview = 0;
+    if (preview > 100) preview = 100;
+    g_pl.volume_preview_pct = preview;
+    pthread_mutex_unlock(&g_pl.mu);
 }
 
 /* Time helper for volume debounce + sleep timer checks. */
@@ -581,7 +732,11 @@ static uint64_t mono_ms(void) {
 }
 
 int player_volume(void) {
-    return g_pl.mixer_ok ? g_pl.volume_pct : -1;
+    if (!g_pl.thread_alive || !g_pl.mixer_ok) return -1;
+    pthread_mutex_lock(&g_pl.mu);
+    int pct = g_pl.volume_preview_pct;
+    pthread_mutex_unlock(&g_pl.mu);
+    return pct;
 }
 
 /* ---- track listing ----------------------------------------------------- */
@@ -707,13 +862,16 @@ static void save_progress(int completed) {
         }
     }
     /* Take the write mutex so we don't collide with a concurrent scan
-     * (event thread) in the WAL. exFAT fcntl locks may be no-ops, so this
+     * (event thread). exFAT fcntl locks may be no-ops, so this
      * app-level mutex is the real serialization. */
-    audiobook_db_write_lock();
+    if (audiobook_db_write_trylock() != 0) {
+        plog("save deferred while library refresh is writing");
+        return;
+    }
     int rc = audiobook_save_progress(g_pl.db, &p);
     audiobook_db_write_unlock();
     if (rc < 0) {
-        /* SQLITE_BUSY (a scan holds the WAL writer lock) or SQLITE_FULL
+        /* SQLITE_BUSY (a scan holds the writer lock) or SQLITE_FULL
          * (SD full). Non-fatal: SD .pos above is the authoritative
          * copy, and the list-view "%" mirror just goes stale until the next
          * successful save. Don't fail playback over a best-effort mirror. */
@@ -726,17 +884,18 @@ static void save_progress(int completed) {
  * thread). `db` is the caller's connection — the UI passes ui->db so the write
  * happens on the event thread and never touches the player thread's g_pl.db. */
 int player_add_bookmark(sqlite3 *db, const char *label) {
-    if (!db || !g_pl.db || g_pl.book_id <= 0 || g_pl.track_count == 0) return -1;
-    int idx = g_pl.track_idx;
-    if (idx < 0 || idx >= g_pl.track_count) idx = 0;
-    int track_id = g_pl.tracks[idx].track_id;
-    int64_t track_pos = g_pl.track_pos_ms;
-    int64_t book_pos = g_pl.position_ms;
+    player_snapshot_t snap;
+    player_get_snapshot(&snap);
+    if (!db || snap.book_id <= 0 || snap.track_id <= 0) return -1;
     const char *lab = (label && label[0]) ? label : "Bookmark";
     plog("add bookmark book=%d track=%d pos=%lld bookpos=%lld",
-         g_pl.book_id, track_id, (long long)track_pos, (long long)book_pos);
-    return audiobook_add_bookmark(db, g_pl.book_id, track_id,
-                                  track_pos, book_pos, lab);
+         snap.book_id, snap.track_id, (long long)snap.track_position_ms,
+         (long long)snap.position_ms);
+    if (audiobook_db_write_trylock() != 0) return -1;
+    int id = audiobook_add_bookmark(db, snap.book_id, snap.track_id,
+                                    snap.track_position_ms, snap.position_ms, lab);
+    audiobook_db_write_unlock();
+    return id;
 }
 
 /* ---- minimp3_ex / ALSA helpers ----------------------------------------- */
@@ -788,7 +947,12 @@ static int bt_detect(void) {
  * on failure volume buttons no-op on BT. */
 static void bt_mixer_open(void) {
     if (g_pl.bt_mixer) return;
-    if (!x_snd_mixer_open || !x_snd_mixer_attach || !x_snd_mixer_load) return;
+    if (!x_snd_mixer_open || !x_snd_mixer_attach || !x_snd_mixer_load ||
+        !x_snd_mixer_close || !x_snd_mixer_selem_register ||
+        !x_snd_mixer_first_elem || !x_snd_mixer_elem_next ||
+        !x_snd_mixer_selem_has_playback_volume ||
+        !x_snd_mixer_selem_set_playback_volume_all)
+        return;
     void *m = NULL;
     if (x_snd_mixer_open(&m, 0) < 0) return;
     if (x_snd_mixer_attach(m, "bluealsa") < 0 ||
@@ -807,8 +971,36 @@ static void bt_mixer_open(void) {
         break;   /* first playback-volume element (element name varies per device) */
     }
     g_pl.bt_mixer = m;
-    plog("bt mixer ok elem=%p range=%ld..%ld", g_pl.bt_mix_elem,
-         g_pl.bt_mix_min, g_pl.bt_mix_max);
+    if (!g_pl.bt_volume_valid && g_pl.bt_mix_elem &&
+        x_snd_mixer_selem_get_playback_volume) {
+        long current = g_pl.bt_mix_min;
+        if (x_snd_mixer_selem_get_playback_volume(g_pl.bt_mix_elem, 0,
+                                                   &current) >= 0) {
+            long range = g_pl.bt_mix_max - g_pl.bt_mix_min;
+            if (range <= 0) range = 127;
+            int raw_pct =
+                (int)((current - g_pl.bt_mix_min) * 100 / range);
+            int stock_pct = stock_volume_load();
+            if (current >= g_pl.bt_mix_max && stock_pct >= 0) {
+                /* 127/127 before our first write is BlueALSA's uninitialized
+                 * cache, not necessarily the speaker's actual level. */
+                g_pl.bt_volume_pct = stock_pct;
+                g_pl.bt_mixer_live = 0;
+                plog("bt volume cache max/uninitialized; stock baseline=%d%%",
+                     stock_pct);
+            } else {
+                g_pl.bt_volume_pct = raw_pct;
+                g_pl.bt_mixer_live = 1;
+            }
+            if (g_pl.bt_volume_pct < 0) g_pl.bt_volume_pct = 0;
+            if (g_pl.bt_volume_pct > 100) g_pl.bt_volume_pct = 100;
+            g_pl.bt_volume_valid = 1;
+        }
+    }
+    if (g_pl.bt_volume_valid) g_pl.volume_pct = g_pl.bt_volume_pct;
+    plog("bt mixer ok elem=%p range=%ld..%ld vol=%d%% valid=%d live=%d",
+         g_pl.bt_mix_elem, g_pl.bt_mix_min, g_pl.bt_mix_max,
+         g_pl.volume_pct, g_pl.bt_volume_valid, g_pl.bt_mixer_live);
 }
 
 static void bt_mixer_close(void) {
@@ -816,6 +1008,7 @@ static void bt_mixer_close(void) {
         x_snd_mixer_close(g_pl.bt_mixer);
         g_pl.bt_mixer = NULL; g_pl.bt_mix_elem = NULL;
     }
+    g_pl.bt_mixer_live = 0;
 }
 
 /* The stock music engine (the same hiby_player process) plays over BT by
@@ -889,7 +1082,8 @@ static int bt_release_native_hold(void) {
  * notification is the tradeoff). Best-effort: if the addr can't be parsed from
  * bt_pcm_path, it's a no-op (the user can restart music manually). */
 static void bt_hand_back_to_stock(void) {
-    if (g_pl.output != OUT_BT || !g_pl.bt_pcm_path[0]) return;
+    if (!g_pl.bt_native_hold_released || !g_pl.bt_pcm_path[0])
+        return;
     /* bt_pcm_path = /org/bluealsa/hci0/dev_98_52_3D_2C_C2_4C/a2dpsrc/sink
      * → addr 98:52:3D:2C:C2:4C */
     char addr[32] = {0};
@@ -922,6 +1116,7 @@ static void bt_hand_back_to_stock(void) {
         "( bluetoothctl disconnect %s; sleep 1; bluetoothctl connect %s ) "
         ">/dev/null 2>&1 &", addr, addr);
     system(cmd);
+    g_pl.bt_native_hold_released = 0;
     plog("bt_hand_back: disconnect/reconnect %s (stock left PAUSED over BT)", addr);
 }
 
@@ -978,7 +1173,12 @@ static int setup_alsa(long rate, int channels) {
         x_snd_pcm_drop(g_pl.pcm);
     }
     g_pl.output = want_out;
-    if (want_out == OUT_BT && !g_pl.bt_mixer) bt_mixer_open();
+    if (want_out == OUT_BT) {
+        if (!g_pl.bt_mixer) bt_mixer_open();
+        else if (g_pl.bt_volume_valid) g_pl.volume_pct = g_pl.bt_volume_pct;
+    } else {
+        g_pl.volume_pct = g_pl.wired_volume_pct;
+    }
 
     /* Apply hw params. For BT (bluealsa plug) the slave PCM is opened lazily
      * here; if the stock music engine (same hiby_player process) still holds
@@ -1002,6 +1202,11 @@ static int setup_alsa(long rate, int channels) {
         }
         void *hw = NULL;
         int e_m = x_snd_pcm_hw_params_malloc(&hw);
+        if (e_m < 0 || !hw) {
+            plog("snd_pcm_hw_params_malloc failed: %d", e_m);
+            close_pcm();
+            return -1;
+        }
         int e_a = x_snd_pcm_hw_params_any(g_pl.pcm, hw);
         int e_ac = x_snd_pcm_hw_params_set_access(g_pl.pcm, hw, A_ACCESS_RW_INT);
         int e_f = x_snd_pcm_hw_params_set_format(g_pl.pcm, hw, A_FMT_S16_LE);
@@ -1033,7 +1238,7 @@ static int setup_alsa(long rate, int channels) {
          * transport so we can take over. Done once per setup_alsa call. */
         if (!released_hold) {
             close_pcm();  /* drop our (failed) plug first */
-            bt_release_native_hold();
+            if (bt_release_native_hold()) g_pl.bt_native_hold_released = 1;
             released_hold = 1;
             usleep(400000);  /* give bluealsa a moment to free the slot */
             continue;
@@ -1052,13 +1257,17 @@ static int setup_alsa(long rate, int channels) {
     }
 
     void *sw = NULL;
-    x_snd_pcm_sw_params_malloc(&sw);
-    x_snd_pcm_sw_params_current(g_pl.pcm, sw);
-    x_snd_pcm_sw_params_set_start_threshold(g_pl.pcm, sw, 1);   /* start on first write */
-    x_snd_pcm_sw_params_set_avail_min(g_pl.pcm, sw, period);
-    r = x_snd_pcm_sw_params(g_pl.pcm, sw);
-    if (r < 0) plog("snd_pcm_sw_params failed: %d (non-fatal)", r);
-    x_snd_pcm_sw_params_free(sw);
+    int sw_alloc = x_snd_pcm_sw_params_malloc(&sw);
+    if (sw_alloc >= 0 && sw) {
+        x_snd_pcm_sw_params_current(g_pl.pcm, sw);
+        x_snd_pcm_sw_params_set_start_threshold(g_pl.pcm, sw, 1);
+        x_snd_pcm_sw_params_set_avail_min(g_pl.pcm, sw, period);
+        r = x_snd_pcm_sw_params(g_pl.pcm, sw);
+        if (r < 0) plog("snd_pcm_sw_params failed: %d (non-fatal)", r);
+        x_snd_pcm_sw_params_free(sw);
+    } else {
+        plog("snd_pcm_sw_params_malloc failed: %d (using defaults)", sw_alloc);
+    }
 
     x_snd_pcm_prepare(g_pl.pcm);
     g_pl.rate = want_rate;
@@ -1129,6 +1338,8 @@ static uint64_t seek_byte_target(int64_t seek_ms) {
  * AAC seek = mp4_audio_seek_sample (stts ms->frame) — no per-sample index, so
  * no OOM risk (unlike the MP3 SEEK_TO_SAMPLE trap). */
 static int open_track_aac(int idx, int64_t seek_ms) {
+    g_pl.media_io_error = 0;
+    g_pl.media_missing = 0;
     /* Fast path: same track already demuxed -> reset the decoder + re-seek.
      * (Re-seeking fdk-aac internally is fiddly; reopening the handle is cheap
      * and keeps the moov parsed in g_pl.mp4, so no ~3MB moov re-read.) */
@@ -1231,6 +1442,8 @@ static int open_track_aac(int idx, int64_t seek_ms) {
 /* Open track idx and seek seek_ms into it. Returns 0 on success. */
 static int open_track(int idx, int64_t seek_ms) {
     if (g_pl.dec_fmt == DEC_AAC) return open_track_aac(idx, seek_ms);
+    g_pl.media_io_error = 0;
+    g_pl.media_missing = 0;
     /* Fast path: same track already open -> just re-seek the live decoder.
      * Byte-level seek (SEEK_TO_BYTE): no frame index, instant, ~0 memory. */
     if (g_pl.dec_open && g_pl.track_fd >= 0 && g_pl.track_idx == idx) {
@@ -1247,10 +1460,12 @@ static int open_track(int idx, int64_t seek_ms) {
          * drop+prepare (it resumes clean). */
         if (g_pl.output == OUT_BT) {
             close_pcm();
+            bt_mixer_close();
             if (setup_alsa(g_pl.rate, g_pl.channels) < 0) {
                 plog("re-seek: bluealsa reopen failed");
                 close_mh(); g_pl.state = PLAYER_STOPPED; return -1;
             }
+            mix_apply();
         } else if (g_pl.pcm) {
             x_snd_pcm_drop(g_pl.pcm); x_snd_pcm_prepare(g_pl.pcm);
         }
@@ -1424,7 +1639,24 @@ static void cmd_play(int book_id, int64_t start_ms) {
 
 static void cmd_resume(void) {
     if (g_pl.state != PLAYER_PAUSED) return;
-    if (g_pl.pcm) x_snd_pcm_prepare(g_pl.pcm);
+
+    /* BlueALSA's plug/encoder state is not clean after snd_pcm_drop(). A plain
+     * prepare resumes with garbled audio on the A2DP sink, the same failure we
+     * already handle in the in-place seek path. Pause closes the BT PCM, so
+     * reopen and configure a fresh stream here while leaving the decoder at
+     * the exact paused sample. Wired output keeps the cheap prepare path. */
+    if (!g_pl.pcm) {
+        if (setup_alsa(g_pl.rate, g_pl.channels) < 0) {
+            plog("RESUME output reopen failed @%lldms",
+                 (long long)g_pl.position_ms);
+            return;  /* remain paused; a later press can retry */
+        }
+        mix_apply();
+        plog("RESUME output reopened (%s)",
+             g_pl.output == OUT_BT ? "bluealsa" : "wired");
+    } else {
+        x_snd_pcm_prepare(g_pl.pcm);
+    }
     g_pl.state = PLAYER_PLAYING;
     g_pl.last_save_ms = mono_ms();
     plog("RESUME @%lldms", (long long)g_pl.position_ms);
@@ -1432,7 +1664,17 @@ static void cmd_resume(void) {
 
 static void cmd_pause(void) {
     if (g_pl.state != PLAYER_PLAYING) return;
-    if (g_pl.pcm) x_snd_pcm_drop(g_pl.pcm);
+    if (g_pl.pcm) {
+        if (g_pl.output == OUT_BT) {
+            /* Fully close the A2DP stream. drop+prepare leaves BlueALSA's
+             * encoder/resampler state stale and the next audio is garbled. */
+            close_pcm();
+            bt_mixer_close();
+            plog("PAUSE closed bluealsa PCM for clean resume");
+        } else {
+            x_snd_pcm_drop(g_pl.pcm);
+        }
+    }
     g_pl.state = PLAYER_PAUSED;
     save_progress(0);
     plog("PAUSE @%lldms", (long long)g_pl.position_ms);
@@ -1518,35 +1760,47 @@ static void cmd_skip(int dir) {
 /* ---- playback speed (WSOLA time-stretch, pitch preserved) --------------- */
 
 void player_set_speed(int permille) {
+    if (!g_pl.thread_alive) return;
     if (permille < 800) permille = 800;
     if (permille > 2000) permille = 2000;
     pthread_mutex_lock(&g_pl.mu);
-    g_pl.speed_permille = permille;
+    g_pl.requested_speed_permille = permille;
+    g_pl.speed_change_pending = 1;
     pthread_mutex_unlock(&g_pl.mu);
-    plog("speed set %d.%03dx", permille / 1000, permille % 1000);
-    /* A speed change changes the WSOLA analysis hop (Ha = Hs*speed), so re-init
-     * the time-stretch state if a track is open. This flushes ~40 ms (a tiny,
-     * occasional glitch) but guarantees the new rate is exact from the next
-     * chunk. If no track is open, the next open_track inits it. */
-    if (g_pl.track_open && g_pl.rate > 0 && g_pl.channels > 0)
-        wsola_init(&g_pl.wsola, g_pl.rate, g_pl.channels, permille);
-    if (g_pl.db) {
-        char buf[16];
-        snprintf(buf, sizeof(buf), "%d", permille);
-        audiobook_set_setting(g_pl.db, "playback_speed", buf);
-    }
 }
 
 int player_get_speed(void) {
+    if (!g_pl.thread_alive)
+        return g_pl.speed_permille ? g_pl.speed_permille : 1000;
     int s;
     pthread_mutex_lock(&g_pl.mu);
-    s = g_pl.speed_permille;
+    s = g_pl.speed_change_pending ? g_pl.requested_speed_permille
+                                  : g_pl.speed_permille;
     pthread_mutex_unlock(&g_pl.mu);
     return s ? s : 1000;
 }
 
+static int current_media_lost(void) {
+    if (g_pl.media_io_error) return 1;
+    if (g_pl.track_idx < 0 || g_pl.track_idx >= g_pl.track_count) return 0;
+    return access(g_pl.tracks[g_pl.track_idx].path, R_OK) != 0;
+}
+
+/* A vanished SD card can look exactly like EOF to a streaming decoder. Keep
+ * the most recently saved position authoritative and never mark the book
+ * complete in that case. The next explicit Play reopens the media normally
+ * after the card is available again. */
+static void stop_for_media_loss(void) {
+    plog("media unavailable during playback; preserving saved progress");
+    g_pl.media_missing = 1;
+    close_mh();
+    close_pcm();
+    g_pl.state = PLAYER_STOPPED;
+}
+
 static void decode_step_aac(void) {
     if (g_pl.aac_sample >= g_pl.mp4.sample_count) {
+        if (current_media_lost()) { stop_for_media_loss(); return; }
         int idx = g_pl.track_idx + 1;
         if (idx >= g_pl.track_count) {
             plog("book finished (aac)");
@@ -1561,7 +1815,8 @@ static void decode_step_aac(void) {
     int fsz = mp4_audio_read_sample(&g_pl.mp4, g_pl.aac_sample,
                                     g_pl.aac_frame, sizeof(g_pl.aac_frame));
     if (fsz <= 0) {
-        /* read error / short read -> treat as end of track */
+        if (current_media_lost()) { stop_for_media_loss(); return; }
+        /* A valid short read at the boundary is treated as end of track. */
         plog("aac read_sample(%u) -> %d", g_pl.aac_sample, fsz);
         int idx = g_pl.track_idx + 1;
         if (idx >= g_pl.track_count) {
@@ -1626,6 +1881,7 @@ static void decode_step(void) {
     static short buf[PCM_BUF_SAMPLES];
     size_t got = mp3dec_ex_read(&g_pl.dec, buf, PCM_BUF_SAMPLES);
     if (got == 0) {
+        if (current_media_lost()) { stop_for_media_loss(); return; }
         /* track ended -> next */
         int idx = g_pl.track_idx + 1;
         if (idx >= g_pl.track_count) {
@@ -1698,24 +1954,100 @@ static void decode_step(void) {
 
 /* ---- thread ------------------------------------------------------------ */
 
+static void publish_snapshot(void) {
+    pthread_mutex_lock(&g_pl.mu);
+    g_pl.snapshot.state = g_pl.state;
+    g_pl.snapshot.book_id = g_pl.book_id;
+    g_pl.snapshot.format_unsupported = g_pl.fmt_unsupported;
+    g_pl.snapshot.media_missing = g_pl.media_missing;
+    g_pl.snapshot.track_index = g_pl.track_idx;
+    g_pl.snapshot.track_id = (g_pl.track_idx >= 0 &&
+                              g_pl.track_idx < g_pl.track_count)
+        ? g_pl.tracks[g_pl.track_idx].track_id : 0;
+    g_pl.snapshot.track_position_ms = g_pl.track_pos_ms;
+    g_pl.snapshot.position_ms = g_pl.position_ms;
+    g_pl.snapshot.total_ms = g_pl.total_ms;
+    strncpy(g_pl.snapshot.track_title, g_pl.cur_title,
+            sizeof(g_pl.snapshot.track_title) - 1);
+    g_pl.snapshot.track_title[sizeof(g_pl.snapshot.track_title) - 1] = '\0';
+    pthread_mutex_unlock(&g_pl.mu);
+}
+
 static void *player_thread(void *arg) {
     (void)arg;
     plog("thread start");
+    publish_snapshot();
     while (g_pl.running) {
-        int cmd; int book_id; int64_t seek_ms;
+        player_cmd_t pcmd;
+        memset(&pcmd, 0, sizeof(pcmd));
+        int speed_change = 0, requested_speed = 0;
+        int volume_set = -1, volume_steps = 0;
         pthread_mutex_lock(&g_pl.mu);
-        cmd = g_pl.cmd; book_id = g_pl.cmd_book_id; seek_ms = g_pl.cmd_seek_ms;
-        g_pl.cmd = CMD_NONE;
+        if (g_pl.cmd_count > 0) {
+            pcmd = g_pl.cmd_queue[g_pl.cmd_head];
+            g_pl.cmd_head = (g_pl.cmd_head + 1) % CMD_QUEUE_CAP;
+            g_pl.cmd_count--;
+        }
+        if (g_pl.speed_change_pending) {
+            requested_speed = g_pl.requested_speed_permille;
+            g_pl.speed_change_pending = 0;
+            speed_change = 1;
+        }
+        volume_set = g_pl.pending_volume_set;
+        g_pl.pending_volume_set = -1;
+        volume_steps = g_pl.pending_volume_steps;
+        g_pl.pending_volume_steps = 0;
         pthread_mutex_unlock(&g_pl.mu);
 
-        switch (cmd) {
-            case CMD_PLAY:   cmd_play(book_id, g_pl.cmd_start_ms); break;
+        if (speed_change) {
+            pthread_mutex_lock(&g_pl.mu);
+            g_pl.speed_permille = requested_speed;
+            pthread_mutex_unlock(&g_pl.mu);
+            plog("speed set %d.%03dx", requested_speed / 1000,
+                 requested_speed % 1000);
+            /* WSOLA and the player DB belong to this thread. Applying the
+             * change here avoids racing decode with a UI-thread reinit or
+             * sharing the THREADSAFE=2 SQLite connection across threads. */
+            if (g_pl.track_open && g_pl.rate > 0 && g_pl.channels > 0)
+                wsola_init(&g_pl.wsola, g_pl.rate, g_pl.channels,
+                           requested_speed);
+            if (g_pl.db) {
+                char buf[16];
+                snprintf(buf, sizeof(buf), "%d", requested_speed);
+                if (audiobook_db_write_trylock() == 0) {
+                    audiobook_set_setting(g_pl.db, "playback_speed", buf);
+                    audiobook_db_write_unlock();
+                }
+            }
+        }
+
+        int volume_changed = (volume_set >= 0 || volume_steps != 0);
+        if (volume_set >= 0) volume_set_apply(volume_set);
+        while (volume_steps != 0) {
+            int dir = volume_steps > 0 ? 1 : -1;
+            volume_step_apply(dir);
+            volume_steps -= dir;
+        }
+        if (volume_changed) {
+            pthread_mutex_lock(&g_pl.mu);
+            if (g_pl.pending_volume_set < 0 && g_pl.pending_volume_steps == 0)
+                g_pl.volume_preview_pct = g_pl.volume_pct;
+            pthread_mutex_unlock(&g_pl.mu);
+        }
+
+        switch (pcmd.cmd) {
+            case CMD_PLAY:   cmd_play(pcmd.book_id, pcmd.start_ms); break;
             case CMD_RESUME: cmd_resume(); break;
             case CMD_PAUSE:  cmd_pause(); break;
             case CMD_STOP:   cmd_stop(); break;
-            case CMD_SEEK:   cmd_seek(seek_ms); break;
+            case CMD_SEEK:   cmd_seek(pcmd.seek_ms); break;
             case CMD_FF:     cmd_skip(1); break;
             case CMD_RW:     cmd_skip(-1); break;
+            case CMD_TOGGLE:
+                if (g_pl.state == PLAYER_PLAYING) cmd_pause();
+                else if (g_pl.state == PLAYER_PAUSED) cmd_resume();
+                else if (g_pl.last_book > 0) cmd_play(g_pl.last_book, -1);
+                break;
             case CMD_QUIT:
                 /* Persist the exact final position before the thread exits.
                  * Without this, the last place is only as fresh as the most
@@ -1730,6 +2062,11 @@ static void *player_thread(void *arg) {
                 save_progress(0);
                 g_pl.running = 0;
                 break;
+        }
+
+        if (!g_pl.running) {
+            publish_snapshot();
+            break;
         }
 
         if (g_pl.state == PLAYER_PLAYING && g_pl.track_open && g_pl.pcm) {
@@ -1753,28 +2090,44 @@ static void *player_thread(void *arg) {
         } else {
             usleep(20000);
         }
+        publish_snapshot();
     }
     cmd_stop();
+    publish_snapshot();
     plog("thread exit");
     return NULL;
 }
 
-static void submit(int cmd, int book_id, int64_t seek_ms) {
+static void submit_full(int cmd, int book_id, int64_t seek_ms,
+                        int64_t start_ms) {
+    if (!g_pl.thread_alive) return;
+    int dropped = 0;
     pthread_mutex_lock(&g_pl.mu);
-    g_pl.cmd = cmd;
-    g_pl.cmd_book_id = book_id;
-    g_pl.cmd_seek_ms = seek_ms;
-    g_pl.cmd_start_ms = 0;
+    if (cmd == CMD_QUIT) {
+        /* Shutdown must never wait behind stale user input. */
+        g_pl.cmd_head = g_pl.cmd_tail = g_pl.cmd_count = 0;
+    } else if (g_pl.cmd_count == CMD_QUEUE_CAP) {
+        g_pl.cmd_head = (g_pl.cmd_head + 1) % CMD_QUEUE_CAP;
+        g_pl.cmd_count--;
+        dropped = 1;
+    }
+    player_cmd_t *dst = &g_pl.cmd_queue[g_pl.cmd_tail];
+    dst->cmd = cmd;
+    dst->book_id = book_id;
+    dst->seek_ms = seek_ms;
+    dst->start_ms = start_ms;
+    g_pl.cmd_tail = (g_pl.cmd_tail + 1) % CMD_QUEUE_CAP;
+    g_pl.cmd_count++;
     pthread_mutex_unlock(&g_pl.mu);
+    if (dropped) plog("command queue full; dropped oldest command");
+}
+
+static void submit(int cmd, int book_id, int64_t seek_ms) {
+    submit_full(cmd, book_id, seek_ms, 0);
 }
 
 static void submit_play(int book_id, int64_t start_ms) {
-    pthread_mutex_lock(&g_pl.mu);
-    g_pl.cmd = CMD_PLAY;
-    g_pl.cmd_book_id = book_id;
-    g_pl.cmd_start_ms = start_ms;   /* -1 = resume, >=0 = absolute */
-    g_pl.cmd_seek_ms = 0;
-    pthread_mutex_unlock(&g_pl.mu);
+    submit_full(CMD_PLAY, book_id, 0, start_ms);
 }
 
 /* ---- public API -------------------------------------------------------- */
@@ -1784,13 +2137,14 @@ int player_init(void) {
     memset(&g_pl, 0, sizeof(g_pl));
     g_pl.track_fd = -1;
     g_pl.speed_permille = 1000;
+    g_pl.requested_speed_permille = 1000;
     /* Volume debounce init: vol_last_saved=-1 means "first save always writes" */
     g_pl.vol_last_saved = -1;
     /* Open the player's OWN library DB connection. The build is
-     * -DSQLITE_THREADSAFE=0, so this connection is touched ONLY by the player
+     * -DSQLITE_THREADSAFE=2, so this connection is touched ONLY by the player
      * thread (the UI/event thread has its own, ui->db). This kills the data
      * race that sharing one sqlite3* across the render/player/event threads
-     * caused under THREADSAFE=0. The DB is WAL on /usr/data, so the player's
+     * caused under THREADSAFE=0. The DB is journaled on SD, so the player's
      * writes never block the UI's reads; the only contention is scan
      * (event-thread write) vs save (player-thread write), handled by a short
      * busy_timeout + skip in save_progress. */
@@ -1799,7 +2153,7 @@ int player_init(void) {
         g_pl.db = NULL;
         return -1;
     }
-    /* Short busy_timeout: a scan holds the WAL writer lock for its whole
+    /* Short busy_timeout: a scan holds the writer lock for its whole
      * transaction, so a save during a scan would otherwise block the decode
      * loop (audio glitch) for the full 5s default. 300ms gives a genuine
      * contender a fair shot, then save_progress skips (SD .pos is
@@ -1810,15 +2164,30 @@ int player_init(void) {
         char sbuf[16];
         if (audiobook_get_setting(g_pl.db, "playback_speed", sbuf, sizeof(sbuf)) == 0) {
             int v = atoi(sbuf);
-            if (v >= 800 && v <= 2000) g_pl.speed_permille = v;
+            if (v >= 800 && v <= 2000) {
+                g_pl.speed_permille = v;
+                g_pl.requested_speed_permille = v;
+            }
         }
     }
-    if (load_libs() < 0) return -1;
+    if (load_libs() < 0) {
+        if (g_fdkaac_lib) { dlclose(g_fdkaac_lib); g_fdkaac_lib = NULL; }
+        if (g_alsa_lib) { dlclose(g_alsa_lib); g_alsa_lib = NULL; }
+        audiobook_db_close(g_pl.db); g_pl.db = NULL;
+        return -1;
+    }
     mixer_init();  /* best-effort; volume buttons no-op if this fails */
     pthread_mutex_init(&g_pl.mu, NULL);
+    g_pl.pending_volume_set = -1;
+    g_pl.volume_preview_pct = g_pl.volume_pct;
     g_pl.running = 1;
     if (pthread_create(&g_pl.thread, NULL, player_thread, NULL) != 0) {
         plog("pthread_create failed");
+        if (g_pl.mixer) { x_snd_mixer_close(g_pl.mixer); g_pl.mixer = NULL; }
+        if (g_fdkaac_lib) { dlclose(g_fdkaac_lib); g_fdkaac_lib = NULL; }
+        if (g_alsa_lib) { dlclose(g_alsa_lib); g_alsa_lib = NULL; }
+        audiobook_db_close(g_pl.db); g_pl.db = NULL;
+        pthread_mutex_destroy(&g_pl.mu);
         return -1;
     }
     g_pl.thread_alive = 1;
@@ -1839,6 +2208,7 @@ void player_shutdown(void) {
      * the fdk-aac dlsym (AAC path). */
     close_mh();
     close_pcm();
+    vol_save_sd();
     if (g_pl.mixer) { x_snd_mixer_close(g_pl.mixer); g_pl.mixer = NULL; }
     bt_mixer_close();
     if (g_alsa_lib) dlclose(g_alsa_lib);
@@ -1862,6 +2232,7 @@ void player_shutdown(void) {
      * its own ui->db separately in ui_run.) */
     audiobook_db_close(g_pl.db);
     g_pl.db = NULL;
+    pthread_mutex_destroy(&g_pl.mu);
 }
 
 int player_play_book(int book_id, int resume) {
@@ -1878,19 +2249,17 @@ int player_play_book_from(int book_id, int64_t book_ms) {
 
 void player_toggle(void) {
     if (!g_pl.thread_alive) return;
-    if (g_pl.state == PLAYER_PLAYING) submit(CMD_PAUSE, 0, 0);
-    else if (g_pl.state == PLAYER_PAUSED) submit(CMD_RESUME, 0, 0);
+    submit(CMD_TOGGLE, 0, 0);
     /* STOPPED (e.g. after a track-advance open_track failure, or the user
      * stopped, or the book finished): pressing play/pause RESUMES from the
      * saved SD position — NOT from the beginning. Passing 0 here (start_ms=0)
      * restarted the book from 0 and the periodic save then overwrote the
      * saved place with ~0, which is exactly the "resume reset to the
      * beginning" symptom. -1 = resume from saved progress (cmd_play). */
-    else if (g_pl.last_book > 0) submit_play(g_pl.last_book, -1);
 }
 
 void player_pause(void) {
-    if (g_pl.state == PLAYER_PLAYING) submit(CMD_PAUSE, 0, 0);
+    if (g_pl.thread_alive) submit(CMD_PAUSE, 0, 0);
 }
 
 void player_stop(void) {
@@ -1898,20 +2267,23 @@ void player_stop(void) {
 }
 
 void player_seek_book_ms(int64_t ms) {
-    if (g_pl.book_id > 0) submit(CMD_SEEK, g_pl.book_id, ms);
+    if (g_pl.thread_alive) submit(CMD_SEEK, 0, ms);
 }
 
 int player_ff(void) {
-    if (g_pl.track_count > 0) { submit(CMD_FF, 0, 0); return 0; }
-    return -1;
+    if (!g_pl.thread_alive) return -1;
+    submit(CMD_FF, 0, 0);
+    return 0;
 }
 
 int player_rw(void) {
-    if (g_pl.track_count > 0) { submit(CMD_RW, 0, 0); return 0; }
-    return -1;
+    if (!g_pl.thread_alive) return -1;
+    submit(CMD_RW, 0, 0);
+    return 0;
 }
 
 void player_set_sleep_minutes(int minutes) {
+    if (!g_pl.thread_alive) return;
     pthread_mutex_lock(&g_pl.mu);
     g_pl.sleep_deadline_ms = (minutes > 0)
         ? (int64_t)mono_ms() + (int64_t)minutes * 60000
@@ -1922,6 +2294,7 @@ void player_set_sleep_minutes(int minutes) {
 }
 
 int64_t player_sleep_remaining_ms(void) {
+    if (!g_pl.thread_alive) return -1;
     int64_t dl;
     pthread_mutex_lock(&g_pl.mu);
     dl = g_pl.sleep_deadline_ms;
@@ -1931,9 +2304,27 @@ int64_t player_sleep_remaining_ms(void) {
     return rem < 0 ? 0 : rem;
 }
 
-player_state_t player_state(void) { return g_pl.state; }
-int player_current_book(void) { return g_pl.book_id; }
-int64_t player_position_ms(void) { return g_pl.position_ms; }
-int64_t player_total_ms(void) { return g_pl.total_ms; }
-const char *player_current_track_title(void) { return g_pl.cur_title; }
-int player_format_unsupported(void) { return g_pl.fmt_unsupported; }
+void player_get_snapshot(player_snapshot_t *out) {
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (!g_pl.thread_alive) return;
+    pthread_mutex_lock(&g_pl.mu);
+    *out = g_pl.snapshot;
+    pthread_mutex_unlock(&g_pl.mu);
+}
+
+player_state_t player_state(void) {
+    player_snapshot_t s; player_get_snapshot(&s); return s.state;
+}
+int player_current_book(void) {
+    player_snapshot_t s; player_get_snapshot(&s); return s.book_id;
+}
+int64_t player_position_ms(void) {
+    player_snapshot_t s; player_get_snapshot(&s); return s.position_ms;
+}
+int64_t player_total_ms(void) {
+    player_snapshot_t s; player_get_snapshot(&s); return s.total_ms;
+}
+int player_format_unsupported(void) {
+    player_snapshot_t s; player_get_snapshot(&s); return s.format_unsupported;
+}

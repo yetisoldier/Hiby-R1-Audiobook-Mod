@@ -351,7 +351,7 @@ int cover_precache(const char *cover_path, int px) {
 }
 
 /* ---- small-thumbnail LRU cache (for the list view) ---------------------- */
-#define COVER_THUMB_CACHE 16
+#define COVER_THUMB_CACHE 8
 struct thumb_entry {
     int book_id;          /* -1 = empty slot */
     uint16_t *buf;        /* COVER_THUMB_PX*COVER_THUMB_PX, malloc'd */

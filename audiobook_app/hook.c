@@ -92,6 +92,7 @@ static void logmsg(const char *fmt, ...) {
         char buf[256];
         int n = vsnprintf(buf, sizeof(buf), fmt, ap);
         if (n > 0) {
+            if (n >= (int)sizeof(buf)) n = (int)sizeof(buf) - 1;
             ssize_t w = write(g_log_fd, buf, n);
             (void)w;
             /* On error, close so next call retries. O_APPEND guarantees atomic appends. */
@@ -103,7 +104,10 @@ static void logmsg(const char *fmt, ...) {
         if (fd >= 0) {
             char buf[256];
             int n = vsnprintf(buf, sizeof(buf), fmt, ap);
-            if (n > 0) write(fd, buf, n);
+            if (n > 0) {
+                if (n >= (int)sizeof(buf)) n = (int)sizeof(buf) - 1;
+                write(fd, buf, n);
+            }
             close(fd);
         }
     }

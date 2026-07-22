@@ -69,6 +69,7 @@ typedef struct {
 typedef struct {
     char title[256];
     int64_t start_ms;
+    int track_id;           /* disambiguates repeated titles across files */
 } chapter_row_t;
 
 /* Collector contexts used while (re)building the Bookmarks/Chapters caches.
@@ -98,6 +99,9 @@ typedef struct {
      * events queued). key_fds[0..n_key_fds-1] are the dup'd non-blocking fds. */
     int key_fd;              /* legacy: /dev/input/event2 fresh open or -1 */
     int key_fds[4];
+    int key_stock_fds[4];    /* stock fd dup retained to restore EVIOCGRAB */
+    int key_stock_flags[4];  /* original stock open-file status flags */
+    int key_exclusive[4];    /* key_fds[i] currently owns EVIOCGRAB */
     int n_key_fds;
 
     /* Bluetooth AVRCP remote (e.g. a BT speaker's play/pause button). The
@@ -176,6 +180,19 @@ typedef struct {
      * after adding a bookmark, so the user sees the tap registered. */
     uint64_t mark_flash_until_ms;
 
+    /* Transient hardware-volume feedback. Physical volume presses are handled
+     * by the event thread; the render thread draws this allocation-free HUD on
+     * top of whichever audiobook screen is active. */
+    uint64_t volume_overlay_until_ms;
+    int volume_overlay_pct;
+
+    /* Physical volume-key hold ramp. The R1 key driver does not reliably emit
+     * EV_KEY value=2 repeats, so the event loop generates repeats from the
+     * down/up state after a short initial delay. */
+    int volume_hold_dir;             /* -1 down, +1 up, 0 released */
+    uint64_t volume_hold_started_ms;
+    uint64_t volume_hold_next_ms;
+
     /* "Library refreshed" confirmation flash on the Home screen after a
      * Home → Refresh tap runs the scan. 0 = no flash showing. */
     uint64_t refresh_msg_until_ms;
@@ -183,6 +200,10 @@ typedef struct {
     /* "Scan failed" error flash (red) shown when a Home → Refresh scan aborts
      * — e.g. /usr/data is too full to write library.db. 0 = no flash showing. */
     uint64_t refresh_err_until_ms;
+
+    /* Refresh runs on a private DB connection in a worker so touch, keys,
+     * playback, and framebuffer panning stay responsive during long scans. */
+    int refresh_scanning;
 
     /* Thumbnail pre-warm: draw_list (render hook) records the first visible
      * book_id whose thumbnail isn't cached yet; the event loop decodes ONE per
