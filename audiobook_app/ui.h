@@ -74,6 +74,9 @@ typedef struct {
 
     ui_screen_t screen;
     list_mode_t list_mode;
+    char folder_path[512];   /* LIST_FOLDERS drill-down: current folder path
+                              * ("" = library root AUDIOBOOK_LIBRARY_ROOT).
+                              * Saved/restored across the nav stack. */
     int scroll_offset;       /* vertical scroll in list views */
     int selected_idx;        /* currently highlighted item */
 
@@ -90,6 +93,7 @@ typedef struct {
     /* Navigation stack for back button */
     ui_screen_t nav_stack[8];
     list_mode_t nav_list_mode[8];
+    char nav_folder_path[8][512];  /* per-nav-depth saved folder_path */
     int nav_book_id[8];
     int nav_depth;
 

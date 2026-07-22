@@ -851,6 +851,9 @@ static void navigate_to(ui_state_t *ui, ui_screen_t screen,
         ui->nav_stack[ui->nav_depth] = ui->screen;
         ui->nav_list_mode[ui->nav_depth] = ui->list_mode;
         ui->nav_book_id[ui->nav_depth] = ui->current_book_id;
+        strncpy(ui->nav_folder_path[ui->nav_depth], ui->folder_path,
+                sizeof(ui->nav_folder_path[0]) - 1);
+        ui->nav_folder_path[ui->nav_depth][sizeof(ui->nav_folder_path[0]) - 1] = '\0';
         ui->nav_depth++;
     }
     ui->screen = screen;
@@ -869,6 +872,9 @@ static void navigate_back(ui_state_t *ui) {
         ui->screen = ui->nav_stack[ui->nav_depth];
         ui->list_mode = ui->nav_list_mode[ui->nav_depth];
         ui->current_book_id = ui->nav_book_id[ui->nav_depth];
+        strncpy(ui->folder_path, ui->nav_folder_path[ui->nav_depth],
+                sizeof(ui->folder_path) - 1);
+        ui->folder_path[sizeof(ui->folder_path) - 1] = '\0';
         ui->selected_idx = 0;
         ui->scroll_offset = 0;
     } else {
@@ -1009,6 +1015,7 @@ static int handle_home_touch(ui_state_t *ui, int x, int y) {
             navigate_to(ui, SCREEN_LIST, LIST_SERIES, 0);
             break;
         case HOME_FOLDERS:
+            ui->folder_path[0] = '\0';   /* Folders tile always starts at root */
             navigate_to(ui, SCREEN_LIST, LIST_FOLDERS, 0);
             break;
         case HOME_FINISHED:
@@ -1051,6 +1058,7 @@ static int handle_home_touch(ui_state_t *ui, int x, int y) {
 
 typedef struct {
     int book_id;
+    int is_folder;       /* 1 = folder row, 0 = book row */
     char title[256];
     char author[256];
     int64_t duration_ms;
@@ -1077,6 +1085,7 @@ static int list_collect_cb(const audiobook_book_t *b, void *ctx) {
     }
     list_item_t *item = &lc->items[lc->count++];
     item->book_id = b->book_id;
+    item->is_folder = 0;
     strncpy(item->title, b->title, sizeof(item->title) - 1);
     item->title[sizeof(item->title) - 1] = '\0';
     strncpy(item->author, b->author, sizeof(item->author) - 1);
@@ -1104,7 +1113,121 @@ static void collect_list_books(ui_state_t *ui, list_ctx_t *lc) {
             audiobook_list_books_by_series(ui->db, ui->list_filter,
                                            list_collect_cb, lc); break;
         case LIST_TITLES:
-        case LIST_FOLDERS:
+            audiobook_list_books(ui->db, list_collect_cb, lc); break;
+        case LIST_FOLDERS: {
+            /* Drill-down folder hierarchy. ui->folder_path ("") is the current
+             * level; list every book whose root_path == folder_path, plus one
+             * row per distinct immediate subfolder (sorted), folders first.
+             * Tapping a folder row descends; Back ascends. */
+            const char *prefix = ui->folder_path[0] ? ui->folder_path
+                                                    : AUDIOBOOK_LIBRARY_ROOT;
+            size_t plen = strlen(prefix);
+            char folder_names[128][256];
+            int folder_count = 0;
+
+            sqlite3_stmt *stmt = NULL;
+            const char *sql =
+                "SELECT book_id, title, author, total_duration_ms, completed, root_path "
+                "FROM books ORDER BY root_path, sort_title";
+            if (sqlite3_prepare_v2(ui->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+                while (sqlite3_step(stmt) == SQLITE_ROW) {
+                    int bid = sqlite3_column_int(stmt, 0);
+                    const char *title = (const char *)sqlite3_column_text(stmt, 1);
+                    const char *author = (const char *)sqlite3_column_text(stmt, 2);
+                    int64_t dur = sqlite3_column_int64(stmt, 3);
+                    int completed = sqlite3_column_int(stmt, 4);
+                    const char *rpath = (const char *)sqlite3_column_text(stmt, 5);
+                    if (!rpath) continue;
+
+                    if (strcmp(rpath, prefix) == 0) {
+                        /* Book directly at this level. */
+                        if (lc->count >= lc->capacity) {
+                            int nc = lc->capacity ? lc->capacity * 2 : 64;
+                            list_item_t *ni = realloc(lc->items, nc * sizeof(list_item_t));
+                            if (!ni) break;
+                            lc->items = ni;
+                            lc->capacity = nc;
+                        }
+                        list_item_t *it = &lc->items[lc->count++];
+                        it->book_id = bid;
+                        it->is_folder = 0;
+                        strncpy(it->title, title ? title : "?", sizeof(it->title) - 1);
+                        it->title[sizeof(it->title) - 1] = '\0';
+                        strncpy(it->author, author ? author : "", sizeof(it->author) - 1);
+                        it->author[sizeof(it->author) - 1] = '\0';
+                        it->duration_ms = dur;
+                        it->completed = completed;
+                        audiobook_progress_t p;
+                        it->has_progress = (audiobook_get_progress(lc->db, bid, &p) > 0);
+                        it->elapsed_ms = it->has_progress ? p.total_book_elapsed_ms : 0;
+                    } else if (strncmp(rpath, prefix, plen) == 0 && rpath[plen] == '/') {
+                        /* A book in a subfolder: record the immediate child name. */
+                        const char *rest = rpath + plen + 1;
+                        const char *end = strchr(rest, '/');
+                        int seg_len = end ? (int)(end - rest) : (int)strlen(rest);
+                        if (seg_len <= 0 || seg_len >= 256) continue;
+
+                        int found = 0;
+                        for (int i = 0; i < folder_count; i++) {
+                            if (strncmp(folder_names[i], rest, seg_len) == 0
+                                && folder_names[i][seg_len] == '\0') {
+                                found = 1;
+                                break;
+                            }
+                        }
+                        if (!found && folder_count < 128) {
+                            strncpy(folder_names[folder_count], rest, seg_len);
+                            folder_names[folder_count][seg_len] = '\0';
+                            folder_count++;
+                        }
+                    }
+                }
+                sqlite3_finalize(stmt);
+            }
+
+            /* Sort folders alphabetically (case-insensitive). */
+            for (int i = 0; i < folder_count - 1; i++) {
+                for (int j = i + 1; j < folder_count; j++) {
+                    if (strcasecmp(folder_names[i], folder_names[j]) > 0) {
+                        char tmp[256];
+                        memcpy(tmp, folder_names[i], 256);
+                        memcpy(folder_names[i], folder_names[j], 256);
+                        memcpy(folder_names[j], tmp, 256);
+                    }
+                }
+            }
+
+            /* Prepend folder rows before the book rows already collected. */
+            if (folder_count > 0 && lc->items) {
+                int total = folder_count + lc->count;
+                if (total > lc->capacity) {
+                    int nc = total;
+                    list_item_t *ni = realloc(lc->items, nc * sizeof(list_item_t));
+                    if (ni) {
+                        lc->items = ni;
+                        lc->capacity = nc;
+                    }
+                }
+                if (lc->capacity >= total) {
+                    memmove(&lc->items[folder_count], lc->items,
+                            lc->count * sizeof(list_item_t));
+                    for (int i = 0; i < folder_count; i++) {
+                        list_item_t *it = &lc->items[i];
+                        it->book_id = 0;
+                        it->is_folder = 1;
+                        strncpy(it->title, folder_names[i], sizeof(it->title) - 1);
+                        it->title[sizeof(it->title) - 1] = '\0';
+                        it->author[0] = '\0';
+                        it->duration_ms = 0;
+                        it->completed = 0;
+                        it->has_progress = 0;
+                        it->elapsed_ms = 0;
+                    }
+                    lc->count = total;
+                }
+            }
+            break;
+        }
         default:
             audiobook_list_books(ui->db, list_collect_cb, lc); break;
     }
@@ -1234,6 +1357,16 @@ static void draw_list(ui_state_t *ui) {
         if (is_selected)
             render_fill_rect(r, 0, item_top, 4, LIST_ITEM_H, COL_ACCENT);
 
+        if (lc.items[i].is_folder) {
+            /* Folder row: name only, vertically centered, truncated to fit. */
+            char name_buf[256];
+            strncpy(name_buf, lc.items[i].title, sizeof(name_buf) - 1);
+            name_buf[sizeof(name_buf) - 1] = '\0';
+            while (render_text_width(name_buf, FONT_SCALE_2) > RENDER_FB_W - 48 &&
+                   strlen(name_buf) > 1)
+                name_buf[strlen(name_buf) - 1] = '\0';
+            render_text(r, 24, item_top + 30, name_buf, FONT_SCALE_2, COL_WHITE);
+        } else {
         /* Cover thumbnail (small, left). When present, the text column shifts
          * right; when absent, the existing full-width layout is used. We ONLY
          * read the cache here (cover_thumb_cached) — never decode — so the
@@ -1316,6 +1449,7 @@ static void draw_list(ui_state_t *ui) {
             render_text_right(r, RENDER_FB_W - 18, item_top + 10, "Done",
                              FONT_SCALE_1, COL_GREEN);
         }
+        }   /* end else (book row) */
 
         y += LIST_ITEM_H;
         if (y < RENDER_FB_H - FOOTER_H)
@@ -1324,7 +1458,10 @@ static void draw_list(ui_state_t *ui) {
 
     /* Footer */
     char footer[64];
-    snprintf(footer, sizeof(footer), "%d books", lc.count);
+    if (ui->list_mode == LIST_FOLDERS)
+        snprintf(footer, sizeof(footer), "%d items", lc.count);
+    else
+        snprintf(footer, sizeof(footer), "%d books", lc.count);
     render_draw_hline(r, 0, RENDER_FB_H - FOOTER_H, RENDER_FB_W, COL_DIVIDER);
     render_text_centered(r, 0, RENDER_FB_H - FOOTER_H + 10, RENDER_FB_W,
                         footer, FONT_SCALE_1, COL_GRAY_LT);
@@ -1375,8 +1512,20 @@ static int handle_list_touch(ui_state_t *ui, int x, int y) {
     lc.items = calloc(lc.capacity, sizeof(list_item_t));
     lc.db = ui->db;
     collect_list_books(ui, &lc);
-    if (idx < lc.count)
-        navigate_to(ui, SCREEN_DETAIL, ui->list_mode, lc.items[idx].book_id);
+    if (idx < lc.count) {
+        if (lc.items[idx].is_folder) {
+            /* Folder row: descend into prefix/<folder name>. */
+            const char *prefix = ui->folder_path[0] ? ui->folder_path
+                                                    : AUDIOBOOK_LIBRARY_ROOT;
+            char new_path[512];
+            snprintf(new_path, sizeof(new_path), "%s/%s", prefix, lc.items[idx].title);
+            navigate_to(ui, SCREEN_LIST, LIST_FOLDERS, 0);
+            strncpy(ui->folder_path, new_path, sizeof(ui->folder_path) - 1);
+            ui->folder_path[sizeof(ui->folder_path) - 1] = '\0';
+        } else {
+            navigate_to(ui, SCREEN_DETAIL, ui->list_mode, lc.items[idx].book_id);
+        }
+    }
     free(lc.items);
     return 1;
 }
