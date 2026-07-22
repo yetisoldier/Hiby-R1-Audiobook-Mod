@@ -7,10 +7,12 @@
 #include <string.h>
 #include <stdio.h>
 #include <strings.h>
+#include <limits.h>
 #include <sys/ioctl.h>
 #include <linux/fb.h>
 #include "render.h"
 #include "font.h"
+#include "utf8.h"
 
 /* ---- 8x12 bitmap font (ASCII 32-126) ----------------------------------- */
 /* Each entry is 12 bytes, one per row, MSB = leftmost pixel.
@@ -289,48 +291,94 @@ int render_text_wrap(renderer_t *r, int x, int y, int w, int max_lines,
                      const char *s, int scale, uint16_t color) {
     if (!s) return y;
     int px = font_available() ? font_px_for_scale(scale) : 0;
-    int char_w;   /* conservative average advance, for char-count wrapping */
     int line_h;
     if (font_available()) {
-        char_w = font_text_width("M", px);   /* wide glyph -> wrap early, no overflow */
-        if (char_w < 1) char_w = 1;
         line_h = font_line_height(px) + 2;
     } else {
-        char_w = FONT_W * scale + scale;
         line_h = FONT_H * scale + scale;
     }
-    int chars_per_line = w / char_w;
-    if (chars_per_line < 1) chars_per_line = 1;
+
     int cy = y;
     int line = 0;
     const char *p = s;
-    while (*p && line < max_lines) {
-        /* Find the last space before the line fills */
-        int len = 0;
-        const char *last_space = NULL;
-        const char *q = p;
-        while (*q && len < chars_per_line) {
-            if (*q == ' ') last_space = q;
-            if (*q == '\n') break;
-            len++; q++;
+    char buf[512];
+
+    if (!font_available()) {
+        /* ---- 8x12 bitmap fallback: byte wrap (ASCII only) ---- */
+        int char_w = FONT_W * scale + scale;
+        int chars_per_line = w / char_w;
+        if (chars_per_line < 1) chars_per_line = 1;
+        while (*p && line < max_lines) {
+            int len = 0;
+            const char *last_space = NULL;
+            const char *q = p;
+            while (*q && len < chars_per_line) {
+                if (*q == ' ') last_space = q;
+                if (*q == '\n') break;
+                len++; q++;
+            }
+            const char *next = q;
+            if (*q && *q != '\n' && last_space)
+                next = last_space + 1;
+            int draw_len = (int)(next - p);
+            if (*q == '\n') draw_len = len;
+            int cp = draw_len < (int)sizeof(buf) - 1 ? draw_len : (int)sizeof(buf) - 1;
+            memcpy(buf, p, cp);
+            buf[cp] = '\0';
+            render_text(r, x, cy, buf, scale, color);
+            cy += line_h;
+            line++;
+            p = *next ? next : q;
+            if (*p == '\n') p++;
         }
-        const char *next = q;
-        if (*q && *q != '\n' && last_space)
-            next = last_space + 1;
-        int draw_len = (int)(next - p);
-        if (*q == '\n') draw_len = len;
+        return cy;
+    }
 
-        /* Draw the substring */
-        char buf[256];
-        int cp = draw_len < (int)sizeof(buf) - 1 ? draw_len : (int)sizeof(buf) - 1;
-        memcpy(buf, p, cp);
-        buf[cp] = '\0';
-        render_text(r, x, cy, buf, scale, color);
+    /* ---- truetype: codepoint-aware, pixel-width-budget wrap ---- */
+    while (*p && line < max_lines) {
+        const char *line_start = p;
+        int line_w = 0;
+        const char *last_space_end = NULL;   /* pointer just after the last U+0020 */
+        const char *cur = p;
+        int saw_newline = 0;
+        while (*cur) {
+            if (*cur == '\n') { saw_newline = 1; break; }
+            uint32_t cp; int adv;
+            const char *cp_start = cur;
+            if (utf8_decode(cur, INT_MAX, &cp, &adv) != 0) { cur++; continue; }
+            int cw = font_codepoint_width(cp, px);
+            if (line_w + cw > w) {
+                /* overflow: if this is the first codepoint on the line, emit
+                 * it alone (over-wide glyph) so we always make progress */
+                if (cp_start == line_start) {
+                    line_w += cw;
+                    cur += adv;
+                    if (cp == ' ') last_space_end = cur;
+                    continue;
+                }
+                break;
+            }
+            line_w += cw;
+            cur += adv;
+            if (cp == ' ') last_space_end = cur;
+        }
 
+        const char *line_end;
+        if (saw_newline)      line_end = cur;           /* up to (not incl) \n */
+        else if (*cur == '\0') line_end = cur;          /* rest of string */
+        else if (last_space_end && last_space_end > line_start) line_end = last_space_end;
+        else                  line_end = cur;           /* hard break at codepoint boundary */
+
+        int draw_len = (int)(line_end - line_start);
+        if (draw_len > 0) {
+            utf8_safe_truncate(buf, (int)sizeof(buf), line_start, draw_len);
+            render_text(r, x, cy, buf, scale, color);
+        }
         cy += line_h;
         line++;
-        p = *next ? next : q;
-        if (*p == '\n') p++;
+        p = line_end;
+        if (saw_newline) p++;            /* skip the \n */
+        if (p == line_start) p++;         /* safety: never stall */
     }
     return cy;
 }

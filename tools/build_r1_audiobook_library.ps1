@@ -36,6 +36,7 @@ New-Item -ItemType Directory -Force -Path (Split-Path -Parent $outPath) | Out-Nu
 $sources = @(
     "audiobook_app\library_test.c",
     "audiobook_app\library.c",
+    "audiobook_app\utf8.c",
     "audiobook_app\scan.c",
     "audiobook_app\tags.c",
     "audiobook_app\sqlite3.c"

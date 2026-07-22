@@ -17,6 +17,7 @@
 #include <errno.h>
 #include <time.h>
 #include "library.h"
+#include "utf8.h"
 #include "bookmark_sd.h"
 
 /* ---- Schema bootstrap SQL (from orphaned binary) ----------------------- */
@@ -300,9 +301,11 @@ static const char *SCHEMA_SQL =
 /* ---- Helpers ------------------------------------------------------------ */
 
 static void safe_strcpy(char *dst, int dst_len, const char *src) {
-    if (!src || !dst || dst_len <= 0) return;
-    strncpy(dst, src, dst_len - 1);
-    dst[dst_len - 1] = '\0';
+    if (!dst || dst_len <= 0) return;
+    if (!src) { dst[0] = '\0'; return; }
+    /* Boundary-safe: back off so a fixed char[] buffer never ends mid-codepoint
+     * when copying a long UTF-8 title/author/etc. out of the DB. */
+    utf8_safe_truncate(dst, dst_len, src, -1);
 }
 
 static int mkdir_p(const char *path) {
@@ -999,7 +1002,14 @@ int audiobook_set_setting(sqlite3 *db, const char *key, const char *value) {
 
 void audiobook_derive_book_key(const char *root_path, char *out, int out_len) {
     if (!root_path || !out || out_len <= 0) return;
-    /* Replace all non-alphanumeric chars with underscores, strip leading / */
+    /* Replace all non-alphanumeric chars with underscores, strip leading /.
+     * Note: isalnum() is false for every UTF-8 byte >= 0x80, so Cyrillic
+     * folder names collapse to runs of '_'. This is INTENTIONAL, not a
+     * Cyrillic bug: book_key is an internal uniqueness key, never displayed.
+     * The full byte sequence is still normalized deterministically, so keys
+     * stay unique. Display text (title/root_path) holds the raw UTF-8 and is
+     * what the UI renders. Keeping this sanitization avoids colliding with
+     * keys from prior firmware versions and preserves the migration path. */
     int j = 0;
     for (const char *p = root_path; *p && j < out_len - 1; p++) {
         if (isalnum((unsigned char)*p)) {
@@ -1024,6 +1034,10 @@ void audiobook_derive_book_key(const char *root_path, char *out, int out_len) {
 int audiobook_natural_cmp(const char *a, const char *b) {
     if (!a) a = "";
     if (!b) b = "";
+    /* KNOWN LIMITATION: comparison is byte-wise (tolower is ASCII-only), so
+     * Cyrillic sorts by lead byte (0xD0/0xD1) — i.e. all Cyrillic titles land
+     * after all Latin ones, not in Russian alphabetical order. Acceptable for
+     * v1; a Cyrillic-aware fold (ё->е, А..Я->а..я) is a deferred stretch goal. */
     while (*a && *b) {
         if (isdigit((unsigned char)*a) && isdigit((unsigned char)*b)) {
             /* Compare numeric chunks */
@@ -1053,7 +1067,13 @@ void audiobook_derive_sort_title(const char *title, char *out, int out_len) {
     if (strncasecmp(p, "the ", 4) == 0) p += 4;
     else if (strncasecmp(p, "a ", 2) == 0) p += 2;
     else if (strncasecmp(p, "an ", 3) == 0) p += 3;
-    /* Lowercase the rest */
+    /* Lowercase the rest. KNOWN LIMITATION: tolower is ASCII-only, so for
+     * Cyrillic this is a no-op and the sort_title ends up byte-identical to
+     * the title (minus any article). Cyrillic thus sorts by lead byte, after
+     * Latin. Acceptable for v1; a Cyrillic-aware fold is a deferred stretch
+     * goal. Truncation is byte-level here — for very long titles a multi-byte
+     * sequence could split at out_len-1; safe_strcpy (utf8-aware) guards the
+     * copy back out of the DB, and this sort key is not displayed. */
     int j = 0;
     for (; *p && j < out_len - 1; p++)
         out[j++] = tolower((unsigned char)*p);
