@@ -678,6 +678,19 @@ int audiobook_scan_library(sqlite3 *db, const char *root_path,
         sqlite3_finalize(lr_stmt);
     }
 
+    /* Wrap the entire scan (library_roots marker + per-book upserts + orphan
+     * cleanup) in a single transaction. Without this, each INSERT/UPDATE runs
+     * as its own autocommit transaction and appends to the WAL; if /usr/data
+     * fills mid-scan (SQLITE_FULL) the scan aborts and leaves a multi-MB stale
+     * WAL that persists across reboots and blocks library.db on next open —
+     * the recurring "freeze" (see Hiby-R1-wal-scan-abort). One transaction
+     * means an abort rolls back cleanly: ROLLBACK discards the WAL frames back
+     * to the last committed state, so no stale large WAL survives the abort.
+     * VACUUM below must stay OUTSIDE the transaction (it cannot run inside
+     * one). Best-effort: if BEGIN itself fails, fall through to the old
+     * autocommit behavior rather than blocking the scan. */
+    int tx_active = (sqlite3_exec(db, "BEGIN", NULL, NULL, NULL) == SQLITE_OK);
+
     int changed_count = 0;
 
     /* Process each book directory */
@@ -909,13 +922,28 @@ int audiobook_scan_library(sqlite3 *db, const char *root_path,
     /* Cleanup orphans */
     audiobook_cleanup_orphans(db, progress, ctx);
 
+    /* Commit the scan transaction. If this fails (SQLITE_FULL on /usr/data
+     * filling up while writing the commit frame), the transaction did not
+     * commit — roll it back so the WAL resets to the pre-scan state instead
+     * of leaving a stale large WAL behind (the freeze trigger). VACUUM then
+     * runs only on a clean commit; on abort we bail without compacting. */
+    if (tx_active) {
+        int commit_rc = sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+        if (commit_rc != SQLITE_OK) {
+            sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+            if (progress) progress(5, 0, 0, "scan aborted (storage full)", ctx);
+            free(books);
+            return -1;
+        }
+    }
+
     /* Compact library.db after prunes. SQLite keeps freed pages inside the
      * file unless VACUUM'd, so over many card swaps (each leaving pruned
      * rows behind) the file would only grow on the tiny /usr/data partition.
      * VACUUM rebuilds it in place. Best-effort: it needs ~DB-size free temp
      * space (we just confirmed >= SCAN_MIN_FREE_BYTES at scan start, and the
      * DB is <1 MB), and a failure leaves the DB working — just not compact.
-     * No active transaction is open here. */
+     * No active transaction is open here (COMMIT above closed it). */
     sqlite3_exec(db, "VACUUM", NULL, NULL, NULL);
 
     if (progress) progress(5, changed_count, book_count, "done", ctx);
