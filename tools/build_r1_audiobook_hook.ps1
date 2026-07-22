@@ -33,7 +33,6 @@ $sources = @(
     "audiobook_app\ui.c",
     "audiobook_app\render.c",
     "audiobook_app\font.c",
-    "audiobook_app\utf8.c",
     "audiobook_app\library.c",
     "audiobook_app\scan.c",
     "audiobook_app\tags.c",

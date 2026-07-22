@@ -29,7 +29,6 @@
 #include "scan.h"
 #include "player.h"
 #include "cover.h"
-#include "utf8.h"
 
 /* EVIOCGRAB: exclusive grab on an input device so hiby_player's own fd
  * doesn't receive touch events while we're in audiobook mode. */
@@ -1348,48 +1347,6 @@ static int handle_home_touch(ui_state_t *ui, int x, int y) {
     return 1;
 }
 
-/* Truncate s to fit max_px pixels at the given scale, stripping whole UTF-8
- * codepoints from the end (never splitting a multi-byte sequence). If ellipsis
- * is non-zero and truncation occurred, append U+2026 (HORIZONTAL ELLIPSIS,
- * UTF-8 0xE2 0x80 0xA6 — present in msyh); if the ellipsis itself overflows,
- * keep dropping codepoints until it fits. dst is NUL-terminated. */
-static void ui_truncate_to_width(char *dst, int dst_len, const char *s,
-                                 int scale, int max_px, int ellipsis) {
-    if (!dst || dst_len <= 0) return;
-    if (!s) { dst[0] = '\0'; return; }
-    utf8_safe_truncate(dst, dst_len, s, -1);
-    if (max_px <= 0) return;
-
-    /* strip whole codepoints until it fits (or down to empty) */
-    while (render_text_width(dst, scale) > max_px) {
-        int len = (int)strlen(dst);
-        if (len <= 1) { dst[0] = '\0'; break; }
-        int p = len;
-        while (p > 0 && ((unsigned char)dst[p - 1] & 0xC0) == 0x80) p--;  /* cont bytes */
-        if (p > 0) p--;                                                  /* lead byte */
-        dst[p] = '\0';
-        if (p == 0) break;
-    }
-
-    if (ellipsis && strcmp(dst, s) != 0) {
-        /* append U+2026; if it then overflows, drop one more codepoint and retry */
-        for (;;) {
-            int len = (int)strlen(dst);
-            if (len + 3 >= dst_len) break;
-            dst[len] = (char)0xE2; dst[len + 1] = (char)0x80; dst[len + 2] = (char)0xA6;
-            dst[len + 3] = '\0';
-            if (render_text_width(dst, scale) <= max_px) break;  /* fits */
-            dst[len] = '\0';                                       /* remove ellipsis, drop a codepoint */
-            if (len <= 1) break;
-            int p = len;
-            while (p > 0 && ((unsigned char)dst[p - 1] & 0xC0) == 0x80) p--;
-            if (p > 0) p--;
-            dst[p] = '\0';
-            if (p == 0) break;
-        }
-    }
-}
-
 /* ---- Screen drawing: List ---------------------------------------------- */
 
 /* list_item_t is defined in ui.h (shared with the render cache). */
@@ -1412,8 +1369,10 @@ static int list_collect_cb(const audiobook_book_t *b, void *ctx) {
     list_item_t *item = &lc->items[lc->count++];
     item->book_id = b->book_id;
     item->is_folder = 0;
-    utf8_safe_truncate(item->title, (int)sizeof(item->title), b->title, -1);
-    utf8_safe_truncate(item->author, (int)sizeof(item->author), b->author, -1);
+    strncpy(item->title, b->title, sizeof(item->title) - 1);
+    item->title[sizeof(item->title) - 1] = '\0';
+    strncpy(item->author, b->author, sizeof(item->author) - 1);
+    item->author[sizeof(item->author) - 1] = '\0';
     item->duration_ms = b->total_duration_ms;
     item->completed = b->completed;
 
@@ -1840,8 +1799,11 @@ static void draw_list(ui_state_t *ui) {
             if (i == ui->selected_idx)
                 render_fill_rect(r, 0, item_top, 4, LIST_ITEM_H, COL_ACCENT);
             char name_buf[256];
-            ui_truncate_to_width(name_buf, sizeof(name_buf), names[i],
-                                 FONT_SCALE_2, RENDER_FB_W - 48, 0);
+            strncpy(name_buf, names[i], sizeof(name_buf) - 1);
+            name_buf[sizeof(name_buf) - 1] = '\0';
+            while (render_text_width(name_buf, FONT_SCALE_2) > RENDER_FB_W - 48 &&
+                   strlen(name_buf) > 1)
+                name_buf[strlen(name_buf) - 1] = '\0';
             render_text(r, 24, item_top + 30, name_buf, FONT_SCALE_2, COL_WHITE);
             y += LIST_ITEM_H;
             if (y < RENDER_FB_H - FOOTER_H)
@@ -1914,8 +1876,19 @@ static void draw_list(ui_state_t *ui) {
         if (items[i].completed)
             title_max_w -= render_text_width("Done", FONT_SCALE_1) + 16;
         char title_buf[256];
-        ui_truncate_to_width(title_buf, sizeof(title_buf), items[i].title,
-                             FONT_SCALE_2, title_max_w, 1);
+        strncpy(title_buf, items[i].title, sizeof(title_buf) - 1);
+        title_buf[sizeof(title_buf) - 1] = '\0';
+        while (render_text_width(title_buf, FONT_SCALE_2) > title_max_w &&
+               strlen(title_buf) > 1) {
+            title_buf[strlen(title_buf) - 1] = '\0';
+        }
+        /* If we truncated, strip trailing spaces and add ellipsis */
+        if (strcmp(title_buf, items[i].title) != 0) {
+            int len = (int)strlen(title_buf);
+            while (len > 0 && title_buf[len - 1] == ' ') { title_buf[--len] = '\0'; }
+            if (len > 3) { title_buf[len - 3] = '.'; title_buf[len - 2] = '.';
+                            title_buf[len - 1] = '.'; }
+        }
         render_text(r, text_x, item_top + 10, title_buf, FONT_SCALE_2, COL_WHITE);
 
         /* Second line: author + duration */
@@ -1940,8 +1913,8 @@ static void draw_list(ui_state_t *ui) {
         }
 
         if (items[i].author[0]) {
-            utf8_safe_append(line2, sizeof(line2), "  -  ");
-            utf8_safe_append(line2, sizeof(line2), items[i].author);
+            strncat(line2, "  -  ", sizeof(line2) - strlen(line2) - 1);
+            strncat(line2, items[i].author, sizeof(line2) - strlen(line2) - 1);
         }
 
         render_text(r, text_x, item_top + 62, line2, FONT_SCALE_1, COL_GRAY_LT);
@@ -2005,8 +1978,9 @@ static int handle_list_touch(ui_state_t *ui, int x, int y) {
                 audiobook_list_series(ui->db, strlist_collect_cb, &sc);
         }
         if (idx < sc.count && sc.names[idx]) {
-            utf8_safe_truncate(ui->list_filter, (int)sizeof(ui->list_filter),
-                              sc.names[idx], -1);
+            strncpy(ui->list_filter, sc.names[idx],
+                    sizeof(ui->list_filter) - 1);
+            ui->list_filter[sizeof(ui->list_filter) - 1] = '\0';
             navigate_to(ui, SCREEN_LIST,
                         ui->list_mode == LIST_AUTHORS ? LIST_AUTHOR_BOOKS
                                                        : LIST_SERIES_BOOKS,
@@ -2543,8 +2517,9 @@ static int bm_collect_cb(const audiobook_bookmark_t *bm, void *ctx) {
     bookmark_row_t *row = &c->rows[c->count++];
     row->bookmark_id = bm->bookmark_id;
     row->position_ms = bm->total_book_position_ms;
-    utf8_safe_truncate(row->label, (int)sizeof(row->label),
-                       bm->label[0] ? bm->label : "Bookmark", -1);
+    strncpy(row->label, bm->label[0] ? bm->label : "Bookmark",
+            sizeof(row->label) - 1);
+    row->label[sizeof(row->label) - 1] = '\0';
     return 0;
 }
 
@@ -2583,8 +2558,11 @@ static void draw_bookmarks(ui_state_t *ui) {
             render_fill_rect(r, 0, item_top, 4, LIST_ITEM_H, COL_ACCENT);
 
         char label_buf[256];
-        ui_truncate_to_width(label_buf, sizeof(label_buf), rows[i].label,
-                             FONT_SCALE_2, RENDER_FB_W - 160, 0);
+        strncpy(label_buf, rows[i].label, sizeof(label_buf) - 1);
+        label_buf[sizeof(label_buf) - 1] = '\0';
+        while (render_text_width(label_buf, FONT_SCALE_2) > RENDER_FB_W - 160 &&
+               strlen(label_buf) > 1)
+            label_buf[strlen(label_buf) - 1] = '\0';
         render_text(r, 24, item_top + 10, label_buf, FONT_SCALE_2, COL_WHITE);
 
         render_time(r, 24, item_top + 62, rows[i].position_ms, FONT_SCALE_1,
@@ -2680,8 +2658,9 @@ static int ch_collect_cb(const audiobook_chapter_t *ch, void *ctx) {
     chapter_row_t *row = &c->rows[c->count++];
     row->start_ms = ch->start_ms;
     row->track_id = ch->track_id;
-    utf8_safe_truncate(row->title, (int)sizeof(row->title),
-                        ch->title[0] ? ch->title : "Chapter", -1);
+    strncpy(row->title, ch->title[0] ? ch->title : "Chapter",
+            sizeof(row->title) - 1);
+    row->title[sizeof(row->title) - 1] = '\0';
     return 0;
 }
 
@@ -2723,11 +2702,20 @@ static void draw_chapters(ui_state_t *ui) {
          * even when the metadata title itself is very long. */
         const int title_w = RENDER_FB_W - 48;
         char line1[256], line2[256] = {0};
-        utf8_safe_truncate(line1, (int)sizeof(line1), rows[i].title, -1);
+        strncpy(line1, rows[i].title, sizeof(line1) - 1);
+        line1[sizeof(line1) - 1] = '\0';
         if (render_text_width(line1, FONT_SCALE_2) > title_w) {
-            ui_truncate_to_width(line1, sizeof(line1), rows[i].title,
-                                 FONT_SCALE_2, title_w, 0);
             int cut = (int)strlen(line1);
+            while (cut > 1) {
+                char saved = line1[cut];
+                line1[cut] = '\0';
+                if (render_text_width(line1, FONT_SCALE_2) <= title_w) {
+                    line1[cut] = saved;
+                    break;
+                }
+                line1[cut] = saved;
+                cut--;
+            }
             int split = cut;
             while (split > 0 && line1[split - 1] != ' ') split--;
             if (split < cut / 2) split = cut;  /* avoid a tiny first line */
@@ -2736,8 +2724,11 @@ static void draw_chapters(ui_state_t *ui) {
             line1[split] = '\0';
             while (split > 0 && line1[split - 1] == ' ')
                 line1[--split] = '\0';
-            ui_truncate_to_width(line2, sizeof(line2), rest,
-                                 FONT_SCALE_2, title_w, 0);
+            strncpy(line2, rest, sizeof(line2) - 1);
+            line2[sizeof(line2) - 1] = '\0';
+            while (render_text_width(line2, FONT_SCALE_2) > title_w &&
+                   strlen(line2) > 1)
+                line2[strlen(line2) - 1] = '\0';
         }
         render_text(r, 24, item_top + 8, line1, FONT_SCALE_2, COL_WHITE);
         if (line2[0])

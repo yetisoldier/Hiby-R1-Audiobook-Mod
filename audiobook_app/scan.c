@@ -20,7 +20,6 @@
 #include "scan.h"
 #include "tags.h"
 #include "cover.h"         /* cover_precache: pre-decode covers to .r565 at scan */
-#include "utf8.h"
 #include "posstore.h"      /* pos_remove_sd: drop stale SD .pos for pruned books */
 #include "bookmark_sd.h"   /* bookmark_remove_book_sd: drop stale SD .bm */
 
@@ -114,8 +113,9 @@ static int collect_audio_files(const char *dir_path,
 
         snprintf(files[count].path, sizeof(files[count].path),
                  "%s/%s", dir_path, ent->d_name);
-        utf8_safe_truncate(files[count].name, (int)sizeof(files[count].name),
-                          ent->d_name, -1);
+        strncpy(files[count].name, ent->d_name,
+                sizeof(files[count].name) - 1);
+        files[count].name[sizeof(files[count].name) - 1] = '\0';
         files[count].type = type;
         count++;
     }
@@ -154,7 +154,8 @@ static int find_book_dirs(const char *root_path,
             *out_capacity = new_cap;
         }
         book_dir_t *bd = &(*out_books)[*out_book_count];
-        utf8_safe_truncate(bd->path, (int)sizeof(bd->path), parent_path, -1);
+        strncpy(bd->path, parent_path, sizeof(bd->path) - 1);
+        bd->path[sizeof(bd->path) - 1] = '\0';
         bd->files = NULL;
         bd->file_count = 0;
         (*out_book_count)++;
@@ -345,11 +346,9 @@ static void append_chapter_title(char *buf, int buf_sz, const char *title) {
     if (!buf || buf_sz <= 0 || !title || !title[0]) return;
     int len = (int)strlen(buf);
     if (len >= buf_sz - 1) return;
-    if (len > 0) {
-        buf[len++] = ' ';
-        buf[len] = '\0';
-    }
-    utf8_safe_append(buf + len, buf_sz - len, title);
+    if (len > 0) buf[len++] = ' ';
+    strncpy(buf + len, title, buf_sz - len - 1);
+    buf[buf_sz - 1] = '\0';
 }
 
 /* Context + callback for audio_read_chapters: upsert each chapter into the DB
@@ -451,7 +450,8 @@ static void derive_path_metadata(const char *root_path,
     if (!*rel) return;
 
     char buf[512];
-    utf8_safe_truncate(buf, (int)sizeof(buf), rel, -1);
+    strncpy(buf, rel, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
 
     char *comps[16];
     int n = 0;
@@ -466,13 +466,16 @@ static void derive_path_metadata(const char *root_path,
     int ancestors = n - 1;  /* exclude the leaf book dir itself */
     if (author && author_sz > 0) {
         if (ancestors >= 1) {
-            utf8_safe_truncate(author, author_sz, comps[0], -1);
+            strncpy(author, comps[0], author_sz - 1);
+            author[author_sz - 1] = '\0';
         } else {
-            utf8_safe_truncate(author, author_sz, "Unknown", -1);
+            strncpy(author, "Unknown", author_sz - 1);
+            author[author_sz - 1] = '\0';
         }
     }
     if (series && series_sz > 0 && ancestors >= 2) {
-        utf8_safe_truncate(series, series_sz, comps[1], -1);
+        strncpy(series, comps[1], series_sz - 1);
+        series[series_sz - 1] = '\0';
     }
 }
 
@@ -521,7 +524,8 @@ static void clean_book_title(const char *leaf, char *out, int out_sz) {
         if (*p && p != after) src = p;  /* require a separator after the year */
     }
 
-    utf8_safe_truncate(out, out_sz, src, -1);
+    strncpy(out, src, out_sz - 1);
+    out[out_sz - 1] = '\0';
 
     /* strip trailing " [...]" — the last bracketed group */
     int len = (int)strlen(out);
@@ -536,7 +540,8 @@ static void clean_book_title(const char *leaf, char *out, int out_sz) {
         }
     }
     if (out[0] == '\0') {  /* stripped too much — keep raw */
-        utf8_safe_truncate(out, out_sz, leaf ? leaf : "", -1);
+        strncpy(out, leaf ? leaf : "", out_sz - 1);
+        out[out_sz - 1] = '\0';
     }
 }
 
@@ -827,11 +832,12 @@ int audiobook_scan_library(sqlite3 *db, const char *root_path,
             /* Derive track title: use tag title or filename */
             char track_title[512];
             if (tags.title[0]) {
-                utf8_safe_truncate(track_title, (int)sizeof(track_title),
-                                   tags.title, -1);
+                strncpy(track_title, tags.title, sizeof(track_title) - 1);
+                track_title[sizeof(track_title) - 1] = '\0';
             } else {
-                utf8_safe_truncate(track_title, (int)sizeof(track_title),
-                                   bd->files[j].name, -1);
+                strncpy(track_title, bd->files[j].name,
+                        sizeof(track_title) - 1);
+                track_title[sizeof(track_title) - 1] = '\0';
             }
 
             char track_sort_title[512];
