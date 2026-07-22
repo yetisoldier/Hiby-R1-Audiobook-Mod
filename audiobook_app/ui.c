@@ -324,6 +324,82 @@ static void set_blanked(ui_state_t *ui, int on, int fb_fd) {
     }
 }
 
+/* Sync our blanked flag with the real backlight. The stock system may auto-dim
+ * the screen independently; if we don't notice, our blanked flag drifts and
+ * the power button toggles the wrong way. */
+static void sync_blank_state(ui_state_t *ui, int fb_fd) {
+    int bl = read_brightness();
+    if (bl < 0) return;  /* can't read — leave state alone */
+    if (bl == 0 && !ui->blanked) {
+        ui->saved_brightness = 50;
+        ui->blanked = 1;
+        ui_log("[ui] auto-blank sync (backlight went to 0)\n");
+    } else if (bl > 0 && ui->blanked) {
+        ui->blanked = 0;
+        ui_log("[ui] auto-wake sync (backlight went to %d)\n", bl);
+    }
+}
+
+/* Try to reopen key fds that are missing or dead. Called periodically from
+ * the event loop so a device re-enumeration (e.g. after screen dark) doesn't
+ * leave us with stale fds forever. */
+static void reopen_key_fds(ui_state_t *ui) {
+    const char *keydevs[] = {"/dev/input/event0", "/dev/input/event2",
+                             "/dev/input/event3"};
+    int have[3] = {0, 0, 0};
+    for (int i = 0; i < ui->n_key_fds; i++) {
+        if (ui->key_fds[i] < 0) continue;
+        /* Probe the fd WITHOUT consuming events. A read() here would swallow
+         * the next queued input event — including the very wake-key press that
+         * unblanks the screen — leaving key presses silently eaten every 5 s
+         * and the screen looking frozen when dark. EVIOCGNAME queries the
+         * device name; it returns -1 (ENODEV/EBADF) on a dead or re-enumerated
+         * device and never reads the event queue. */
+        char namebuf[128];
+        if (ioctl(ui->key_fds[i], EVIOCGNAME(sizeof(namebuf) - 1), namebuf) < 0) {
+            ui_log("[ui] key fd %d dead (%s), closing\n",
+                   ui->key_fds[i], strerror(errno));
+            close(ui->key_fds[i]);
+            ui->key_fds[i] = -1;
+            continue;
+        }
+        /* Match against known device paths to mark which ones we have. */
+        char link[128];
+        char proc[64];
+        int found = 0;
+        snprintf(proc, sizeof(proc), "/proc/self/fd/%d", ui->key_fds[i]);
+        ssize_t n = readlink(proc, link, sizeof(link) - 1);
+        if (n > 0) {
+            link[n] = '\0';
+            for (int k = 0; k < 3; k++) {
+                if (strcmp(link, keydevs[k]) == 0) { have[k] = 1; found = 1; }
+            }
+        }
+        if (!found) have[0] = have[1] = have[2] = 1; /* unknown — don't add more */
+    }
+    /* Compact out dead entries */
+    int j = 0;
+    for (int i = 0; i < ui->n_key_fds; i++) {
+        if (ui->key_fds[i] >= 0) ui->key_fds[j++] = ui->key_fds[i];
+    }
+    ui->n_key_fds = j;
+    /* Reopen missing ones */
+    for (int k = 0; k < 3; k++) {
+        if (have[k]) continue;
+        int fd = dup_hiby_input_fd(keydevs[k]);
+        const char *src = "hiby-dup";
+        if (fd < 0) { fd = open(keydevs[k], O_RDONLY | O_NONBLOCK); src = "fresh"; }
+        if (fd >= 0) {
+            if (ui->n_key_fds < 4) {
+                ui->key_fds[ui->n_key_fds++] = fd;
+                ui_log("[ui] key fd REOPEN %s = %d (%s)\n", keydevs[k], fd, src);
+            } else {
+                close(fd);
+            }
+        }
+    }
+}
+
 /* R1 touch screen reports ABS_MT_POSITION_X/Y in the range 0-479/0-799
  * (screen coords). Some kernels report 0-255 for X and 0-255 for Y and
  * need scaling, but on R1 the events are already screen-resolution. */
@@ -567,6 +643,8 @@ int ui_run(uint16_t *fb, int fb_fd) {
      * Also reads the key devices (via hiby_player's grabbed fds) for the
      * power button (blank/wake) and back/esc. */
     static int key_log_count = 0;
+    uint64_t last_key_reopen = 0;
+    uint64_t last_blank_sync = 0;
     while (ui->running) {
         fd_set rfds;
         FD_ZERO(&rfds);
@@ -598,6 +676,16 @@ int ui_run(uint16_t *fb, int fb_fd) {
         timeout.tv_sec = 0;
         timeout.tv_usec = 20000;  /* 20ms — short so we can pan promptly */
         int rv = select(maxfd + 1, &rfds, NULL, NULL, &timeout);
+        uint64_t now = now_ms();
+        /* Periodically sync blank state and reopen dead key fds */
+        if (now - last_blank_sync >= 1000) {
+            last_blank_sync = now;
+            sync_blank_state(ui, fb_fd);
+        }
+        if (now - last_key_reopen >= 5000) {
+            last_key_reopen = now;
+            reopen_key_fds(ui);
+        }
         if (rv > 0) {
             if (ui->input_fd >= 0 && FD_ISSET(ui->input_fd, &rfds)) {
                 struct input_event ev;
@@ -630,7 +718,8 @@ int ui_run(uint16_t *fb, int fb_fd) {
                 if (ui->key_fds[i] < 0
                     || !FD_ISSET(ui->key_fds[i], &rfds)) continue;
                 struct input_event ev;
-                while (read(ui->key_fds[i], &ev, sizeof(ev)) == sizeof(ev)) {
+                ssize_t r;
+                while ((r = read(ui->key_fds[i], &ev, sizeof(ev))) == sizeof(ev)) {
                     if (ev.type != EV_KEY) continue;
                     /* Diagnostic: log the first ~40 key events so we can
                      * identify the exact power keycode. */
@@ -638,6 +727,11 @@ int ui_run(uint16_t *fb, int fb_fd) {
                         key_log_count++;
                         ui_log("[ui] KEY press code=%d (0x%x) value=%d fd=%d\n",
                                ev.code, ev.code, ev.value, ui->key_fds[i]);
+                    }
+                    /* Any key press (except power, which toggles) wakes the
+                     * screen if it is dark — matches stock player behavior. */
+                    if (ev.value == 1 && ev.code != KEY_POWER && ui->blanked) {
+                        set_blanked(ui, 0, fb_fd);
                     }
                     /* Volume keys also act on key-repeat (value==2) so holding
                      * the button ramps through the fine mixer-unit steps for
@@ -676,6 +770,12 @@ int ui_run(uint16_t *fb, int fb_fd) {
                         }
                     }
                 }
+                if (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                    ui_log("[ui] key fd %d read err (%s); closing\n",
+                           ui->key_fds[i], strerror(errno));
+                    close(ui->key_fds[i]);
+                    ui->key_fds[i] = -1;
+                }
             }
             /* Bluetooth AVRCP remote (BT speaker's play/pause button). The one
              * button alternates KEY_PLAYCD(200)/KEY_PAUSECD(201) per press; we
@@ -707,7 +807,7 @@ int ui_run(uint16_t *fb, int fb_fd) {
          * show our UI. Our ioctl hook draws before the real pan.
          * Keep panning even when blanked (backlight off) so the touch IC
          * stays alive for double-tap wake. */
-        uint64_t now = now_ms();
+        now = now_ms();
         if (can_pan && (now - last_pan) >= PAN_INTERVAL_MS) {
             last_pan = now;
             vinfo.yoffset = (vinfo.yoffset == 0) ? vinfo.yres : 0;
