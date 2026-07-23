@@ -6,9 +6,9 @@ firmware, not for normal end users.
 
 ## Current Release Reference
 
-- Public release: `v2.0.23`
-- About-screen label: `HiBy R1 2.0.23`
-- Package: `r1-audiobooks-2.0.23.upt`
+- Public release: `v2.0.24`
+- About-screen label: `HiBy R1 2.0.24`
+- Package: `r1-audiobooks-2.0.24.upt`
 - Base firmware: stock HiBy R1 1.6 for the normal R1
 - Target device: normal HiBy R1 only, not R1 MIDI
 - Source branch: `codex/sd-runtime-stability` (the `main` branch has no
@@ -90,16 +90,15 @@ that the pre-2.0 line carried and v2.0.17 restores:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File tools\build_r1_audiobook_firmware.ps1 `
-  -OutDir work\audiobook-firmware-2.0.23 `
-  -OutputUpt work\audiobook-firmware-2.0.23\r1-audiobooks-2.0.23.upt `
+  -OutDir work\audiobook-firmware-2.0.24 `
+  -OutputUpt work\audiobook-firmware-2.0.24\r1-audiobooks-2.0.24.upt `
   -IncludeAudiobookNativeApp `
-  -IncludeAudiobookLauncherIcon `
   -EnableBootAdb `
   -UnlockNativeDsd `
   -EnableBluetoothSbcXq `
   -UnlockUsbDacMode `
-  -CustomVersionId 2.0.23 `
-  -CustomVersionLabel "HiBy R1 2.0.23"
+  -CustomVersionId 2.0.24 `
+  -CustomVersionLabel "HiBy R1 2.0.24"
 ```
 
 The NativeApp pivot is mutually exclusive with the legacy resume-daemon switches
@@ -136,13 +135,12 @@ Run the release package verifier against the NativeApp build:
 
 ```powershell
 py -3 tools\verify_r1_audiobook_build.py `
-  --out-dir work\audiobook-firmware-2.0.23 `
-  --upt-name r1-audiobooks-2.0.23.upt `
-  --expected-version 2.0.23 `
-  --expected-label "HiBy R1 2.0.23" `
+  --out-dir work\audiobook-firmware-2.0.24 `
+  --upt-name r1-audiobooks-2.0.24.upt `
+  --expected-version 2.0.24 `
+  --expected-label "HiBy R1 2.0.24" `
   --expect-native-app `
   --require-boot-adb `
-  --expect-audiobook-launcher-icon `
   --expect-native-dsd `
   --expect-sbc-xq `
   --expect-usb-dac-mode
@@ -150,7 +148,8 @@ py -3 tools\verify_r1_audiobook_build.py `
 
 The verifier is intentionally strict. NativeApp mode checks the launcher
 callback and cave, stock Books hub preservation, wrapper, native app and hook
-modes, version/feature markers, launcher icons, rootfs paths/modes/symlinks,
+modes, version/feature markers, stock theme-aware launcher resources, rootfs
+paths/modes/symlinks,
 OTA rootfs hash, and known-bad package hashes. Do not add the legacy
 `--require-db-maintenance`, `--expect-native-hub-launcher`, or
 `--expect-native-hub-view-rows` flags; those contradict the NativeApp pivot.
@@ -166,13 +165,12 @@ verifies remote byte count + hashes:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File tools\adb_stage_verified_firmware.ps1 `
-  -Package work\audiobook-firmware-2.0.23\r1-audiobooks-2.0.23.upt `
-  -BuildOutDir work\audiobook-firmware-2.0.23 `
-  -ExpectedVersion 2.0.23 `
-  -ExpectedLabel "HiBy R1 2.0.23" `
+  -Package work\audiobook-firmware-2.0.24\r1-audiobooks-2.0.24.upt `
+  -BuildOutDir work\audiobook-firmware-2.0.24 `
+  -ExpectedVersion 2.0.24 `
+  -ExpectedLabel "HiBy R1 2.0.24" `
   -ExpectNativeApp `
   -RequireBootAdb `
-  -ExpectAudiobookLauncherIcon `
   -ExpectNativeDsd `
   -ExpectBluetoothSbcXq `
   -ExpectUsbDacMode `
@@ -186,7 +184,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 >
 > ```bash
 > adb shell cp /usr/data/mnt/sd_0/r1.upt /usr/data/mnt/sd_0/r1.upt.prev.bak
-> MSYS_NO_PATHCONV=1 adb -s <serial> push work\audiobook-firmware-2.0.17\r1-audiobooks-2.0.17.upt /usr/data/mnt/sd_0/r1.upt
+> MSYS_NO_PATHCONV=1 adb -s <serial> push work\audiobook-firmware-2.0.24\r1-audiobooks-2.0.24.upt /usr/data/mnt/sd_0/r1.upt
 > adb shell md5sum /usr/data/mnt/sd_0/r1.upt
 > ```
 >

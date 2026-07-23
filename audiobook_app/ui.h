@@ -261,6 +261,7 @@ typedef struct {
     int cur_book_ok;
     audiobook_progress_t cur_prog;
     int cur_prog_ok;
+    char cur_description[2048];
     uint16_t cur_cover_buf[COVER_PX * COVER_PX];
     int cur_cover_ok;
 

@@ -25,6 +25,7 @@ typedef struct {
     char album[512];       /* book title candidate */
     char composer[256];    /* narrator candidate */
     char genre[128];
+    char description[2048]; /* publisher summary: MP3 COMM / M4B desc/ldes */
     int track_number;
     int disc_number;
     int64_t duration_ms;   /* 0 if unknown */

@@ -285,40 +285,45 @@ void render_text_right(renderer_t *r, int x_right, int y,
     render_text(r, x_right - text_w, y, s, scale, color);
 }
 
+int render_text_line_height(int scale) {
+    if (font_available())
+        return font_line_height(font_px_for_scale(scale)) + 2;
+    return FONT_H * scale + scale;
+}
+
 int render_text_wrap(renderer_t *r, int x, int y, int w, int max_lines,
                      const char *s, int scale, uint16_t color) {
     if (!s) return y;
-    int px = font_available() ? font_px_for_scale(scale) : 0;
-    int char_w;   /* conservative average advance, for char-count wrapping */
-    int line_h;
-    if (font_available()) {
-        char_w = font_text_width("M", px);   /* wide glyph -> wrap early, no overflow */
-        if (char_w < 1) char_w = 1;
-        line_h = font_line_height(px) + 2;
-    } else {
-        char_w = FONT_W * scale + scale;
-        line_h = FONT_H * scale + scale;
-    }
-    int chars_per_line = w / char_w;
-    if (chars_per_line < 1) chars_per_line = 1;
+    int line_h = render_text_line_height(scale);
     int cy = y;
     int line = 0;
     const char *p = s;
     while (*p && line < max_lines) {
-        /* Find the last space before the line fills */
-        int len = 0;
+        while (*p == ' ') p++;
+        if (!*p) break;
+
+        /* Measure actual glyph advances. The previous wrapper divided the
+         * width by the advance of "M", which made ordinary prose wrap at
+         * roughly half the available width. */
+        int line_w = 0;
         const char *last_space = NULL;
         const char *q = p;
-        while (*q && len < chars_per_line) {
+        while (*q && *q != '\n') {
+            char glyph[2] = {*q, '\0'};
+            int glyph_w = render_text_width(glyph, scale);
+            if (q > p && line_w + glyph_w > w) break;
             if (*q == ' ') last_space = q;
-            if (*q == '\n') break;
-            len++; q++;
+            line_w += glyph_w;
+            q++;
         }
+
         const char *next = q;
-        if (*q && *q != '\n' && last_space)
-            next = last_space + 1;
-        int draw_len = (int)(next - p);
-        if (*q == '\n') draw_len = len;
+        if (*q && *q != '\n' && last_space && last_space > p)
+            next = last_space;
+
+        const char *draw_end = next;
+        while (draw_end > p && draw_end[-1] == ' ') draw_end--;
+        int draw_len = (int)(draw_end - p);
 
         /* Draw the substring */
         char buf[256];
@@ -329,7 +334,8 @@ int render_text_wrap(renderer_t *r, int x, int y, int w, int max_lines,
 
         cy += line_h;
         line++;
-        p = *next ? next : q;
+        p = next;
+        while (*p == ' ') p++;
         if (*p == '\n') p++;
     }
     return cy;

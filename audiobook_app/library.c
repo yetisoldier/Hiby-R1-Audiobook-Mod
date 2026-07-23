@@ -50,6 +50,10 @@ static const char *SCHEMA_SQL =
   "completed_at INTEGER,"
   "playback_speed REAL NOT NULL DEFAULT 1.0"
 ");"
+"CREATE TABLE IF NOT EXISTS book_metadata("
+  "book_id INTEGER PRIMARY KEY REFERENCES books(book_id) ON DELETE CASCADE,"
+  "description TEXT NOT NULL DEFAULT ''"
+");"
 "CREATE TABLE IF NOT EXISTS tracks("
   "track_id INTEGER PRIMARY KEY,"
   "book_id INTEGER NOT NULL REFERENCES books(book_id) ON DELETE CASCADE,"
@@ -572,6 +576,27 @@ int audiobook_get_book(sqlite3 *db, int book_id, audiobook_book_t *out) {
     if (sqlite3_step(stmt) == SQLITE_ROW) {
         fill_book_from_stmt(stmt, out);
         ret = 1;
+    }
+    sqlite3_finalize(stmt);
+    return ret;
+}
+
+int audiobook_get_book_description(sqlite3 *db, int book_id,
+                                   char *out, int out_len) {
+    if (!db || !out || out_len <= 0) return -1;
+    out[0] = '\0';
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(
+            db,
+            "SELECT description FROM book_metadata WHERE book_id=?",
+            -1, &stmt, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int(stmt, 1, book_id);
+    int ret = 0;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        safe_strcpy(out, out_len,
+                    (const char *)sqlite3_column_text(stmt, 0));
+        ret = out[0] ? 1 : 0;
     }
     sqlite3_finalize(stmt);
     return ret;

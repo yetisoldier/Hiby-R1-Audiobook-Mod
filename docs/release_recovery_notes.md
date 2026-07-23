@@ -2,10 +2,10 @@
 
 These notes are for the normal HiBy R1 on stock firmware 1.6, not the R1 MIDI.
 
-> **Current release:** v2.0.23, firmware marker `2.0.23`, package
-> `r1-audiobooks-2.0.23.upt`. The early v1.6.x sections below are retained as
+> **Current release:** v2.0.24, firmware marker `2.0.24`, package
+> `r1-audiobooks-2.0.24.upt`. The early v1.6.x sections below are retained as
 > historical recovery records; current release details are in
-> [`firmware/releases/v2.0.23/RELEASE_NOTES.md`](../firmware/releases/v2.0.23/RELEASE_NOTES.md).
+> [`firmware/releases/v2.0.24/RELEASE_NOTES.md`](../firmware/releases/v2.0.24/RELEASE_NOTES.md).
 
 ## Current Release
 
@@ -84,9 +84,25 @@ The previous public release was `v1.6.0`, firmware marker
 
 ---
 
+## v2.0.24 note (2026-07-23, descriptions and launcher handoff)
+
+The current public release is **v2.0.24** (about-screen label "HiBy R1
+2.0.24").
+
+- GitHub release: `v2.0.24`
+- Package: `r1-audiobooks-2.0.24.upt` (42,237,952 B)
+- MD5: `17b56c5ff1a3b0dbf59073d24a23dc7a`
+- SHA256: `377217abbefbb073cfbf9d85847a8c90717a59145134100713959883385f51ce`
+- Source branch: `codex/sd-runtime-stability`
+
+It adds MP3/M4B publisher descriptions, the bottom-anchored detail layout,
+stock theme-aware launcher icon resources, and immediate framebuffer handoff
+when leaving Audiobooks. Run Refresh Library once after upgrading to populate
+descriptions for existing catalog entries.
+
 ## v2.0.23 note (2026-07-23, SD runtime stability)
 
-The current public release is **v2.0.23** (about-screen label "HiBy R1
+The previous public release was **v2.0.23** (about-screen label "HiBy R1
 2.0.23").
 
 - GitHub release: `v2.0.23`
@@ -121,7 +137,7 @@ adb -s ingenic_2233 reboot
 
 The public v2.0.20 package came from a separate UTF-8/Cyrillic experiment and
 is not the base of this stability line. Users who require Cyrillic text should
-remain on v2.0.20; everyone else should use v2.0.23.
+remain on v2.0.20; everyone else should use v2.0.24.
 
 ## v2.0.18 note (2026-07-20, NativeApp pivot)
 

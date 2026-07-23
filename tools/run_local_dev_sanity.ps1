@@ -30,6 +30,14 @@ function Invoke-Checked([scriptblock]$Command, [string]$Name) {
     }
 }
 
+function Invoke-Python {
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+        & py -3 @args
+    } else {
+        & python @args
+    }
+}
+
 Step "PowerShell parser"
 $psFiles = @(
     "tools\adb_archive_audiobook_dev_artifacts.ps1",
@@ -76,7 +84,7 @@ Invoke-Checked {
 } "Shell syntax"
 
 Invoke-Checked {
-    python -m py_compile `
+    Invoke-Python -m py_compile `
         tools\verify_r1_audiobook_build.py `
         tools\write_audiobook_resume_catalog.py `
         tools\check_audiobook_release_state.py `
@@ -114,7 +122,7 @@ Invoke-Checked {
 if (-not $SkipDbFixtures) {
     if (Test-Path -LiteralPath $WindowsHelper) {
         Invoke-Checked {
-            python tools\test_r1_db_maint_local_fixture.py --helper $WindowsHelper
+            Invoke-Python tools\test_r1_db_maint_local_fixture.py --helper $WindowsHelper
         } "Windows DB helper fixture"
     } else {
         Write-Host "SKIP Windows DB helper fixture; missing $WindowsHelper"

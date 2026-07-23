@@ -2,6 +2,62 @@
 
 All public releases are for the normal HiBy R1 on stock firmware 1.6. Do not install these packages on the R1 MIDI.
 
+## v2.0.24 - 2026-07-23
+
+Firmware marker: `2.0.24` - About-screen label `HiBy R1 2.0.24`.
+
+UI and launcher-handoff update built directly on v2.0.23. It retains the
+app-scoped SD runtime-power guard, 15-second authoritative resume checkpoints,
+60-second SQLite mirrors, physical controls, wired/Bluetooth playback, and all
+existing library data and SD-primary positions.
+
+### Book descriptions and detail-page layout
+
+- Added publisher-summary extraction from MP3 `COMM` and M4B `desc`/`ldes`
+  metadata. Common HTML tags, line breaks, whitespace, and Audible-style
+  punctuation are normalized during Refresh Library.
+- Added a separate `book_metadata` table so descriptions do not enlarge the
+  frequently read book/list rows.
+- Detail-page descriptions now use the full screen width and every complete
+  line that fits between the cover/header and progress area.
+- Moved progress directly above the bottom-anchored Play, Chapters, Bookmarks,
+  and Menu controls. Drawing and touch hitboxes share the same coordinates.
+- Corrected TrueType line measurement and wrapping so prose uses the available
+  width instead of wrapping at roughly half the screen.
+
+### Theme and launcher return
+
+- Restored HiBy's stock theme-specific Books icon resources while retaining the
+  Audiobooks label and callback. The icon now reads correctly in both light and
+  dark themes.
+- Fixed the 5-10 second black or apparently frozen return from Audiobooks. The
+  hook preserves the launcher frame on entry, restores both framebuffer pages
+  on exit, and immediately pans the original page into view.
+- Added a bounded 1.5-second framebuffer handoff monitor for HiBy's first
+  post-callback redraws. If the stock UI renders a navigation frame into the
+  hidden page without panning it, the changed page is surfaced immediately.
+- The temporary launcher snapshot is 750 KiB, exists only while Audiobooks is
+  open, and is released by the handoff worker. No persistent process or
+  background polling was added.
+
+### Development and verification
+
+- Added a read-only native framebuffer capture helper that queries the active
+  `yoffset`; ordinary `/dev/fb0` reads always returned page zero and could show
+  a stale boot or launcher frame.
+- Documented the Ingenic GCC/glibc and Rust/Slint/Nanowave toolchain research,
+  including ABI constraints and the current practical blockers.
+- Passed the full source sanity suite, Windows and QEMU database fixtures, and
+  strict package verification of all 5,488 stock rootfs paths, modes, symlinks,
+  ownership, feature markers, and OTA metadata.
+- Flashed the development-equivalent build on the test R1. Idle exit returned
+  in about 590 ms and active-playback exit in about 760 ms; in both cases the
+  first launcher tap appeared immediately without a second touch or power
+  cycle. The handoff worker returned the process to its baseline thread count.
+
+After upgrading, run **Audiobooks -> Refresh Library** once to populate
+descriptions for books already in the catalog.
+
 ## v2.0.23 - 2026-07-23
 
 Firmware marker: `2.0.23` - About-screen label `HiBy R1 2.0.23`.

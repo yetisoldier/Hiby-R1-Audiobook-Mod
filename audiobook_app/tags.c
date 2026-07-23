@@ -84,6 +84,93 @@ static void parse_id3v2_text(const uint8_t *data, int len, int encoding,
     }
 }
 
+/* Publisher summaries occasionally contain HTML paragraph tags or newlines.
+ * Convert those to single spaces during scanning so detail-page drawing stays
+ * allocation-free and predictable. */
+static void normalize_description(char *s) {
+    if (!s || !s[0]) return;
+    int rd = 0, wr = 0;
+    int in_tag = 0;
+    int pending_space = 0;
+    while (s[rd]) {
+        unsigned char c = (unsigned char)s[rd++];
+        /* The current framebuffer font path accepts ASCII bytes. Preserve
+         * readable publisher copy by folding the common UTF-8 punctuation
+         * emitted by Audible/MP3Tag, without changing title/author handling. */
+        if (c == 0xc2 && (unsigned char)s[rd] == 0xa0) {
+            rd++;
+            pending_space = wr > 0;
+            continue;
+        }
+        if (c == 0xe2 && (unsigned char)s[rd] == 0x80 && s[rd + 1]) {
+            unsigned char tail = (unsigned char)s[rd + 1];
+            if (tail == 0x98 || tail == 0x99) {
+                c = '\'';
+                rd += 2;
+            } else if (tail == 0x9c || tail == 0x9d) {
+                c = '"';
+                rd += 2;
+            } else if (tail == 0x93 || tail == 0x94) {
+                c = '-';
+                rd += 2;
+            } else if (tail == 0xa6) {
+                if (pending_space && wr > 0 && s[wr - 1] != ' ')
+                    s[wr++] = ' ';
+                pending_space = 0;
+                s[wr++] = '.';
+                s[wr++] = '.';
+                s[wr++] = '.';
+                rd += 2;
+                continue;
+            }
+        }
+        if (c == '<') {
+            in_tag = 1;
+            pending_space = wr > 0;
+            continue;
+        }
+        if (in_tag) {
+            if (c == '>') in_tag = 0;
+            continue;
+        }
+        if (c <= 0x20 || c == 0x7f) {
+            pending_space = wr > 0;
+            continue;
+        }
+        if (pending_space && wr > 0 && s[wr - 1] != ' ')
+            s[wr++] = ' ';
+        pending_space = 0;
+        s[wr++] = (char)c;
+    }
+    while (wr > 0 && s[wr - 1] == ' ') wr--;
+    s[wr] = '\0';
+}
+
+/* COMM body: encoding(1), language(3), short-description terminator, then
+ * the comment. MP3Tag/Plex audiobook metadata stores the publisher summary
+ * in this frame. */
+static void parse_id3v2_comment(const uint8_t *data, int len,
+                                char *out, int out_len) {
+    if (!data || len <= 4 || !out || out_len <= 0) return;
+    int encoding = data[0];
+    int pos = 4; /* encoding + ISO-639 language */
+    if (encoding == 1 || encoding == 2) {
+        while (pos + 1 < len) {
+            if (data[pos] == 0 && data[pos + 1] == 0) {
+                pos += 2;
+                break;
+            }
+            pos += 2;
+        }
+    } else {
+        while (pos < len && data[pos] != 0) pos++;
+        if (pos < len) pos++;
+    }
+    if (pos >= len) return;
+    parse_id3v2_text(data + pos, len - pos, encoding, out, out_len);
+    normalize_description(out);
+}
+
 static void parse_id3v2(const uint8_t *buf, int buf_len, audio_tags_t *out) {
     if (buf_len < 10) return;
     if (buf[0] != 'I' || buf[1] != 'D' || buf[2] != '3') return;
@@ -112,6 +199,7 @@ static void parse_id3v2(const uint8_t *buf, int buf_len, audio_tags_t *out) {
         }
 
         if (frame_size == 0) break;
+        if (frame_size > (uint32_t)(end - pos - 10)) break;
         int encoding = buf[pos + 10];  /* first byte of frame data = encoding */
         const uint8_t *text_data = buf + pos + 11;
         int text_len = (int)frame_size - 1;
@@ -135,6 +223,9 @@ static void parse_id3v2(const uint8_t *buf, int buf_len, audio_tags_t *out) {
         } else if (strcmp(id, "TCON") == 0) {
             parse_id3v2_text(text_data, text_len, encoding,
                             out->genre, sizeof(out->genre));
+        } else if (strcmp(id, "COMM") == 0 && !out->description[0]) {
+            parse_id3v2_comment(buf + pos + 10, (int)frame_size,
+                                out->description, sizeof(out->description));
         } else if (strcmp(id, "TRCK") == 0) {
             char num[16] = {0};
             parse_id3v2_text((const uint8_t*)text_data, text_len, encoding,
@@ -333,6 +424,34 @@ static uint8_t *read_moov(const char *path, int64_t *out_len,
 static int qt_find_child(const uint8_t *buf, int start, int end, uint32_t type,
                          int *body_off, int *body_end);
 
+/* Read an iTunes text item from moov/udta/meta/ilst. The meta atom is a
+ * FullBox, so its children begin after a 4-byte version/flags field. The data
+ * atom has another 8 bytes of type/locale before its UTF-8 payload. */
+static int parse_m4b_text_item(const uint8_t *moov, int moov_len,
+                               uint32_t item_type, char *out, int out_len) {
+    int udta_b, udta_e, meta_b, meta_e, ilst_b, ilst_e;
+    int item_b, item_e, data_b, data_e;
+    if (!qt_find_child(moov, 0, moov_len, 0x75647461 /* udta */,
+                       &udta_b, &udta_e))
+        return 0;
+    if (!qt_find_child(moov, udta_b, udta_e, 0x6d657461 /* meta */,
+                       &meta_b, &meta_e))
+        return 0;
+    if (meta_b + 4 > meta_e ||
+        !qt_find_child(moov, meta_b + 4, meta_e, 0x696c7374 /* ilst */,
+                       &ilst_b, &ilst_e))
+        return 0;
+    if (!qt_find_child(moov, ilst_b, ilst_e, item_type, &item_b, &item_e))
+        return 0;
+    if (!qt_find_child(moov, item_b, item_e, 0x64617461 /* data */,
+                       &data_b, &data_e))
+        return 0;
+    if (data_b + 8 >= data_e) return 0;
+    safe_copy(out, out_len, moov + data_b + 8, data_e - data_b - 8);
+    normalize_description(out);
+    return out[0] != '\0';
+}
+
 static void parse_m4b(const char *path, audio_tags_t *out) {
     /* Read the real moov via the mmap helper: it walks top-level atoms so
      * moov-at-end works, and it maps the whole moov so mvhd is parsed from
@@ -379,6 +498,18 @@ static void parse_m4b(const char *path, audio_tags_t *out) {
             if (asize < hs || off + asize > (int)moov_len) break;
             if (atype == 0x7472616b /* 'trak' */) out->embedded_chapters++;
             off += (int)asize;
+        }
+
+        /* Prefer the long description, then the standard desc field used by
+         * the MP3Tag audiobook metadata workflow. */
+        if (!parse_m4b_text_item(moov, (int)moov_len,
+                                 0x6c646573 /* ldes */,
+                                 out->description,
+                                 sizeof(out->description))) {
+            parse_m4b_text_item(moov, (int)moov_len,
+                                0x64657363 /* desc */,
+                                out->description,
+                                sizeof(out->description));
         }
 
         if (map) munmap(map, map_len);

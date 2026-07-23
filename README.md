@@ -3,20 +3,19 @@
 A self-contained audiobook app for the normal HiBy R1, based on stock HiBy R1
 firmware 1.6. **Not for the R1 MIDI.**
 
-> **v2.0.23 is the current release.** It adds an app-scoped SD-card
-> runtime-power guard after an overnight freeze was traced to the stock Ingenic
-> MMC driver, and reduces resume-write traffic while keeping exact saves on
-> pause, stop, completion, and app exit. It includes all v2.0.22 hardware-key,
-> volume, Bluetooth, library, and playback improvements.
+> **v2.0.24 is the current release.** It adds publisher descriptions to the
+> book detail screen, improves the detail-page layout, restores a theme-aware
+> launcher icon, and fixes the delayed or apparently frozen return to HiBy's
+> launcher. It includes the v2.0.23 SD-card and resume stability work.
 
 ## Current release
 
-- **Version marker:** `2.0.23`
-- **About-screen label:** `HiBy R1 2.0.23`
-- **Download:** <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v2.0.23>
-- **Package:** `r1-audiobooks-2.0.23.upt` (rename to `r1.upt` to install)
-- **UPT MD5:** `11ddcf7e8d93eefc1038662d4d324830`
-- **UPT SHA256:** `c366a2b5a78a7943b20fab619a8e20d26c61d17f374dab66e34436f99f40f653`
+- **Version marker:** `2.0.24`
+- **About-screen label:** `HiBy R1 2.0.24`
+- **Download:** <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v2.0.24>
+- **Package:** `r1-audiobooks-2.0.24.upt` (rename to `r1.upt` to install)
+- **UPT MD5:** `17b56c5ff1a3b0dbf59073d24a23dc7a`
+- **UPT SHA256:** `377217abbefbb073cfbf9d85847a8c90717a59145134100713959883385f51ce`
 - **Boot ADB:** included (installs `/etc/init.d/S90adb`). ADB is available at
  boot whenever System → USB working mode is set to **Device** (mode 1). ADB and
  USB-DAC share the single USB gadget controller and are mutually exclusive by
@@ -31,7 +30,7 @@ firmware 1.6. **Not for the R1 MIDI.**
 
 **v2.0.20 compatibility note:** v2.0.20 was published from an experimental
 UTF-8/Cyrillic side branch. That text-rendering experiment is not included in
-v2.0.23 because this release follows the separately tested stability line. If
+v2.0.24 because this release follows the separately tested stability line. If
 you rely on Cyrillic audiobook names or tags, remain on v2.0.20 for now.
 
 Before flashing, keep a known-good stock 1.6 `r1.upt` for recovery. This is
@@ -54,7 +53,7 @@ the R1 MIDI or other HiBy players unless you are prepared to recover the device.
  <img src="docs/screenshots/08-launcher-after-exit.png" alt="HiBy launcher after exiting the app" width="200">
 </p>
 
-Captured directly from the test R1 running v2.0.23. Full set in
+Captured directly from the test R1 running the tested v2.0.24 code. Full set in
 [`docs/screenshots/`](docs/screenshots/).
 
 ## How it works
@@ -70,8 +69,9 @@ The audiobook app runs **in-process** inside `hiby_player`:
 - The event loop reads touch and the hardware keys, and the player engine
  decodes MP3 / M4B and writes PCM to ALSA (wired) or BlueALSA (Bluetooth A2DP),
  falling back to wired when no BT sink is connected.
-- Exiting the app clears the framebuffer and returns immediately so the HiBy
- launcher redraws cleanly.
+- Exiting restores the launcher frame immediately. A short, bounded handoff
+ watcher surfaces HiBy's first hidden double-buffer redraws, avoiding the old
+ 5-10 second black/frozen-looking return and power-button workaround.
 
 The app and its UI, player, library scanner, and chapter/bookmark storage live
 in `audiobook_app/` and a tiny native helper. The stock Music player, file
@@ -85,6 +85,9 @@ browser, Bluetooth, USB, and system UI are otherwise untouched.
   a flattened list.
 - Refresh Library runs in the background with visible progress, so playback,
   touch, and hardware controls remain responsive during a scan.
+- Book detail pages show publisher descriptions from MP3 `COMM` or M4B
+  `desc`/`ldes` metadata when available. Summaries use the full screen width,
+  while progress and the four controls remain anchored at the bottom.
 - Scrollable list views with **cover-art thumbnails** — JPEG via `dlopen`'d
  libjpeg and PNG via a self-contained streaming decoder over `dlopen`'d `libz`,
  decode-on-demand with a progressive-JPEG guard so huge covers bail gracefully
@@ -132,6 +135,8 @@ browser, Bluetooth, USB, and system UI are otherwise untouched.
   with hold-to-ramp and a temporary on-screen volume indicator.
 - Rapid button presses are queued in order instead of overwriting one another.
 - Back is always top-left on every in-app screen.
+- The launcher uses HiBy's stock Books icon resources, so Audiobooks remains
+  readable in both light and dark themes.
 
 **ADB (since v2.0.15)**
 - ADB is available at boot when USB working mode is set to **Device**, via the
@@ -205,7 +210,7 @@ browser, Bluetooth, USB, and system UI are otherwise untouched.
 
 ## Install
 
-1. Download `r1-audiobooks-2.0.23.upt` from the release page.
+1. Download `r1-audiobooks-2.0.24.upt` from the release page.
 2. Rename it to exactly `r1.upt` (the R1 will not recognize the update otherwise).
 3. Copy it to the root of the SD card.
 4. On the R1, run the normal firmware update
@@ -213,7 +218,8 @@ browser, Bluetooth, USB, and system UI are otherwise untouched.
 5. Wait for success and the reboot.
 6. After boot, delete or rename `r1.upt` on the SD card so the updater stops
  offering it.
-7. Open the Audiobooks tile and tap **Refresh** to scan `/Audiobooks`.
+7. Open the Audiobooks tile and tap **Refresh Library** to scan `/Audiobooks`.
+   Run this once after upgrading so existing books gain description metadata.
 
 Recommended SD-card layout:
 
@@ -224,8 +230,9 @@ Recommended SD-card layout:
 ```
 
 Metadata that helps: Album = book title, Title = chapter/file title,
-Album artist = author, and numbered files for multipart books. The app derives
-fallbacks from folders/filenames when tags are missing. The genre tag does not
+Album artist = author, numbered files for multipart books, and Publisher
+Summary = MP3 Comment (`COMM`) or M4B Description (`desc`/`ldes`). The app
+derives fallbacks from folders/filenames when tags are missing. The genre tag does not
 need to be `Audiobook` - anything under `/Audiobooks` is treated as one. External
 cover art is picked up from `cover.jpg` / `cover.png` / `cover.jpeg` /
 `folder.jpg` / `folder.png` in the book folder; otherwise the embedded MP3 APIC
@@ -243,24 +250,23 @@ Build the hook/app shared library:
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\build_r1_audiobook_hook.ps1
 ```
 
-Build the public-release firmware (version 2.0.23):
+Build the public-release firmware (version 2.0.24):
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\build_r1_audiobook_firmware.ps1 `
- -OutDir work\audiobook-firmware-2.0.23 `
- -OutputUpt work\audiobook-firmware-2.0.23\r1-audiobooks-2.0.23.upt `
+ -OutDir work\audiobook-firmware-2.0.24 `
+ -OutputUpt work\audiobook-firmware-2.0.24\r1-audiobooks-2.0.24.upt `
  -IncludeAudiobookNativeApp `
- -IncludeAudiobookLauncherIcon `
  -EnableBootAdb `
  -UnlockNativeDsd `
  -EnableBluetoothSbcXq `
  -UnlockUsbDacMode `
- -CustomVersionId 2.0.23 `
- -CustomVersionLabel "HiBy R1 2.0.23"
+ -CustomVersionId 2.0.24 `
+ -CustomVersionLabel "HiBy R1 2.0.24"
 ```
 
 `-EnableBootAdb` installs `/etc/init.d/S90adb` so ADB starts automatically after
-every boot. The v2.0.23 public release ships with it on; drop the flag for a
+every boot. The v2.0.24 public release ships with it on; drop the flag for a
 build without persistent ADB. `-UnlockNativeDsd`, `-EnableBluetoothSbcXq`, and
 `-UnlockUsbDacMode` restore the three general device/music unlocks the pre-2.0
 line carried (Native DSD on the analog path, BlueALSA SBC XQ, and the USB DAC
@@ -293,7 +299,7 @@ alone.
 - `docs/screenshots/` - README screenshots.
 - `firmware/releases/v2.0.16/` - v2.0.16 release notes and checksums.
 - `firmware/releases/v2.0.17/` - v2.0.17 release notes and checksums.
-- `firmware/releases/v2.0.23/` - current release notes and checksums.
+- `firmware/releases/v2.0.24/` - current release notes and checksums.
 - `CHANGELOG.md` - release history.
 
 ## Attribution and sources
@@ -310,6 +316,8 @@ Information and techniques used while building this mod came from:
 - [SuperTaiyaki/hiby-firmware-tools](https://github.com/SuperTaiyaki/hiby-firmware-tools)
 - [hiby-modding/hiby-mods](https://github.com/hiby-modding/hiby-mods)
 - [hiby-modding/hiby_os_crack](https://github.com/hiby-modding/hiby_os_crack)
+- [baijz/ingenic-toolchain](https://gitee.com/baijz/ingenic-toolchain)
+- [nanowave-player/nanowave](https://github.com/nanowave-player/nanowave)
 - [seanap/Plex-Audiobook-Guide](https://github.com/seanap/Plex-Audiobook-Guide)
 
 The audiobook-specific behavior was developed and tested on a personal normal

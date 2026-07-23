@@ -28,7 +28,7 @@
 #define AUDIOBOOK_COVER_CACHE   "/usr/data/audiobooks/cache/covers"
 #define AUDIOBOOK_RUN_DIR       "/usr/data/audiobooks/run"
 #define AUDIOBOOK_LIBRARY_ROOT  "/usr/data/mnt/sd_0/Audiobooks"
-#define SCHEMA_VERSION          "1"
+#define SCHEMA_VERSION          "2"
 
 /* ---- Types -------------------------------------------------------------- */
 
@@ -133,6 +133,11 @@ int audiobook_get_book_by_key(sqlite3 *db, const char *book_key,
 
 /* Get a book by book_id. Returns 1 if found, 0 if not found, -1 on error. */
 int audiobook_get_book(sqlite3 *db, int book_id, audiobook_book_t *out);
+
+/* Get the publisher summary stored for a book. Returns 1 if a non-empty
+ * description was found, 0 if absent, and -1 on error. */
+int audiobook_get_book_description(sqlite3 *db, int book_id,
+                                   char *out, int out_len);
 
 /* Get all books ordered by sort_title. Returns count or -1 on error.
  * Calls cb for each book; stops if cb returns non-zero. */

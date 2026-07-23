@@ -10,6 +10,14 @@ development:
 - generated input streams are temporary and do not change firmware files or
   patch process memory
 
+The R1 framebuffer has two vertically stacked pages. A raw read starts at page
+zero even when `FBIOGET_VSCREENINFO.yoffset` says page one is visible. For
+release screenshots and any visual assertion that must match the physical
+display, compile and run the read-only `tools/r1_fb_capture.c` helper. It reads
+the active page at the current yoffset and avoids documenting a stale hidden
+frame. The exact build and capture commands are in
+[`docs/modding/adb_automation_screenshots.md`](./modding/adb_automation_screenshots.md).
+
 > **See also:** [`docs/modding/adb_automation_screenshots.md`](./modding/adb_automation_screenshots.md)
 > for the screenshot/vision pitfalls (the `application/octet-stream` crash,
 > safe capture, the pre-Read safeguard, the vision sub-agent pattern), preset
@@ -180,7 +188,8 @@ python tools\r1_adb_control.py preset main-audiobooks --after-screenshot
 ```
 
 The launcher presets are calibrated from current framebuffer captures of the
-six-icon stock launcher layout, including the custom Audiobooks icon.
+six-icon stock launcher layout, including the stock theme-aware Books glyph
+used by the Audiobooks tile.
 
 The `tap` command also accepts the same preset names as a shortcut:
 

@@ -57,7 +57,7 @@ Build tooling
 
 ADB + verification tools
   - tools/r1_adb_control.py, adb_capture_fb0.py, adb_inject_key_event.py,
-    safe_image_check.py, verify_r1_audiobook_build.py,
+    r1_fb_capture.c, safe_image_check.py, verify_r1_audiobook_build.py,
     adb_stage_verified_firmware.ps1
 ```
 
@@ -102,6 +102,18 @@ event loop in `audiobook_app/ui.c`. A lightweight blank (backlight sysfs
 only, no FBIOBLANK/suspend) lets audio play with the screen off. See
 [`modding/hook_architecture.md`](./modding/hook_architecture.md).
 
+On app entry, the hook snapshots the active stock launcher framebuffer page.
+On exit it restores both framebuffer pages, pans back to the original page,
+and starts a bounded handoff monitor that follows the first stock repaint.
+This keeps the launcher immediately visible and responsive even when HiBy
+chooses to redraw into the previously hidden page.
+
+The detail screen reads an optional publisher description from the catalog and
+uses the full display width between the cover/header and the bottom-anchored
+progress and controls. The launcher keeps the stock Books glyph, with only its
+label changed to Audiobooks, so the icon follows both stock light and dark
+themes.
+
 ## Audio path
 
 - **MP3** decoded in-hook with minimp3_ex (HiBy's `libmp3.so` has stubbed
@@ -133,6 +145,8 @@ See [`modding/audio_decode_alsa.md`](./modding/audio_decode_alsa.md) and
 - M4B chapters parsed from the embedded QuickTime chapter track
   (stsc-aware) or Nero `chpl`. See
   [`modding/library_scan_storage.md`](./modding/library_scan_storage.md).
+- Publisher descriptions are extracted at scan time from MP3 `COMM` and M4B
+  `ldes`/`desc`, normalized, and stored separately from the title-list rows.
 - The `moov` atom is memory-mapped (not malloc'd) so books with large (15 MB+)
   `moov` atoms don't OOM the scan.
 - `/usr/data` is chronically near-full (the stock music DB rebuilds there

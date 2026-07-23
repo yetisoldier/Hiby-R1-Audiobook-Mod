@@ -1,8 +1,9 @@
-# Library scan, chapters, and storage
+# Library scan, metadata, chapters, and storage
 
-The moov-mmap scan-hang fix, M4B chapter stsc parsing, SQLite-on-exFAT safety,
-the chronic `/usr/data` near-full partition and the app-level guards, and the
-SD-primary position/bookmark store. Source:
+The metadata and publisher-description scan, moov-mmap scan-hang fix, M4B
+chapter stsc parsing, SQLite-on-exFAT safety, the chronic `/usr/data` near-full
+partition and the app-level guards, and the SD-primary position/bookmark store.
+Source:
 [`audiobook_app/scan.c`](../../audiobook_app/scan.c),
 [`audiobook_app/tags.c`](../../audiobook_app/tags.c),
 [`audiobook_app/library.c`](../../audiobook_app/library.c),
@@ -102,6 +103,41 @@ stsc `fc/spc/sdi[256]`) — no malloc, no OOM risk.
 NOT repair existing rows — the user must **tap Home → Refresh** to re-scan,
 which re-parses and replaces the 1-chapter with 58. Multi-file MP3 books keep
 their synthesized 1-chapter-per-track (unchanged).
+
+## Publisher descriptions (v2.0.24)
+
+The detail screen can show the publisher summary without loading media metadata
+while the user scrolls. The scanner extracts and normalizes one description per
+book, then stores it in a small separate table:
+
+```sql
+CREATE TABLE IF NOT EXISTS book_metadata(
+  book_id INTEGER PRIMARY KEY REFERENCES books(id) ON DELETE CASCADE,
+  description TEXT NOT NULL DEFAULT ''
+);
+```
+
+The table remains separate from `books` so libraries without descriptions do
+not enlarge the hot title-list rows or their render cache. During a scan,
+`scan.c` keeps the first non-empty description found among a book's tracks and
+upserts it after the book and tracks are cataloged. Orphan cleanup removes the
+row automatically through the foreign-key cascade.
+
+Supported sources:
+
+- MP3: ID3v2 `COMM`, including its encoding, language, and short-description
+  prefix.
+- M4B: `moov/udta/meta/ilst/ldes`, falling back to `desc`.
+
+`tags.c` converts supported UTF-8/UTF-16 text, strips common HTML markup,
+decodes common entities and Audible punctuation, collapses whitespace, and
+caps the stored text at 2047 bytes. Malformed or unsupported metadata is
+ignored; it cannot block the rest of the book scan.
+
+Descriptions are scan-time metadata, like chapters. After upgrading an existing
+catalog to v2.0.24 or later, run **Audiobooks -> Refresh Library** once to
+populate `book_metadata`. Books with no usable description continue to use the
+same detail layout and simply leave the description area blank.
 
 ## SQLite-on-exFAT PROVEN safe (DELETE journal, no WAL)
 

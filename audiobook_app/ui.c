@@ -47,6 +47,16 @@
 #define ITEM_PAD        4
 #define FOOTER_H        44
 #define SCROLL_SPEED    3   /* pixels per touch move event */
+/* Bottom-anchored detail controls. Shared by drawing and hit-testing so the
+ * visible buttons and their touch targets cannot drift apart. */
+#define DETAIL_BTN_H            64
+#define DETAIL_BTN_GAP          12
+#define DETAIL_BOTTOM_MARGIN    16
+#define DETAIL_BTN_ROW2_Y       (RENDER_FB_H - DETAIL_BOTTOM_MARGIN - DETAIL_BTN_H)
+#define DETAIL_BTN_ROW1_Y       (DETAIL_BTN_ROW2_Y - DETAIL_BTN_GAP - DETAIL_BTN_H)
+#define DETAIL_PROGRESS_BAR_Y   (DETAIL_BTN_ROW1_Y - 34)
+#define DETAIL_PROGRESS_TIME_Y  (DETAIL_PROGRESS_BAR_Y - 52)
+#define DETAIL_PROGRESS_LABEL_Y (DETAIL_PROGRESS_TIME_Y - 32)
 /* Cap on chapter rows rendered/seekable at once. Bounds the chapter-list
  * render allocation (each row ~264B) and the tap-seek start_ms array so a
  * pathological chapter count (huge multi-file book, bogus embedded_chapters)
@@ -1643,20 +1653,29 @@ static void rebuild_list(ui_state_t *ui) {
 static void rebuild_current_book(ui_state_t *ui, int with_cover) {
     audiobook_book_t b;
     audiobook_progress_t p;
+    char description[2048];
     int bok = 0, pok = 0;
     const uint16_t *cov = NULL;
     memset(&b, 0, sizeof(b));
     memset(&p, 0, sizeof(p));
+    description[0] = '\0';
     if (ui->current_book_id > 0) {
         if (audiobook_get_book(ui->db, ui->current_book_id, &b) > 0) bok = 1;
         if (audiobook_get_progress(ui->db, ui->current_book_id, &p) > 0) pok = 1;
-        if (with_cover && bok)
+        if (with_cover && bok) {
+            audiobook_get_book_description(ui->db, ui->current_book_id,
+                                           description,
+                                           sizeof(description));
             cov = cover_get(ui->db, ui->current_book_id);  /* event-thread decode */
+        }
     }
     pthread_mutex_lock(&g_cache_lock);
     ui->cur_book = b; ui->cur_book_ok = bok;
     ui->cur_prog = p; ui->cur_prog_ok = pok;
     if (with_cover) {
+        strncpy(ui->cur_description, description,
+                sizeof(ui->cur_description) - 1);
+        ui->cur_description[sizeof(ui->cur_description) - 1] = '\0';
         if (cov) {
             memcpy(ui->cur_cover_buf, cov, sizeof(ui->cur_cover_buf));
             ui->cur_cover_ok = 1;
@@ -2094,26 +2113,39 @@ static void draw_detail(ui_state_t *ui) {
     render_time(r, text_x, y, b.total_duration_ms, FONT_SCALE_1, COL_GRAY_LT);
     y += 36;
 
-    /* Progress block, full width, below the cover (or below the text if no
-     * cover). Anchored so it never overlaps the cover. */
-    if (prog_ok) {
-        int py = y;
-        if (has_cover && py < cover_bottom + 18) py = cover_bottom + 18;
-        render_text(r, 16, py, "Progress:", FONT_SCALE_1, COL_GRAY_LT);
-        py += 30;
-        render_time(r, 16, py, p.total_book_elapsed_ms, FONT_SCALE_2,
-                    COL_WHITE);
-        py += 50;
-        if (b.total_duration_ms > 0) {
-            double frac = (double)p.total_book_elapsed_ms /
-                          b.total_duration_ms;
-            render_progress_bar(r, 16, py, RENDER_FB_W - 32, 10, frac,
-                               COL_ACCENT, COL_GRAY_DK);
-        }
+    /* Publisher summary fills the space between the cover/header and the
+     * bottom-anchored progress block. It was normalized during scanning, so
+     * drawing stays allocation-free. Long summaries stop at a complete line
+     * before the progress region. */
+    int desc_y = y + 10;
+    if (has_cover && desc_y < cover_bottom + 14) desc_y = cover_bottom + 14;
+    int desc_bottom = DETAIL_PROGRESS_LABEL_Y - 2;
+    if (ui->cur_description[0] && desc_y + 30 < desc_bottom) {
+        render_text(r, 16, desc_y, "Description", FONT_SCALE_1, COL_GRAY_LT);
+        desc_y += render_text_line_height(FONT_SCALE_1);
+        int line_h = render_text_line_height(FONT_SCALE_4);
+        int max_lines = (desc_bottom - desc_y) / line_h;
+        if (max_lines > 0)
+            render_text_wrap(r, 16, desc_y, RENDER_FB_W - 32, max_lines,
+                             ui->cur_description, FONT_SCALE_4, COL_WHITE);
     }
 
-    /* Buttons (2x2 grid, 64 px tall, FONT_SCALE_4 labels) */
-    int btn_y = RENDER_FB_H - 240;
+    /* Progress stays immediately above the controls. A book with no saved
+     * progress row displays a consistent zero state. */
+    int64_t elapsed_ms = prog_ok ? p.total_book_elapsed_ms : 0;
+    render_text(r, 16, DETAIL_PROGRESS_LABEL_Y, "Progress:",
+                FONT_SCALE_1, COL_GRAY_LT);
+    render_time(r, 16, DETAIL_PROGRESS_TIME_Y, elapsed_ms,
+                FONT_SCALE_2, COL_WHITE);
+    if (b.total_duration_ms > 0) {
+        double frac = (double)elapsed_ms / b.total_duration_ms;
+        render_progress_bar(r, 16, DETAIL_PROGRESS_BAR_Y,
+                            RENDER_FB_W - 32, 10, frac,
+                            COL_ACCENT, COL_GRAY_DK);
+    }
+
+    /* Buttons (2x2 grid, bottom-anchored). */
+    int btn_y = DETAIL_BTN_ROW1_Y;
     int btn_w = (RENDER_FB_W - 48) / 2;
 
     /* Row 1: Play, Chapters */
@@ -2123,7 +2155,7 @@ static void draw_detail(ui_state_t *ui) {
     render_fill_rect(r, 32 + btn_w, btn_y, btn_w, 64, COL_GRAY);
     render_text_centered(r, 32 + btn_w, btn_y + 18, btn_w, "Chapters",
                          FONT_SCALE_4, COL_WHITE);
-    btn_y += 76;
+    btn_y = DETAIL_BTN_ROW2_Y;
 
     /* Row 2: Bookmarks, Menu */
     render_fill_rect(r, 16, btn_y, btn_w, 64, COL_GRAY);
@@ -2142,7 +2174,7 @@ static int handle_detail_touch(ui_state_t *ui, int x, int y) {
         return 1;
     }
 
-    int btn_y = RENDER_FB_H - 240;
+    int btn_y = DETAIL_BTN_ROW1_Y;
     int btn_w = (RENDER_FB_W - 48) / 2;
 
     /* Row 1: Play, Chapters */
@@ -2158,7 +2190,7 @@ static int handle_detail_touch(ui_state_t *ui, int x, int y) {
             return 1;
         }
     }
-    btn_y += 76;
+    btn_y = DETAIL_BTN_ROW2_Y;
 
     /* Row 2: Bookmarks, Menu */
     if (y >= btn_y && y < btn_y + 64) {

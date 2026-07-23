@@ -44,6 +44,7 @@
 #include <linux/input.h>
 #include <sys/select.h>
 #include <sys/time.h>
+#include <pthread.h>
 
 #include "ui.h"
 #include "font.h"
@@ -67,6 +68,13 @@ static volatile int audiobook_mode = 0;  /* 1 = draw UI before pan, 0 = passthro
 static uint16_t *g_fb = NULL;            /* hiby_player's fb mmap base */
 static int hook_b_installed = 0;
 static uint32_t saved_insns_b[4];
+
+typedef struct {
+    uint16_t *fb;
+    uint16_t *snapshot;
+    struct fb_var_screeninfo vinfo;
+    int have_vinfo;
+} fb_handoff_t;
 
 /* ---- Forward declarations ----------------------------------------------- */
 static int hook_b(void *arg0, void *arg1);
@@ -272,8 +280,76 @@ int ioctl(int fd, unsigned long request, ...) {
 
 /* ---- Framebuffer helpers ------------------------------------------------ */
 
-static void fb_clear_both(uint16_t *fb) {
-    memset(fb, 0, FB_BUF_SIZE * 2);  /* clear both buffers */
+static uint32_t fb_page_hash(const uint16_t *page) {
+    uint32_t hash = 2166136261u;
+    int pixels = FB_BUF_SIZE / (int)sizeof(uint16_t);
+    for (int i = 0; i < pixels; i++) {
+        hash ^= page[i];
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
+/* HiBy occasionally renders post-callback screens into the hidden page
+ * without panning them. The launcher then looks frozen until another touch or
+ * power event kicks the display loop. Track both pages briefly and pan each
+ * newly changed hidden page during the handoff window. */
+static void *fb_handoff_thread(void *arg) {
+    fb_handoff_t *h = (fb_handoff_t *)arg;
+    int fd = open("/dev/fb0", O_RDONLY);
+    if (fd < 0) fd = open("/dev/fb0", O_RDWR);
+
+    uint32_t hash0 = fb_page_hash(h->snapshot);
+    uint32_t hash1 = hash0;
+    free(h->snapshot);
+    h->snapshot = NULL;
+    int pan_logs = 0;
+
+    for (int i = 0; i < 30; i++) {
+        usleep(50000);
+        if (audiobook_mode) break;
+
+        uint16_t *page0 = h->fb;
+        uint16_t *page1 =
+            h->fb + FB_BUF_SIZE / (int)sizeof(uint16_t);
+        uint32_t next0 = fb_page_hash(page0);
+        uint32_t next1 = fb_page_hash(page1);
+        int changed0 = next0 != hash0;
+        int changed1 = next1 != hash1;
+        if (!changed0 && !changed1) continue;
+
+        /* Let the stock renderer finish the frame before exposing it. */
+        usleep(20000);
+        if (audiobook_mode) break;
+        next0 = fb_page_hash(page0);
+        next1 = fb_page_hash(page1);
+        changed0 = next0 != hash0;
+        changed1 = next1 != hash1;
+
+        if (fd >= 0 && h->have_vinfo) {
+            struct fb_var_screeninfo v = h->vinfo;
+            int target = -1;
+            if (changed0 && !changed1) target = 0;
+            else if (changed1 && !changed0) target = (int)v.yres;
+
+            if (target >= 0) {
+                v.yoffset = target;
+                int rc = syscall(SYS_ioctl, fd, FBIOPAN_DISPLAY, &v);
+                if (pan_logs++ < 6)
+                    logmsg("[hook] handoff panned changed page yoffset=%d rc=%d\n",
+                           target, rc);
+            } else if (pan_logs++ < 6) {
+                logmsg("[hook] handoff: both pages changed; stock pan active\n");
+            }
+        }
+        hash0 = next0;
+        hash1 = next1;
+    }
+
+    if (fd >= 0) close(fd);
+    if (h->snapshot) free(h->snapshot);
+    free(h);
+    return NULL;
 }
 
 /* ---- Hook B: tile callback → audiobook mode ----------------------------- */
@@ -293,6 +369,36 @@ static int hook_b(void *arg0, void *arg1) {
     }
 
     g_fb = fb;
+
+    /* Preserve the launcher before audiobook rendering overwrites both
+     * framebuffer pages. This snapshot is only 750 KiB and exists only while
+     * Audiobooks is open. */
+    int fb_fd = open("/dev/fb0", O_RDONLY);
+    if (fb_fd < 0) fb_fd = open("/dev/fb0", O_RDWR);
+    logmsg("[hook] fb_fd=%d\n", fb_fd);
+
+    struct fb_var_screeninfo launcher_vinfo;
+    memset(&launcher_vinfo, 0, sizeof(launcher_vinfo));
+    int have_launcher_vinfo =
+        fb_fd >= 0 &&
+        syscall(SYS_ioctl, fb_fd, FBIOGET_VSCREENINFO, &launcher_vinfo) == 0;
+    int launcher_yoffset = 0;
+    if (have_launcher_vinfo &&
+        launcher_vinfo.yoffset + FB_H <= launcher_vinfo.yres_virtual) {
+        launcher_yoffset = (int)launcher_vinfo.yoffset;
+    }
+
+    uint16_t *launcher_snapshot = malloc(FB_BUF_SIZE);
+    if (launcher_snapshot) {
+        const uint16_t *src =
+            fb + launcher_yoffset * (FB_STRIDE / (int)sizeof(uint16_t));
+        memcpy(launcher_snapshot, src, FB_BUF_SIZE);
+        logmsg("[hook] launcher frame saved yoffset=%d bytes=%d\n",
+               launcher_yoffset, FB_BUF_SIZE);
+    } else {
+        logmsg("[hook] WARNING: launcher frame snapshot allocation failed\n");
+    }
+
     audiobook_mode = 1;  /* ioctl hook starts drawing our UI */
 
     /* Load the system truetype font (msyh.ttf) once. If it fails, the
@@ -306,16 +412,12 @@ static int hook_b(void *arg0, void *arg1) {
             logmsg("[hook] font: msyh.ttf load FAILED, using bitmap fallback\n");
     }
 
-    /* Open /dev/fb0 so we can drive the pan loop ourselves. hiby_player's
+    /* Use /dev/fb0 so we can drive the pan loop ourselves. hiby_player's
      * render thread depends on the main thread (which we're blocking in
      * this tile callback). When the main thread blocks, the render thread
      * stops panning → display freezes → touch IC dies. By driving the pan
      * ourselves, the display keeps updating and the touch IC stays alive.
      * Our ioctl hook draws our UI before each pan. */
-    int fb_fd = open("/dev/fb0", O_RDONLY);
-    if (fb_fd < 0) fb_fd = open("/dev/fb0", O_RDWR);
-    logmsg("[hook] fb_fd=%d\n", fb_fd);
-
     logmsg("[hook] entering audiobook UI event loop...\n");
 
     /* The stock X1600 MMC driver runtime-autosuspends the SD card after three
@@ -332,18 +434,40 @@ static int hook_b(void *arg0, void *arg1) {
     logmsg("[hook] UI exited, cleaning up...\n");
     storage_guard_release();
 
-    /* Stop drawing, clear fb, let hiby_player resume. Return IMMEDIATELY
-     * (no usleep): while the main thread is blocked in this tile callback,
-     * hiby_player's render thread won't pan, so any delay here leaves the
-     * cleared-black framebuffer visible. This was worst when audio was
-     * playing — player_shutdown() (called inside ui_run, after the event
-     * loop already stopped panning) adds ~hundreds of ms of ALSA-drain
-     * delay before we even reach this point, so the black window was long
-     * enough that the user had to press power to kick hiby_player into
-     * redrawing the launcher. Returning ASAP lets hiby_player's main thread
-     * unblock and its render thread resume without an artificial pause. */
+    /* Restore the exact launcher frame captured on entry. Copy it to both
+     * pages so the stock double-buffer loop cannot expose an old audiobook
+     * frame, then pan it into view immediately. */
     audiobook_mode = 0;
-    fb_clear_both(fb);
+    if (launcher_snapshot) {
+        memcpy(fb, launcher_snapshot, FB_BUF_SIZE);
+        memcpy(fb + FB_BUF_SIZE / (int)sizeof(uint16_t),
+               launcher_snapshot, FB_BUF_SIZE);
+        if (have_launcher_vinfo && fb_fd >= 0) {
+            launcher_vinfo.yoffset = launcher_yoffset;
+            int rc = syscall(SYS_ioctl, fb_fd, FBIOPAN_DISPLAY,
+                             &launcher_vinfo);
+            logmsg("[hook] launcher frame restored yoffset=%d pan_rc=%d\n",
+                   launcher_yoffset, rc);
+        } else {
+            logmsg("[hook] launcher frame restored (pan unavailable)\n");
+        }
+
+        fb_handoff_t *handoff = malloc(sizeof(*handoff));
+        if (handoff) {
+            handoff->fb = fb;
+            handoff->snapshot = launcher_snapshot;
+            handoff->vinfo = launcher_vinfo;
+            handoff->have_vinfo = have_launcher_vinfo;
+            pthread_t thread;
+            if (pthread_create(&thread, NULL, fb_handoff_thread, handoff) == 0) {
+                pthread_detach(thread);
+                launcher_snapshot = NULL;  /* handoff thread owns it */
+            } else {
+                free(handoff);
+            }
+        }
+        if (launcher_snapshot) free(launcher_snapshot);
+    }
     if (fb_fd >= 0) close(fb_fd);
 
     logmsg("[hook] Hook B returning, hiby_player resumes\n");

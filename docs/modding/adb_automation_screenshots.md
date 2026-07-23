@@ -5,6 +5,7 @@ capture, the `application/octet-stream` crash, the pre-Read safeguard, the
 vision sub-agent pattern, preset UI coordinates, and the app log truth source.
 Source: [`tools/r1_adb_control.py`](../../tools/r1_adb_control.py),
 [`tools/adb_capture_fb0.py`](../../tools/adb_capture_fb0.py),
+[`tools/r1_fb_capture.c`](../../tools/r1_fb_capture.c),
 [`tools/safe_image_check.py`](../../tools/safe_image_check.py),
 [`tools/adb_inject_key_event.py`](../../tools/adb_inject_key_event.py).
 
@@ -39,6 +40,37 @@ and rejected. Always write with a proper extension.
   subdir** so they don't sit next to `.png`s as a trap. PNG validation runs
   after every capture; a bad PNG raises `RuntimeError` before any API call can
   fail.
+
+## Double-buffer gotcha: page zero may not be visible
+
+The R1 framebuffer is 480x800 with a 480x1600 virtual height. HiBy pans between
+two 480x800 pages. A normal `dd if=/dev/fb0` read always returns page zero even
+when `FBIOGET_VSCREENINFO.yoffset` says page one is on the LCD. This produced
+convincing but stale screenshots, including an old boot splash while the real
+screen was already on the launcher.
+
+`tools/r1_fb_capture.c` is the authoritative capture path when exact visible
+state matters. It:
+
+1. opens `/dev/fb0` read-only;
+2. queries `FBIOGET_FSCREENINFO` and `FBIOGET_VSCREENINFO`;
+3. mmaps the complete virtual framebuffer;
+4. writes the page beginning at `line_length * yoffset`.
+
+Build and run it with the same MIPS/glibc ABI used by the hook:
+
+```powershell
+& .deps\zig\zig-x86_64-windows-0.16.0\zig.exe cc `
+  -target mipsel-linux-gnueabihf.2.22 -Os -s `
+  tools\r1_fb_capture.c -o work\native-fb-capture\r1_fb_capture
+adb push work\native-fb-capture\r1_fb_capture /tmp/r1_fb_capture
+adb shell "chmod 755 /tmp/r1_fb_capture; /tmp/r1_fb_capture /tmp/r1-visible.raw"
+adb pull /tmp/r1-visible.raw work\r1-visible.raw
+```
+
+The helper is read-only apart from its requested output file. Convert the
+768,000-byte RGB565 result with `rgb565_to_png` from
+`tools/adb_capture_fb0.py`.
 
 ## Pre-Read safeguard script
 

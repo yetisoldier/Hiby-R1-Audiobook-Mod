@@ -59,8 +59,10 @@ cave and lands in `hook_b()` instead of the stock cave code. `hook_b` sets
 `audiobook_mode = 1`, captures `hiby_player`'s framebuffer mmap pointer from
 `FB_MMAP_PTR_VADDR` (a `.bss` slot `hiby_player` fills at startup), opens
 `/dev/input/event1` for touch, and runs the UI event loop in the main thread.
-On exit, it restores the original 4 instructions and the dispatcher behaves
-stock again.
+On exit, it releases touch/key ownership, stops audiobook drawing, and returns
+from the callback. The trampoline remains installed for the process lifetime
+so the next Audiobooks tap can enter the app again; the saved instructions are
+used only by the crash-degradation path.
 
 ### Hook A — the `ioctl`/`FBIOPAN_DISPLAY` render hook
 
@@ -87,8 +89,31 @@ uint16_t *fb = *(uint16_t **)FB_MMAP_PTR_VADDR;  /* hiby_player's fb mmap base *
 ```
 
 `audiobook_mode` is the single flag that toggles the whole takeover. On exit
-it goes to 0 and the `ioctl` hook stops drawing — `hiby_player`'s content
-shows again, the launcher redraws cleanly.
+it goes to 0 and the `ioctl` hook stops drawing.
+
+## Framebuffer handoff on exit
+
+The stock framebuffer is double-buffered (480x1600 virtual, two 480x800
+pages). The audiobook pan loop overwrites both pages. Clearing both on exit
+left the LCD black until HiBy happened to repaint, often 5-10 seconds later;
+cycling the power button forced that repaint.
+
+The current handoff is deterministic:
+
+1. Before entering Audiobooks, capture the page selected by
+   `FBIOGET_VSCREENINFO.yoffset` (768,000 bytes).
+2. On exit, stop audiobook drawing and copy that launcher snapshot to both
+   pages.
+3. Pan the original launcher `yoffset` immediately.
+4. Start a detached, bounded 1.5-second monitor. It hashes both pages every
+   50 ms and pans a page when HiBy redraws it but leaves it hidden.
+5. Free the snapshot and handoff context. The worker terminates early if
+   Audiobooks is reopened.
+
+The monitor exists only during the callback-to-launcher transition; it is not
+an always-running process or thread. Live tests measured about 590 ms for an
+idle exit and 760 ms while playback was active, with the first launcher tap
+visible immediately.
 
 ## Build
 

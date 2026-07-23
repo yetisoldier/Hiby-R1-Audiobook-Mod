@@ -255,6 +255,21 @@ static int get_book_id_by_key(sqlite3 *db, const char *book_key) {
     return book_id;
 }
 
+static void upsert_book_description(sqlite3 *db, int book_id,
+                                    const char *description) {
+    sqlite3_stmt *stmt = NULL;
+    const char *sql =
+        "INSERT INTO book_metadata(book_id,description) VALUES(?,?) "
+        "ON CONFLICT(book_id) DO UPDATE SET "
+        "description=excluded.description";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) return;
+    sqlite3_bind_int(stmt, 1, book_id);
+    sqlite3_bind_text(stmt, 2, description ? description : "",
+                      -1, SQLITE_TRANSIENT);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+}
+
 static int upsert_track(sqlite3 *db, int book_id, int ordinal,
                         int disc_number, int track_number,
                         const char *path, const char *title,
@@ -758,6 +773,7 @@ int audiobook_scan_library(sqlite3 *db, const char *root_path,
         int64_t total_duration = 0;
         int latest_mtime = 0;
         char tag_artist[256] = "", tag_composer[256] = "";
+        char description[2048] = "";
 
         for (int j = 0; j < bd->file_count; j++) {
             audio_tags_t tags;
@@ -773,6 +789,11 @@ int audiobook_scan_library(sqlite3 *db, const char *root_path,
                     strncpy(tag_composer, tags.composer,
                             sizeof(tag_composer) - 1);
                     tag_composer[sizeof(tag_composer) - 1] = '\0';
+                }
+                if (!description[0] && tags.description[0]) {
+                    strncpy(description, tags.description,
+                            sizeof(description) - 1);
+                    description[sizeof(description) - 1] = '\0';
                 }
             }
         }
@@ -797,6 +818,7 @@ int audiobook_scan_library(sqlite3 *db, const char *root_path,
 
         int book_id = get_book_id_by_key(db, book_key);
         if (book_id < 0) continue;
+        upsert_book_description(db, book_id, description);
 
         changed_count++;
 

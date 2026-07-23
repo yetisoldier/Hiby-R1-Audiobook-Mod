@@ -38,6 +38,7 @@ If you have a device, ADB, and this repo:
 | [wsola_seek_resume.md](./wsola_seek_resume.md) | WSOLA time-stretch (pitch-preserved), the MP3 1.5x cutoff fix, smart rewind on resume, save-on-quit, SD-primary positions. |
 | [library_scan_storage.md](./library_scan_storage.md) | The moov-mmap scan-hang fix, M4B chapter stsc parsing, SQLite-on-exFAT, the chronic `/usr/data` near-full + guards, SD-primary store. |
 | [sd_runtime_stability.md](./sd_runtime_stability.md) | v2.0.23 overnight-freeze forensics, the stock Ingenic MMC runtime-PM failure, app-scoped SD power hold, reduced resume writes, and validation cautions. |
+| [rust_slint_toolchain_research.md](./rust_slint_toolchain_research.md) | Ingenic GCC/glibc toolchain ABI validation, Windows/WSL checkout hazards, and the practical limits of the current Rust/Slint/Nanowave path. |
 | [adb_automation_screenshots.md](./adb_automation_screenshots.md) | Screenshot/vision pitfalls, the octet-stream crash, safe capture tools, preset UI coords, the app log truth source. |
 | [brick_lessons_build_categories.md](./brick_lessons_build_categories.md) | The v2.0.1/v2.0.2 bricks, the cardinal rule (never bundle risky categories), safe vs dangerous change sets, build reproducibility. |
 

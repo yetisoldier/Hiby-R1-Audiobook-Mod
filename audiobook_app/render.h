@@ -99,6 +99,9 @@ void render_text_right(renderer_t *r, int x_right, int y,
 int render_text_wrap(renderer_t *r, int x, int y, int w, int max_lines,
                      const char *s, int scale, uint16_t color);
 
+/* Return the vertical advance used between wrapped lines at this scale. */
+int render_text_line_height(int scale);
+
 /* Format and draw a time string "H:MM:SS" at (x, y). */
 void render_time(renderer_t *r, int x, int y, int64_t ms, int scale,
                  uint16_t color);
