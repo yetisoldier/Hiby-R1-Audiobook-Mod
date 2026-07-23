@@ -7,41 +7,39 @@ For the full procedure, see
 
 ## Current Release
 
-- GitHub release: `v2.0.22`
-- About-screen label: `HiBy R1 2.0.22`
+- GitHub release: `v2.0.23`
+- About-screen label: `HiBy R1 2.0.23`
 - Base firmware: stock HiBy R1 1.6 for the normal R1, not R1 MIDI.
-- Source branch: `codex/r1-hiby-modding-integration`
-- Package: `r1-audiobooks-2.0.22.upt` (42,213,376 bytes)
-- Package MD5: `d5dfdf3e0977d9339ab0ae862f4b3bf5`
+- Source branch: `codex/sd-runtime-stability`
+- Source fix commit: `692e0ab`
+- Package: `r1-audiobooks-2.0.23.upt` (42,217,472 bytes)
+- Package MD5: `11ddcf7e8d93eefc1038662d4d324830`
 - Package SHA256:
-  `28dd05c76b203ea29298a7a59eafc036431e1c5b18760455913e751048f7f141`
+  `c366a2b5a78a7943b20fab619a8e20d26c61d17f374dab66e34436f99f40f653`
+- Hook MD5: `df2f44e082d2fdf6784404c58f9d23c7`
 - Hook SHA256:
-  `fc68198a25f58888ef7102aabcf3cdf41b6bf839c9d46326986a3091401054e8`
+  `c9f5a517494c88ca4bb203f28b4a8c9e4a411a43b86f13c4b51d2cc2712d2a28`
 - Build flags: `-IncludeAudiobookNativeApp -IncludeAudiobookLauncherIcon
   -EnableBootAdb -UnlockNativeDsd -EnableBluetoothSbcXq -UnlockUsbDacMode
-  -CustomVersionId 2.0.22 -CustomVersionLabel "HiBy R1 2.0.22"`
+  -CustomVersionId 2.0.23 -CustomVersionLabel "HiBy R1 2.0.23"`
 
-The hook hash is identical to the user-tested `2.0.22-stability-rc11` hook.
-Only the public version marker and About-screen label changed for the production
-package.
+## Changes Since v2.0.22
 
-## Changes Since v2.0.20
+- Added an app-scoped runtime-power hold for the removable SD platform, host,
+  and card while Audiobooks is open.
+- Restores the exact prior power-control values on app exit, preserving stock
+  suspend behavior outside Audiobooks.
+- Added diagnostic-only checks for a missing `mmcqd/1` worker or repeated
+  non-active SD runtime state.
+- Changed authoritative position checkpoints from 5 to 15 seconds.
+- Limited SQLite progress mirrors to once per 60 seconds.
+- Kept immediate exact saves on pause, stop, completion, and app exit.
+- Coalesced identical saves to reduce exFAT metadata churn.
+- Replaced README screenshots with images captured from installed v2.0.23.
 
-- Ordered player command queue and coherent state snapshot.
-- Reliable physical keys after screen blanking; play/pause toggle stays ordered.
-- Fine volume steps, hold-to-ramp, and visible volume percentage feedback.
-- Separate/retried wired and Bluetooth mixer state; no pause/resume volume jump.
-- 2.0x WSOLA playback speed.
-- Real folder-hierarchy drill-down.
-- Nonblocking Refresh Library worker with progress/success/failure feedback.
-- Serialized catalog writes and nonblocking SD-primary progress saves.
-- Transactional scans and corrupt-database quarantine.
-- SD media-loss guard preserves progress and avoids false completion.
-- Multipart chapter labels lead with `Part N` and wrap long titles.
-- NativeApp-aware firmware verifier and safer staging checks.
-
-The experimental UTF-8/Cyrillic side branch used by public v2.0.20 is not
-included. Users who rely on Cyrillic names or tags should remain on v2.0.20.
+The change targets an observed stock-kernel MMC runtime-resume Oops that killed
+`mmcqd/1` and left `hiby_player` blocked in SD writeback. Available RAM remained
+near 18 MB and no OOM event occurred.
 
 ## Build And Verify
 
@@ -51,22 +49,22 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File tools\build_r1_audiobook_firmware.ps1 `
-  -OutDir work\audiobook-firmware-2.0.22 `
-  -OutputUpt work\audiobook-firmware-2.0.22\r1-audiobooks-2.0.22.upt `
+  -OutDir work\audiobook-firmware-2.0.23 `
+  -OutputUpt work\audiobook-firmware-2.0.23\r1-audiobooks-2.0.23.upt `
   -IncludeAudiobookNativeApp `
   -IncludeAudiobookLauncherIcon `
   -EnableBootAdb `
   -UnlockNativeDsd `
   -EnableBluetoothSbcXq `
   -UnlockUsbDacMode `
-  -CustomVersionId 2.0.22 `
-  -CustomVersionLabel "HiBy R1 2.0.22"
+  -CustomVersionId 2.0.23 `
+  -CustomVersionLabel "HiBy R1 2.0.23"
 
 py -3 tools\verify_r1_audiobook_build.py `
-  --out-dir work\audiobook-firmware-2.0.22 `
-  --upt-name r1-audiobooks-2.0.22.upt `
-  --expected-version 2.0.22 `
-  --expected-label "HiBy R1 2.0.22" `
+  --out-dir work\audiobook-firmware-2.0.23 `
+  --upt-name r1-audiobooks-2.0.23.upt `
+  --expected-version 2.0.23 `
+  --expected-label "HiBy R1 2.0.23" `
   --expect-native-app `
   --require-boot-adb `
   --expect-audiobook-launcher-icon `
@@ -75,49 +73,48 @@ py -3 tools\verify_r1_audiobook_build.py `
   --expect-usb-dac-mode
 ```
 
-The verifier passed all NativeApp checks: stock path/mode/symlink preservation,
-root ownership, launcher hook/cave, wrapper, app and hook modes, marker flags,
-launcher icons, OTA rootfs hash, and known-bad package hash rejection.
+The verifier passed all NativeApp checks, including all 5,488 stock rootfs
+paths and modes, 482 symlink targets, root ownership, launcher hook/cave,
+wrapper, app and hook modes, marker flags, launcher icons, OTA rootfs hash, and
+known-bad package rejection.
 
 ## Device Verification
 
-Production `2.0.22` was flashed on 2026-07-22. Verified after boot:
+Production `2.0.23` was flashed on 2026-07-23 through the stock
+System -> Firmware update -> Via SD-card flow. Verified after boot:
 
-- `/etc/r1_audiobook_version` reports `version=2.0.22` and all expected flags.
-- On-device hook SHA256 matches the production build and tested RC11.
-- Persistent ADB returned after recovery flash without manual re-enable.
-- Audiobooks tile opened the app and displayed all 52 books in the test catalog.
-- Available memory was about 18 MB with the audiobook app open.
-- No restart loop, black screen, out-of-memory kill, or kernel fault appeared.
-
-RC11, which has the identical hook binary, passed the hands-on listening matrix:
-
-- Wired and Bluetooth audiobook playback.
-- Bluetooth pause/resume with clear audio and stable volume.
-- Rapid play/pause input and held Volume Up/Down ramp.
-- All playback speeds through 2.0x.
-- Direct multipart resume with the 5-second rewind.
-- Refresh Library during playback with no audible or UI stall.
-- Repeated refresh with stable task count and available memory.
-- Clean exit/reopen and resume after reboot.
+- `/etc/r1_audiobook_version` reports `version=2.0.23` and all expected flags.
+- Persistent ADB returned automatically after the update reboot.
+- Installed hook MD5 and SHA256 match the production build.
+- Outside Audiobooks, all three SD controls are `auto` and the card suspends.
+- Inside Audiobooks, all three controls are `on`, card state is `active`, and
+  `mmcqd/1` remains present.
+- Resume sidecars advanced on the 15-second cadence; the DB mirror advanced on
+  the 60-second cadence.
+- Pause and app exit updated both stores immediately.
+- Beyond Exile reopened at the exact saved `3:21:29` position and played.
+- Refresh Library completed with all 52 books visible.
+- Available memory remained approximately 18 MB.
+- Post-flash `dmesg` contained no Oops, allocation failure, I/O error, or
+  blocked-task warning.
 
 ## Publish
 
 Release assets:
 
-- `firmware\releases\v2.0.22\r1-audiobooks-2.0.22.upt`
-- `firmware\releases\v2.0.22\MD5SUMS.txt`
-- `firmware\releases\v2.0.22\SHA256SUMS.txt`
-- `firmware\releases\v2.0.22\RELEASE_NOTES.md`
+- `work\audiobook-firmware-2.0.23\r1-audiobooks-2.0.23.upt`
+- `firmware\releases\v2.0.23\MD5SUMS.txt`
+- `firmware\releases\v2.0.23\SHA256SUMS.txt`
+- `firmware\releases\v2.0.23\RELEASE_NOTES.md`
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File tools\publish_github_release.ps1 `
-  -Tag v2.0.22 `
-  -Name "HiBy R1 Audiobook Mod v2.0.22" `
-  -TargetCommitish codex/r1-hiby-modding-integration `
-  -BodyFile firmware\releases\v2.0.22\RELEASE_NOTES.md `
-  -Assets "firmware\releases\v2.0.22\r1-audiobooks-2.0.22.upt,firmware\releases\v2.0.22\MD5SUMS.txt,firmware\releases\v2.0.22\SHA256SUMS.txt,firmware\releases\v2.0.22\RELEASE_NOTES.md"
+  -Tag v2.0.23 `
+  -Name "HiBy R1 Audiobook Mod v2.0.23" `
+  -TargetCommitish codex/sd-runtime-stability `
+  -BodyFile firmware\releases\v2.0.23\RELEASE_NOTES.md `
+  -Assets "work\audiobook-firmware-2.0.23\r1-audiobooks-2.0.23.upt,firmware\releases\v2.0.23\MD5SUMS.txt,firmware\releases\v2.0.23\SHA256SUMS.txt,firmware\releases\v2.0.23\RELEASE_NOTES.md"
 ```
 
 Run the same command with `-VerifyOnly` after publication and confirm all four
@@ -130,5 +127,7 @@ asset names and sizes through the GitHub release API.
 - ADB and USB DAC are mutually exclusive by USB working mode.
 - UTF-8/Cyrillic text support from v2.0.20 is not included in this stability
   line.
+- The original SD freeze was intermittent; broad long-duration testing across
+  different SD cards remains valuable.
 - This is unofficial firmware tested on one normal R1. Keep stock 1.6 firmware
   available for recovery.

@@ -6,12 +6,12 @@ firmware, not for normal end users.
 
 ## Current Release Reference
 
-- Public release: `v2.0.22`
-- About-screen label: `HiBy R1 2.0.22`
-- Package: `r1-audiobooks-2.0.22.upt`
+- Public release: `v2.0.23`
+- About-screen label: `HiBy R1 2.0.23`
+- Package: `r1-audiobooks-2.0.23.upt`
 - Base firmware: stock HiBy R1 1.6 for the normal R1
 - Target device: normal HiBy R1 only, not R1 MIDI
-- Source branch: `codex/r1-hiby-modding-integration` (the `main` branch has no
+- Source branch: `codex/sd-runtime-stability` (the `main` branch has no
   `audiobook_app/`; all source lives on the codex branch — GitHub release
   `--target` must point at the codex branch).
 
@@ -90,16 +90,16 @@ that the pre-2.0 line carried and v2.0.17 restores:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File tools\build_r1_audiobook_firmware.ps1 `
-  -OutDir work\audiobook-firmware-2.0.22 `
-  -OutputUpt work\audiobook-firmware-2.0.22\r1-audiobooks-2.0.22.upt `
+  -OutDir work\audiobook-firmware-2.0.23 `
+  -OutputUpt work\audiobook-firmware-2.0.23\r1-audiobooks-2.0.23.upt `
   -IncludeAudiobookNativeApp `
   -IncludeAudiobookLauncherIcon `
   -EnableBootAdb `
   -UnlockNativeDsd `
   -EnableBluetoothSbcXq `
   -UnlockUsbDacMode `
-  -CustomVersionId 2.0.22 `
-  -CustomVersionLabel "HiBy R1 2.0.22"
+  -CustomVersionId 2.0.23 `
+  -CustomVersionLabel "HiBy R1 2.0.23"
 ```
 
 The NativeApp pivot is mutually exclusive with the legacy resume-daemon switches
@@ -136,10 +136,10 @@ Run the release package verifier against the NativeApp build:
 
 ```powershell
 py -3 tools\verify_r1_audiobook_build.py `
-  --out-dir work\audiobook-firmware-2.0.22 `
-  --upt-name r1-audiobooks-2.0.22.upt `
-  --expected-version 2.0.22 `
-  --expected-label "HiBy R1 2.0.22" `
+  --out-dir work\audiobook-firmware-2.0.23 `
+  --upt-name r1-audiobooks-2.0.23.upt `
+  --expected-version 2.0.23 `
+  --expected-label "HiBy R1 2.0.23" `
   --expect-native-app `
   --require-boot-adb `
   --expect-audiobook-launcher-icon `
@@ -166,10 +166,10 @@ verifies remote byte count + hashes:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File tools\adb_stage_verified_firmware.ps1 `
-  -Package work\audiobook-firmware-2.0.22\r1-audiobooks-2.0.22.upt `
-  -BuildOutDir work\audiobook-firmware-2.0.22 `
-  -ExpectedVersion 2.0.22 `
-  -ExpectedLabel "HiBy R1 2.0.22" `
+  -Package work\audiobook-firmware-2.0.23\r1-audiobooks-2.0.23.upt `
+  -BuildOutDir work\audiobook-firmware-2.0.23 `
+  -ExpectedVersion 2.0.23 `
+  -ExpectedLabel "HiBy R1 2.0.23" `
   -ExpectNativeApp `
   -RequireBootAdb `
   -ExpectAudiobookLauncherIcon `

@@ -3,20 +3,20 @@
 A self-contained audiobook app for the normal HiBy R1, based on stock HiBy R1
 firmware 1.6. **Not for the R1 MIDI.**
 
-> **v2.0.22 is the current release.** It is a stability-focused update for the
-> dedicated in-process audiobook app. It fixes intermittent hardware controls,
-> volume jumps, UI stalls, and refresh/playback contention; adds a real folder
-> hierarchy, 2.0x playback, and visible volume feedback; and keeps the USB DAC,
-> Native DSD, and Bluetooth SBC XQ unlocks.
+> **v2.0.23 is the current release.** It adds an app-scoped SD-card
+> runtime-power guard after an overnight freeze was traced to the stock Ingenic
+> MMC driver, and reduces resume-write traffic while keeping exact saves on
+> pause, stop, completion, and app exit. It includes all v2.0.22 hardware-key,
+> volume, Bluetooth, library, and playback improvements.
 
 ## Current release
 
-- **Version marker:** `2.0.22`
-- **About-screen label:** `HiBy R1 2.0.22`
-- **Download:** <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v2.0.22>
-- **Package:** `r1-audiobooks-2.0.22.upt` (rename to `r1.upt` to install)
-- **UPT MD5:** `d5dfdf3e0977d9339ab0ae862f4b3bf5`
-- **UPT SHA256:** `28dd05c76b203ea29298a7a59eafc036431e1c5b18760455913e751048f7f141`
+- **Version marker:** `2.0.23`
+- **About-screen label:** `HiBy R1 2.0.23`
+- **Download:** <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v2.0.23>
+- **Package:** `r1-audiobooks-2.0.23.upt` (rename to `r1.upt` to install)
+- **UPT MD5:** `11ddcf7e8d93eefc1038662d4d324830`
+- **UPT SHA256:** `c366a2b5a78a7943b20fab619a8e20d26c61d17f374dab66e34436f99f40f653`
 - **Boot ADB:** included (installs `/etc/init.d/S90adb`). ADB is available at
  boot whenever System → USB working mode is set to **Device** (mode 1). ADB and
  USB-DAC share the single USB gadget controller and are mutually exclusive by
@@ -31,7 +31,7 @@ firmware 1.6. **Not for the R1 MIDI.**
 
 **v2.0.20 compatibility note:** v2.0.20 was published from an experimental
 UTF-8/Cyrillic side branch. That text-rendering experiment is not included in
-v2.0.22 because this release follows the separately tested stability line. If
+v2.0.23 because this release follows the separately tested stability line. If
 you rely on Cyrillic audiobook names or tags, remain on v2.0.20 for now.
 
 Before flashing, keep a known-good stock 1.6 `r1.upt` for recovery. This is
@@ -54,7 +54,8 @@ the R1 MIDI or other HiBy players unless you are prepared to recover the device.
  <img src="docs/screenshots/08-launcher-after-exit.png" alt="HiBy launcher after exiting the app" width="200">
 </p>
 
-Captured on the test R1 running v2.0.16. Full set in [`docs/screenshots/`](docs/screenshots/).
+Captured directly from the test R1 running v2.0.23. Full set in
+[`docs/screenshots/`](docs/screenshots/).
 
 ## How it works
 
@@ -95,8 +96,10 @@ browser, Bluetooth, USB, and system UI are otherwise untouched.
 - **Per-book + multipart resume** across reboots and book switching, with a
  5-second smart rewind on resume. Positions are **SD-primary** (one tiny file
  per book on the SD card) so they survive even a full internal data partition;
- the SQLite DB is a best-effort mirror, and the exact final position is saved on
- quit.
+ the SQLite DB is a best-effort mirror. Playing positions checkpoint every 15
+ seconds, the DB mirror is limited to once per minute, and the exact position is
+ saved immediately on pause, stop, completion, and app exit. A book must play
+ for at least 15 seconds before its first periodic checkpoint.
 - **Now Playing**: cover art, title/author/duration, and a **draggable progress
  handle** (scrub seek; tapping the bar elsewhere does not jump).
 - **Playback speed** 1.0 / 1.1 / 1.25 / 1.5 / 2.0x via **WSOLA time-stretch**
@@ -134,6 +137,18 @@ browser, Bluetooth, USB, and system UI are otherwise untouched.
 - ADB is available at boot when USB working mode is set to **Device**, via the
  `S90adb` init script baked into the rootfs. No in-app toggle needed. ADB and
  USB-DAC are mutually exclusive by USB working mode.
+
+**SD-card stability (since v2.0.23)**
+- While Audiobooks is open, the app keeps the removable-card platform, host,
+  and card runtime-power controls active. This avoids the stock Ingenic X1600
+  MMC driver's rapid three-second suspend/resume cycle while the app is reading
+  media and writing resume data.
+- Leaving Audiobooks restores each control to its previous value, normally
+  `auto`, so the SD card can suspend normally in the stock launcher and Music
+  player. There is no always-running daemon and no global power-management
+  change.
+- A lightweight 30-second health check only logs repeated missing MMC-worker or
+  non-active runtime states. It never reboots the device.
 
 **Restored stock unlocks (since v2.0.17)**
 - These three general device/music unlocks were carried by every pre-2.0 release
@@ -175,6 +190,10 @@ browser, Bluetooth, USB, and system UI are otherwise untouched.
 - **SD-card interruption guard:** a read failure or unavailable audiobook path
   stops playback without marking the book complete or overwriting its saved
   position.
+- **Resume persistence:** periodic position files are written every 15 seconds.
+  Pause, stop, completion, and app exit save immediately. The less-frequent
+  SQLite mirror is only for list progress and does not control the authoritative
+  resume position.
 - **Leaving the app:** when you swipe or back out of the Audiobooks app to the
  HiBy launcher, **audiobook playback stops**. Audio is tied to the app being
  open. Exiting while playing returns cleanly to the launcher (no black screen,
@@ -186,10 +205,11 @@ browser, Bluetooth, USB, and system UI are otherwise untouched.
 
 ## Install
 
-1. Download `r1-audiobooks-2.0.22.upt` from the release page.
+1. Download `r1-audiobooks-2.0.23.upt` from the release page.
 2. Rename it to exactly `r1.upt` (the R1 will not recognize the update otherwise).
 3. Copy it to the root of the SD card.
-4. On the R1, run the normal firmware update (System -> Firmware Update -> Local).
+4. On the R1, run the normal firmware update
+   (System -> Firmware update -> Via SD-card).
 5. Wait for success and the reboot.
 6. After boot, delete or rename `r1.upt` on the SD card so the updater stops
  offering it.
@@ -223,24 +243,24 @@ Build the hook/app shared library:
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\build_r1_audiobook_hook.ps1
 ```
 
-Build the public-release firmware (version 2.0.22):
+Build the public-release firmware (version 2.0.23):
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\build_r1_audiobook_firmware.ps1 `
- -OutDir work\audiobook-firmware-2.0.22 `
- -OutputUpt work\audiobook-firmware-2.0.22\r1-audiobooks-2.0.22.upt `
+ -OutDir work\audiobook-firmware-2.0.23 `
+ -OutputUpt work\audiobook-firmware-2.0.23\r1-audiobooks-2.0.23.upt `
  -IncludeAudiobookNativeApp `
  -IncludeAudiobookLauncherIcon `
  -EnableBootAdb `
  -UnlockNativeDsd `
  -EnableBluetoothSbcXq `
  -UnlockUsbDacMode `
- -CustomVersionId 2.0.22 `
- -CustomVersionLabel "HiBy R1 2.0.22"
+ -CustomVersionId 2.0.23 `
+ -CustomVersionLabel "HiBy R1 2.0.23"
 ```
 
 `-EnableBootAdb` installs `/etc/init.d/S90adb` so ADB starts automatically after
-every boot. The v2.0.22 public release ships with it on; drop the flag for a
+every boot. The v2.0.23 public release ships with it on; drop the flag for a
 build without persistent ADB. `-UnlockNativeDsd`, `-EnableBluetoothSbcXq`, and
 `-UnlockUsbDacMode` restore the three general device/music unlocks the pre-2.0
 line carried (Native DSD on the analog path, BlueALSA SBC XQ, and the USB DAC
@@ -257,7 +277,8 @@ alone.
 - `docs/modding/` - **modder knowledge base**: the reverse-engineering
  reference for the hook architecture, flash/recovery flow, audio decode/ALSA,
  Bluetooth A2DP/AVRCP, input keys, cover art, WSOLA/seek, library scan/storage,
- ADB automation, and the brick-lessons/build-risk guide. Start at
+ SD runtime-power stability, ADB automation, and the brick-lessons/build-risk
+ guide. Start at
  `docs/modding/README.md`.
 - `docs/audiobook_firmware_architecture.md` - high-level firmware architecture
  (NativeApp pivot).
@@ -272,7 +293,7 @@ alone.
 - `docs/screenshots/` - README screenshots.
 - `firmware/releases/v2.0.16/` - v2.0.16 release notes and checksums.
 - `firmware/releases/v2.0.17/` - v2.0.17 release notes and checksums.
-- `firmware/releases/v2.0.22/` - current release notes and checksums.
+- `firmware/releases/v2.0.23/` - current release notes and checksums.
 - `CHANGELOG.md` - release history.
 
 ## Attribution and sources

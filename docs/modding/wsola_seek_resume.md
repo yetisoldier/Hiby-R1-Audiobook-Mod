@@ -91,22 +91,25 @@ jumps (those use `start_ms >= 0`, absolute).
 
 ## Save-on-quit (defensive)
 
-`CMD_QUIT` never saved — it just set `running=0`, so the final position was
-only as fresh as the 5 s periodic throttle (up to 5 s lost on every exit, and
-if `.pos` was missing the next session resumed ~5 s in and overwrote with
-~0). FIX: `CMD_QUIT` calls `save_progress(0)` before `running=0`. `g_pl.db` is
-still open then (`db_close` is in `ui_run` AFTER `player_shutdown`).
+`CMD_QUIT` originally never saved - it just set `running=0`, so the final
+position was only as fresh as the periodic checkpoint. The fix calls
+`save_progress(0, 1)` before `running=0`; `g_pl.db` is still open then
+(`db_close` is in `ui_run` after `player_shutdown`).
+
+Since v2.0.23, authoritative SD checkpoints run every 15 seconds and the SQLite
+list-progress mirror runs at most every 60 seconds. Pause, stop, completion, and
+quit still save both stores immediately. Identical consecutive state is
+coalesced to avoid redundant exFAT metadata writes.
 
 ## SD-primary position store (v2.0.9+)
 
 `pos_save_sd` writes `<book_id>.pos`
 (`track_ordinal/track_pos_ms/book_elapsed_ms/completed/ts`) to
 `/usr/data/mnt/sd_0/.audiobook_pos/` via tmp+rename (atomic-ish on exFAT).
-`save_progress` calls `pos_save_sd` (authoritative) AND
+`save_progress` calls `pos_save_sd` (authoritative) and periodically calls
 `audiobook_save_progress` (best-effort library.db mirror for the list "%"
-display; return ignored). `cmd_play` resume reads `pos_load_sd` first, falls
-back to `audiobook_get_progress` (library.db) only for pre-2.0.9 positions
-(migration). So a full `/usr/data` can NEVER lose the place.
+display). `cmd_play` resume reads `pos_load_sd` first, falling back to
+`audiobook_get_progress` only for pre-2.0.9 positions during migration.
 
 `audiobook_cleanup_orphans` calls `pos_remove_sd` for pruned books (no stale
 `.pos`). See [library_scan_storage.md](./library_scan_storage.md) for why

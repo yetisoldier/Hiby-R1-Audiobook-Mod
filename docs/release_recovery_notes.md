@@ -2,6 +2,11 @@
 
 These notes are for the normal HiBy R1 on stock firmware 1.6, not the R1 MIDI.
 
+> **Current release:** v2.0.23, firmware marker `2.0.23`, package
+> `r1-audiobooks-2.0.23.upt`. The early v1.6.x sections below are retained as
+> historical recovery records; current release details are in
+> [`firmware/releases/v2.0.23/RELEASE_NOTES.md`](../firmware/releases/v2.0.23/RELEASE_NOTES.md).
+
 ## Current Release
 
 - GitHub release: `v1.6.1`
@@ -79,9 +84,24 @@ The previous public release was `v1.6.0`, firmware marker
 
 ---
 
+## v2.0.23 note (2026-07-23, SD runtime stability)
+
+The current public release is **v2.0.23** (about-screen label "HiBy R1
+2.0.23").
+
+- GitHub release: `v2.0.23`
+- Package: `r1-audiobooks-2.0.23.upt` (42,217,472 B)
+- MD5: `11ddcf7e8d93eefc1038662d4d324830`
+- SHA256: `c366a2b5a78a7943b20fab619a8e20d26c61d17f374dab66e34436f99f40f653`
+- Source branch: `codex/sd-runtime-stability`
+
+It adds an app-scoped SD runtime-power guard and reduces periodic resume writes
+after an overnight freeze was traced to the stock MMC resume path. See
+[`modding/sd_runtime_stability.md`](./modding/sd_runtime_stability.md).
+
 ## v2.0.22 note (2026-07-22, NativeApp stability line)
 
-The current public release is **v2.0.22** (about-screen label "HiBy R1
+The previous public release was **v2.0.22** (about-screen label "HiBy R1
 2.0.22"). Its hook is byte-identical to the hands-on-tested RC11 hook.
 
 - GitHub release: `v2.0.22`
@@ -101,7 +121,7 @@ adb -s ingenic_2233 reboot
 
 The public v2.0.20 package came from a separate UTF-8/Cyrillic experiment and
 is not the base of this stability line. Users who require Cyrillic text should
-remain on v2.0.20; everyone else should use v2.0.22.
+remain on v2.0.20; everyone else should use v2.0.23.
 
 ## v2.0.18 note (2026-07-20, NativeApp pivot)
 

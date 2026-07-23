@@ -41,6 +41,8 @@ LD_PRELOAD hook (libaudiobook_hook.so, ~1.6 MB)
             decode, seek, speed, and mixer work stay on the player thread.
   - Refresh worker: scans on a private SQLite connection while the event loop,
             playback, and hardware controls continue running.
+  - Storage guard: keeps the removable-card runtime-PM path active only while
+            Audiobooks owns SD-backed media and restores stock policy on exit.
   - Library scan / chapters / bookmarks / positions (audiobook_app/).
 
 Native helper (r1_audiobook_smoke)
@@ -77,19 +79,18 @@ The release installs these into the read-only rootfs:
 Runtime state lives under writable storage:
 
 ```text
-/usr/data/audiobooks/
-  library.db            (SQLite, best-effort mirror; /usr/data is UBIFS)
 /usr/data/mnt/sd_0/     (SD card — the authoritative store)
   Audiobooks/...        (library root)
+  Audiobooks/.audiobook_library/
+    library.db          (catalog + best-effort progress mirror)
   .audiobook_pos/       (SD-primary positions + bookmarks)
     <book_id>.pos
     <book_id>.bm
   .covercache/          (.r565 cover caches next to source covers)
 ```
 
-See [`modding/library_scan_storage.md`](./modding/library_scan_storage.md)
-for why the DB is on `/usr/data` (UBIFS, power-fail-safe) while positions and
-bookmarks are SD-primary.
+See [`modding/library_scan_storage.md`](./modding/library_scan_storage.md) for
+catalog and sidecar details.
 
 ## UI and rendering
 
@@ -119,7 +120,8 @@ See [`modding/audio_decode_alsa.md`](./modding/audio_decode_alsa.md) and
 - **WSOLA time-stretch** (pitch preserved) for 1.0/1.1/1.25/1.5/2.0x; 1.0x is
   exact passthrough. See [`modding/wsola_seek_resume.md`](./modding/wsola_seek_resume.md).
 - **Resume** is per-book + multipart across reboots, with a 5 s smart rewind.
-  Positions are SD-primary; the exact final position is saved on quit.
+  Positions are SD-primary, checkpoint every 15 s, and save exactly on pause,
+  stop, completion, and quit. The DB percentage mirror is limited to 60 s.
 - **Bookmarks** are SD-primary (one `.bm` per book, atomic temp+rename).
 
 ## Library scan / chapters / storage
@@ -139,6 +141,11 @@ See [`modding/audio_decode_alsa.md`](./modding/audio_decode_alsa.md) and
 - Media read/seek errors are checked against path availability before an EOF is
   treated as completion. Removing or losing the SD card preserves the last good
   resume point and reports `SD card unavailable`.
+- Since v2.0.23, an app-scoped storage guard keeps the platform, host, and card
+  runtime-power controls at `on` while Audiobooks is open, then restores their
+  prior values on exit. This addresses an observed stock MMC resume-path kernel
+  Oops without changing global power management. See
+  [`modding/sd_runtime_stability.md`](./modding/sd_runtime_stability.md).
 
 ## Audio unlocks (since v2.0.17)
 

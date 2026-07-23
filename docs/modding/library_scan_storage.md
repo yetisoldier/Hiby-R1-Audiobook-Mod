@@ -193,16 +193,19 @@ swaps.
 
 `pos_save_sd` writes `<book_id>.pos`
 (`track_ordinal/track_pos_ms/book_elapsed_ms/completed/ts`) to
-`/usr/data/mnt/sd_0/.audiobook_pos/` via tmp+rename. `save_progress` calls
-`pos_save_sd` (authoritative) and then attempts `audiobook_save_progress`
-(best-effort library.db mirror). If the refresh worker owns the DB writer lock,
-the mirror is skipped instead of blocking playback. `cmd_play` resume reads `pos_load_sd`
-first, falls back to `library.db` only for pre-2.0.9 positions (migration).
+`/usr/data/mnt/sd_0/.audiobook_pos/` via tmp+rename. Since v2.0.23, the
+authoritative sidecar checkpoints every 15 seconds and the best-effort
+`library.db` progress mirror runs at most every 60 seconds. Pause, stop,
+completion, and app exit still mirror immediately. If the refresh worker owns
+the DB writer lock, the mirror is skipped instead of blocking playback.
+`cmd_play` reads `pos_load_sd` first and falls back to `library.db` only for
+pre-2.0.9 positions during migration.
 Bookmarks (v2.0.16) are likewise SD-primary —
 `/usr/data/mnt/sd_0/.audiobook_pos/<book_id>.bm`, atomic temp+rename; the
 `bookmarks` DB table is INERT; a one-time per-book DB→SD migration runs on
 first bookmark-screen open. See [wsola_seek_resume.md](./wsola_seek_resume.md)
 for the resume-side details.
 
-The point: a full `/usr/data` can NEVER lose the place or refuse a bookmark.
-The SD store is authoritative; the DB is a best-effort mirror.
+The SD sidecars are authoritative; the DB progress row is a best-effort mirror.
+See [sd_runtime_stability.md](./sd_runtime_stability.md) for the app-scoped
+runtime-power hold that protects this SD-backed state while Audiobooks is open.

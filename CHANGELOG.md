@@ -2,6 +2,58 @@
 
 All public releases are for the normal HiBy R1 on stock firmware 1.6. Do not install these packages on the R1 MIDI.
 
+## v2.0.23 - 2026-07-23
+
+Firmware marker: `2.0.23` - About-screen label `HiBy R1 2.0.23`.
+
+SD-card and resume-persistence stability update built directly on v2.0.22.
+Library data, saved positions, bookmarks, Music data, and Bluetooth pairings
+are preserved when installing over an earlier v2.0.x build.
+
+### Fixed: overnight SD/MMC freeze
+
+- Traced the reported overnight freeze to a kernel Oops in the stock Ingenic
+  X1600 MMC path, not to an out-of-memory condition. `mmcqd/1` faulted while the
+  SD card was resuming from runtime suspend, then `hiby_player` became stuck in
+  uninterruptible I/O while syncing a dirty SD buffer.
+- Added an app-scoped storage guard. While Audiobooks is open, it sets the SD
+  platform, host, and card runtime-power controls to `on`; when the app exits,
+  it restores the exact previous values in reverse order. The stock launcher
+  and Music player therefore retain their normal `auto`/suspend behavior.
+- Added a low-cost 30-second diagnostic poll for a missing `mmcqd/1` worker or
+  an SD runtime state that remains non-active for two checks. It only logs the
+  condition and never reboots the device.
+- No global kernel power-management switches, background daemon, or permanent
+  battery-affecting SD hold were added.
+
+### Reduced resume-write pressure
+
+- Changed the authoritative SD position checkpoint from every 5 seconds to
+  every 15 seconds.
+- Limited the SQLite progress mirror to once per 60 seconds. The mirror powers
+  list percentages and legacy fallback; it is not the authoritative resume
+  position.
+- Pause, stop, book completion, and app exit still save both stores
+  immediately, so intentional position changes are not delayed.
+- Coalesced identical back-to-back saves so pause/quit/stop sequences do not
+  rewrite the same exFAT metadata.
+
+### Verification
+
+- Passed the full source sanity suite and both database-maintenance fixtures.
+- Passed strict package verification, including all 5,488 stock rootfs paths,
+  modes, symlinks, root ownership, launcher integration, feature markers, OTA
+  metadata, and known-bad package rejection.
+- Flashed on the test R1 through the stock Via SD-card updater. Persistent ADB
+  returned automatically; installed hook hashes matched the verified build.
+- Verified app guard acquire/release, 15-second checkpoints, 60-second DB
+  mirrors, immediate pause/exit saves, exact reopen position, clean refresh,
+  stable memory near 18 MB available, and a clean post-flash kernel log.
+
+The original failure was intermittent and appeared after a long idle period.
+This release directly addresses the observed kernel failure path; additional
+long-duration reports from other cards and devices are welcome.
+
 ## v2.0.22 - 2026-07-22
 
 Firmware marker: `2.0.22` - About-screen label `HiBy R1 2.0.22`.
