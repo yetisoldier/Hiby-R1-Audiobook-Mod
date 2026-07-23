@@ -59,6 +59,9 @@
 #include "wsola.h"         /* pitch-preserving time-stretch (speed != 1.0x) */
 #include "posstore.h"      /* SD-primary position store (never lost to full /usr/data) */
 
+#define POSITION_SAVE_INTERVAL_MS 15000u
+#define DB_MIRROR_INTERVAL_MS     60000u
+
 /* ---- logging ----------------------------------------------------------- */
 static void plog(const char *fmt, ...) {
     char buf[256];
@@ -337,6 +340,17 @@ static struct {
     uint8_t aac_frame[8192];/* one raw AAC access unit */
 
     uint64_t last_save_ms;
+    uint64_t last_db_save_ms;
+    int saved_book_id;
+    int saved_track_ordinal;
+    int saved_completed;
+    int64_t saved_track_pos_ms;
+    int64_t saved_book_elapsed_ms;
+    int db_saved_book_id;
+    int db_saved_track_ordinal;
+    int db_saved_completed;
+    int64_t db_saved_track_pos_ms;
+    int64_t db_saved_book_elapsed_ms;
     char cur_title[256];
 
     int64_t sleep_deadline_ms;   /* monotonic ms deadline, 0 = no sleep timer */
@@ -822,7 +836,7 @@ void pos_remove_sd(int book_id) {
 
 /* ---- progress persistence ---------------------------------------------- */
 
-static void save_progress(int completed) {
+static void save_progress(int completed, int mirror_db) {
     if (!g_pl.db || g_pl.book_id <= 0 || g_pl.track_count == 0) return;
     int idx = g_pl.track_idx;
     if (idx < 0 || idx >= g_pl.track_count) idx = 0;
@@ -838,16 +852,34 @@ static void save_progress(int completed) {
     p.completed = completed;
     p.completed_at = completed ? (int)time(NULL) : 0;
     p.last_saved_at = (int)time(NULL);
-    /* SD is authoritative: a full /usr/data can never lose the place. The
-     * library.db write below is a best-effort mirror for the list view's "%"
-     * display, so its return is intentionally ignored — if /usr/data is full
-     * the mirror goes stale but the SD file holds the real position. */
-    pos_save_sd(g_pl.book_id, p.track_ordinal, p.position_ms,
-                p.total_book_elapsed_ms, completed);
-    /* Signal the UI to refresh its cached progress + home counts. Set
-     * unconditionally (the SD save above always reflects new progress) so a
-     * low-/usr/data early return below still updates the UI once space frees. */
-    g_progress_dirty = 1;
+    int position_changed =
+        g_pl.saved_book_id != p.book_id
+        || g_pl.saved_track_ordinal != p.track_ordinal
+        || g_pl.saved_track_pos_ms != p.position_ms
+        || g_pl.saved_book_elapsed_ms != p.total_book_elapsed_ms
+        || g_pl.saved_completed != p.completed;
+    int db_changed =
+        g_pl.db_saved_book_id != p.book_id
+        || g_pl.db_saved_track_ordinal != p.track_ordinal
+        || g_pl.db_saved_track_pos_ms != p.position_ms
+        || g_pl.db_saved_book_elapsed_ms != p.total_book_elapsed_ms
+        || g_pl.db_saved_completed != p.completed;
+
+    /* The small SD sidecar is authoritative. Avoid rewriting identical exFAT
+     * metadata when pause, quit, and stop arrive back-to-back. */
+    if (position_changed) {
+        pos_save_sd(g_pl.book_id, p.track_ordinal, p.position_ms,
+                    p.total_book_elapsed_ms, completed);
+        g_pl.saved_book_id = p.book_id;
+        g_pl.saved_track_ordinal = p.track_ordinal;
+        g_pl.saved_track_pos_ms = p.position_ms;
+        g_pl.saved_book_elapsed_ms = p.total_book_elapsed_ms;
+        g_pl.saved_completed = p.completed;
+    }
+
+    /* SQLite only mirrors list percentages and provides legacy fallback.
+     * Keep it off the frequent checkpoint path to avoid journal churn. */
+    if (!mirror_db || !db_changed) return;
     /* Free-space guard on the library.db (now on SD). The SD has gigabytes
      * free, but a nearly-full card could still fail a write. Skip the DB
      * mirror when free space is critically low — the SD .pos store is
@@ -876,7 +908,24 @@ static void save_progress(int completed) {
          * copy, and the list-view "%" mirror just goes stale until the next
          * successful save. Don't fail playback over a best-effort mirror. */
         plog("save skipped (db busy/full) — SD .pos authoritative");
+    } else {
+        g_pl.db_saved_book_id = p.book_id;
+        g_pl.db_saved_track_ordinal = p.track_ordinal;
+        g_pl.db_saved_track_pos_ms = p.position_ms;
+        g_pl.db_saved_book_elapsed_ms = p.total_book_elapsed_ms;
+        g_pl.db_saved_completed = p.completed;
+        g_pl.last_db_save_ms = mono_ms();
+        g_progress_dirty = 1;
     }
+}
+
+static void periodic_progress_checkpoint(void) {
+    uint64_t now = mono_ms();
+    if (now - g_pl.last_save_ms < POSITION_SAVE_INTERVAL_MS) return;
+    int mirror_db =
+        now - g_pl.last_db_save_ms >= DB_MIRROR_INTERVAL_MS;
+    save_progress(0, mirror_db);
+    g_pl.last_save_ms = now;
 }
 
 /* Add a bookmark at the current playback position. Uses the same track + book
@@ -1634,6 +1683,7 @@ static void cmd_play(int book_id, int64_t start_ms) {
     if (open_track(start_idx, into) < 0) { g_pl.state = PLAYER_STOPPED; return; }
     g_pl.state = PLAYER_PLAYING;
     g_pl.last_save_ms = mono_ms();
+    g_pl.last_db_save_ms = g_pl.last_save_ms;
     plog("PLAY book %d @%lld total=%lldms", book_id, (long long)start_ms, (long long)g_pl.total_ms);
 }
 
@@ -1676,12 +1726,13 @@ static void cmd_pause(void) {
         }
     }
     g_pl.state = PLAYER_PAUSED;
-    save_progress(0);
+    save_progress(0, 1);
     plog("PAUSE @%lldms", (long long)g_pl.position_ms);
 }
 
 static void cmd_stop(void) {
-    if ((g_pl.track_open || g_pl.pcm) && g_pl.book_id > 0) save_progress(0);
+    if ((g_pl.track_open || g_pl.pcm) && g_pl.book_id > 0)
+        save_progress(0, 1);
     close_mh(); close_pcm();
     g_pl.state = PLAYER_STOPPED;
     plog("STOP");
@@ -1804,7 +1855,7 @@ static void decode_step_aac(void) {
         int idx = g_pl.track_idx + 1;
         if (idx >= g_pl.track_count) {
             plog("book finished (aac)");
-            save_progress(1);
+            save_progress(1, 1);
             close_mh(); close_pcm();
             g_pl.state = PLAYER_STOPPED;
             return;
@@ -1820,7 +1871,7 @@ static void decode_step_aac(void) {
         plog("aac read_sample(%u) -> %d", g_pl.aac_sample, fsz);
         int idx = g_pl.track_idx + 1;
         if (idx >= g_pl.track_count) {
-            save_progress(1); close_mh(); close_pcm();
+            save_progress(1, 1); close_mh(); close_pcm();
             g_pl.state = PLAYER_STOPPED; return;
         }
         if (open_track(idx, 0) < 0) g_pl.state = PLAYER_STOPPED;
@@ -1871,8 +1922,7 @@ static void decode_step_aac(void) {
         g_pl.track_pos_ms += advanced;
         g_pl.position_ms = g_pl.track_base_ms + g_pl.track_pos_ms;
     }
-    uint64_t now = mono_ms();
-    if (now - g_pl.last_save_ms > 5000) { save_progress(0); g_pl.last_save_ms = now; }
+    periodic_progress_checkpoint();
 }
 
 static void decode_step(void) {
@@ -1886,7 +1936,7 @@ static void decode_step(void) {
         int idx = g_pl.track_idx + 1;
         if (idx >= g_pl.track_count) {
             plog("book finished");
-            save_progress(1);
+            save_progress(1, 1);
             close_mh(); close_pcm();
             g_pl.state = PLAYER_STOPPED;
             return;
@@ -1944,12 +1994,7 @@ static void decode_step(void) {
         g_pl.position_ms = g_pl.track_base_ms + g_pl.track_pos_ms;
     }
 
-    /* throttle progress saves to ~every 5s */
-    uint64_t now = mono_ms();
-    if (now - g_pl.last_save_ms > 5000) {
-        save_progress(0);
-        g_pl.last_save_ms = now;
-    }
+    periodic_progress_checkpoint();
 }
 
 /* ---- thread ------------------------------------------------------------ */
@@ -2051,15 +2096,15 @@ static void *player_thread(void *arg) {
             case CMD_QUIT:
                 /* Persist the exact final position before the thread exits.
                  * Without this, the last place is only as fresh as the most
-                 * recent periodic save (throttled to every 5s in decode_step),
-                 * so up to 5s is silently lost on every exit — and if the saved
+                 * recent periodic save (throttled to every 15s in decode_step),
+                 * so up to 15s is silently lost on every exit — and if the saved
                  * .pos was already missing/stale, the next session resumes ~5s
                  * in and the periodic save then overwrites it with ~0, which
                  * looks like "the resume reset to the beginning". Saving here
                  * makes exit authoritative. Safe: save_progress no-ops when no
                  * book is loaded, and g_pl.db is still open (audiobook_db_close
                  * runs in player_shutdown AFTER this thread exits). */
-                save_progress(0);
+                save_progress(0, 1);
                 g_pl.running = 0;
                 break;
         }
@@ -2083,7 +2128,6 @@ static void *player_thread(void *arg) {
             if (sleep_fire) {
                 plog("sleep timer expired -> pause");
                 cmd_pause();
-                save_progress(0);
             } else {
                 decode_step();
             }

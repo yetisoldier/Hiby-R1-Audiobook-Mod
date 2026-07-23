@@ -47,6 +47,7 @@
 
 #include "ui.h"
 #include "font.h"
+#include "storage_guard.h"
 
 /* ---- hiby_player addresses (stock binary) ------------------------------- */
 #define TILE_CAVE_ADDR           0x0075DAECu  /* code-cave: patched tile callback */
@@ -317,6 +318,11 @@ static int hook_b(void *arg0, void *arg1) {
 
     logmsg("[hook] entering audiobook UI event loop...\n");
 
+    /* The stock X1600 MMC driver runtime-autosuspends the SD card after three
+     * idle seconds. Keep that path active while this UI owns the SD-backed
+     * catalog and media; restore the stock policy as soon as we return. */
+    storage_guard_acquire();
+
     /* Run the audiobook UI. Returns when user taps "Back to Menu".
      * ui_run drives the pan loop (ioctl FBIOPAN_DISPLAY) at ~30fps; the
      * ioctl hook draws our UI before each pan. The event loop reads touch
@@ -324,6 +330,7 @@ static int hook_b(void *arg0, void *arg1) {
     ui_run(fb, fb_fd);
 
     logmsg("[hook] UI exited, cleaning up...\n");
+    storage_guard_release();
 
     /* Stop drawing, clear fb, let hiby_player resume. Return IMMEDIATELY
      * (no usleep): while the main thread is blocked in this tile callback,

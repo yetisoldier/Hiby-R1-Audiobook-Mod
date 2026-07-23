@@ -29,6 +29,7 @@
 #include "scan.h"
 #include "player.h"
 #include "cover.h"
+#include "storage_guard.h"
 
 /* EVIOCGRAB: exclusive grab on an input device so hiby_player's own fd
  * doesn't receive touch events while we're in audiobook mode. */
@@ -884,6 +885,7 @@ int ui_run(uint16_t *fb, int fb_fd) {
     static int key_log_count = 0;
     uint64_t last_key_reopen = 0;
     uint64_t last_blank_sync = 0;
+    uint64_t last_storage_check = 0;
     while (ui->running) {
         fd_set rfds;
         FD_ZERO(&rfds);
@@ -927,6 +929,10 @@ int ui_run(uint16_t *fb, int fb_fd) {
              * Re-duplicating descriptors here would recreate the shared-queue
              * race. The R1's built-in key devices do not re-enumerate while
              * the screen is blanked. */
+        }
+        if (now - last_storage_check >= 30000) {
+            last_storage_check = now;
+            storage_guard_poll();
         }
         if (rv > 0) {
             if (ui->input_fd >= 0 && FD_ISSET(ui->input_fd, &rfds)) {
