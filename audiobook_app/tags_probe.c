@@ -1,6 +1,14 @@
 #include <stdio.h>
 #include "tags.h"
 
+static int print_chapter(int ordinal, const char *title,
+                         int64_t start_ms, int64_t end_ms, void *ctx) {
+    (void)ctx;
+    printf("chapter=%d|%lld|%lld|%s\n", ordinal, (long long)start_ms,
+           (long long)end_ms, title ? title : "");
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc != 2) {
         fprintf(stderr, "usage: %s <audio-file>\n", argv[0]);
@@ -18,5 +26,7 @@ int main(int argc, char **argv) {
     printf("album=%s\n", tags.album);
     printf("description=%s\n", tags.description);
     printf("duration_ms=%lld\n", (long long)tags.duration_ms);
+    printf("chapter_count=%d\n",
+           audio_read_chapters(argv[1], print_chapter, NULL));
     return 0;
 }

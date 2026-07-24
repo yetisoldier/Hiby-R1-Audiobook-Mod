@@ -25,6 +25,7 @@ WIDTH = 480
 HEIGHT = 800
 STRIDE = WIDTH * 2
 DEFAULT_REMOTE_DIR = "/usr/data/r1_adb_control"
+DEFAULT_REMOTE_FB_CAPTURE = f"{DEFAULT_REMOTE_DIR}/r1_fb_capture"
 DEFAULT_TOUCH_EVENT = "event1"
 DEFAULT_TOUCH_FRAMES = 12
 DEFAULT_PROCESS_PATTERN = "r1_audiobook_db_watch|r1_audiobook_resume_daemon|hiby_player"
@@ -145,6 +146,73 @@ def ensure_adb(adb: str) -> str:
     return resolve_adb(adb)
 
 
+def ensure_fb_capture_helper(adb: str) -> str | None:
+    """Install the visible-page framebuffer helper when the toolchain exists.
+
+    The R1 pans between two 480x800 pages in a 480x1600 framebuffer. Reading
+    /dev/fb0 directly always starts at page zero and can therefore capture a
+    stale boot splash while the live UI is on page one.
+    """
+    probe = adb_shell(
+        adb,
+        f"[ -x {quote_remote(DEFAULT_REMOTE_FB_CAPTURE)} ] && echo ready || true",
+        check=False,
+    )
+    if "ready" in probe:
+        return DEFAULT_REMOTE_FB_CAPTURE
+
+    repo = Path(__file__).resolve().parents[1]
+    source = repo / "tools" / "r1_fb_capture.c"
+    output = repo / "work" / "native-fb-capture" / "r1_fb_capture"
+    zig_candidates = sorted((repo / ".deps" / "zig").glob("*/zig.exe"))
+    if not source.exists() or not zig_candidates:
+        return None
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    zig = zig_candidates[-1]
+    kernel_include = zig.parent / "lib" / "libc" / "include" / "any-linux-any"
+    needs_build = (
+        not output.exists()
+        or output.stat().st_mtime_ns < source.stat().st_mtime_ns
+    )
+    if needs_build:
+        compile_result = run(
+            [
+                str(zig),
+                "cc",
+                "-target",
+                "mipsel-linux-gnueabihf.2.22",
+                "-Os",
+                "-s",
+                "-I",
+                str(kernel_include),
+                str(source),
+                "-o",
+                str(output),
+            ],
+            check=False,
+        )
+        if compile_result.returncode != 0:
+            return None
+
+    push_result = run(
+        [adb, "push", str(output), DEFAULT_REMOTE_FB_CAPTURE],
+        check=False,
+    )
+    if push_result.returncode != 0:
+        return None
+    chmod_result = adb_shell(
+        adb, f"chmod 755 {quote_remote(DEFAULT_REMOTE_FB_CAPTURE)}", check=False
+    )
+    del chmod_result
+    verify = adb_shell(
+        adb,
+        f"[ -x {quote_remote(DEFAULT_REMOTE_FB_CAPTURE)} ] && echo ready || true",
+        check=False,
+    )
+    return DEFAULT_REMOTE_FB_CAPTURE if "ready" in verify else None
+
+
 def check_device(adb: str) -> str:
     proc = run([adb, "devices", "-l"])
     assert isinstance(proc.stdout, str)
@@ -234,7 +302,25 @@ def capture_screenshot(
     raw_path.parent.mkdir(parents=True, exist_ok=True)
     remote_dir = remote_raw.rsplit("/", 1)[0]
     adb_shell(adb, f"mkdir -p {quote_remote(remote_dir)}")
-    adb_shell(adb, f"rm -f {quote_remote(remote_raw)}; dd if=/dev/fb0 of={quote_remote(remote_raw)} bs={STRIDE} count={HEIGHT}")
+    helper = ensure_fb_capture_helper(adb)
+    if helper:
+        adb_shell(
+            adb,
+            f"rm -f {quote_remote(remote_raw)}; "
+            f"{quote_remote(helper)} {quote_remote(remote_raw)}",
+        )
+    else:
+        print(
+            "warning: visible-page framebuffer helper unavailable; "
+            "capturing page zero",
+            file=sys.stderr,
+        )
+        adb_shell(
+            adb,
+            f"rm -f {quote_remote(remote_raw)}; "
+            f"dd if=/dev/fb0 of={quote_remote(remote_raw)} "
+            f"bs={STRIDE} count={HEIGHT}",
+        )
     run([adb, "pull", remote_raw, str(raw_path)])
     raw = raw_path.read_bytes()
     output.write_bytes(rgb565_to_png(raw))

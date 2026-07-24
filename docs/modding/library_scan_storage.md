@@ -60,11 +60,11 @@ library — all M4B files <2 GB, moov-at-end offsets (~1.5 GB) are under the 2.1
 GB signed-32-bit limit. A future >2 GB moov-at-end file would return NULL →
 placeholder (acceptable, no hang).
 
-Confirmed end-to-end: scan completed the WHOLE library. DB: 52 books, 298
+Pre-MP3-CHAP validation: scan completed the WHOLE library. DB: 52 books, 298
 tracks, 993 chapters (up from 5 books when it hung). The 15.3 MB book = 80
 chapters (was 0 — the hung book; now parses via mmap). 19 books with 0
-chapters — ALL single-file MP3 audiobooks (MP3 has no embedded chapter track
-so `embedded_chapters=0` is correct/expected). No M4B is missing chapters.
+chapters because the parser did not yet read MP3 ID3 chapter frames. No M4B
+was missing chapters.
 
 ## M4B chapter extraction — QT chapter trak packs all samples in ONE chunk
 
@@ -101,8 +101,53 @@ stsc `fc/spc/sdi[256]`) — no malloc, no OOM risk.
 `scan.c`: `delete_chapters_for_track` then `audio_read_chapters` →
 `upsert_chapter` per chapter, all at SCAN time. Flashing the fix alone does
 NOT repair existing rows — the user must **tap Home → Refresh** to re-scan,
-which re-parses and replaces the 1-chapter with 58. Multi-file MP3 books keep
-their synthesized 1-chapter-per-track (unchanged).
+which re-parses and replaces the 1-chapter with 58.
+
+## MP3 ID3 CHAP/CTOC extraction (v2.0.25 development)
+
+Some single-file MP3 audiobooks contain real chapter metadata in ID3v2.3 or
+ID3v2.4 `CHAP` frames, optionally ordered by a top-level ordered `CTOC`.
+Earlier builds ignored those frames and exposed one placeholder for the whole
+file.
+
+`tags.c` now streams the outer ID3 tag frame-by-frame. Large `APIC` cover-art
+frames are skipped with `fseeko` rather than loaded into RAM. Only bounded
+`CHAP`/`CTOC` payloads are read:
+
+- 64 MiB maximum declared ID3 tag size
+- 4,096 maximum outer frames inspected
+- 64 KiB maximum individual CHAP/CTOC payload
+- 512 maximum chapters retained
+
+Nested `TIT2` supplies the chapter title; missing titles become `Chapter N`.
+Invalid end times are derived from the next chapter start or track duration.
+Top-level ordered CTOC children are honored, with timestamp ordering as the
+fallback. Tag-level unsynchronization and compressed/encrypted frames are
+rejected instead of allocating an unbounded rewrite buffer.
+
+On-device validation after Refresh: 52 books, 298 tracks, 1,150 chapter rows.
+Six single-file MP3 books exposed embedded chapters, including 23 for *Day By
+Day Armageddon* and 31 each for *Trilobyte* and *Southlands*. Tapping Chapter 2
+in *Day By Day Armageddon* issued one direct seek to 3,055,746 ms and began
+playback at 50:55. MP3 files without `CHAP` retain the existing fallback:
+multi-file books expose one chapter per file, while a single file exposes one
+placeholder.
+
+As with M4B metadata, users must select **Refresh Library** after installing a
+build that adds or changes chapter parsing.
+
+## Indexed Folders navigation (v2.0.25 development)
+
+Folder taps previously caused three synchronous catalog passes: a touch-time
+re-query, a parent rebuild, and then a child rebuild. Since framebuffer panning
+runs on the same event thread, a large catalog could look black or frozen while
+audio continued.
+
+Folder selection now uses the row already held in the render cache, updates the
+destination before rebuilding, and performs one indexed subtree query using
+`idx_books_root_path`. On-device navigation through four nested levels rebuilt
+each level in 1-2 ms. Logs also report folder rows hidden by the 128-row cap,
+path segments beyond 255 bytes, and refused overlong paths.
 
 ## Publisher descriptions (v2.0.24)
 

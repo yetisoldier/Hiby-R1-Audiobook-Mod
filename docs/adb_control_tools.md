@@ -4,18 +4,19 @@
 R1 testing. It uses the same safe mechanisms already proven during audiobook
 development:
 
-- screenshots read `/dev/fb0` and convert the 480x800 RGB565 framebuffer to PNG
+- screenshots query and capture the currently visible 480x800 RGB565
+  framebuffer page, then convert it to PNG
 - taps, drags, and playback buttons write short Linux input-event streams to
   `/dev/input`
 - generated input streams are temporary and do not change firmware files or
   patch process memory
 
 The R1 framebuffer has two vertically stacked pages. A raw read starts at page
-zero even when `FBIOGET_VSCREENINFO.yoffset` says page one is visible. For
-release screenshots and any visual assertion that must match the physical
-display, compile and run the read-only `tools/r1_fb_capture.c` helper. It reads
-the active page at the current yoffset and avoids documenting a stale hidden
-frame. The exact build and capture commands are in
+zero even when `FBIOGET_VSCREENINFO.yoffset` says page one is visible.
+`r1_adb_control.py screenshot` now compiles and installs the read-only
+`tools/r1_fb_capture.c` helper automatically, then captures the page at the
+current yoffset. If the pinned Zig toolchain is unavailable it warns and falls
+back to page zero. The manual build and capture commands are in
 [`docs/modding/adb_automation_screenshots.md`](./modding/adb_automation_screenshots.md).
 
 > **See also:** [`docs/modding/adb_automation_screenshots.md`](./modding/adb_automation_screenshots.md)

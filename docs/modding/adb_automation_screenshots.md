@@ -39,7 +39,8 @@ and rejected. Always write with a proper extension.
   `work/adb-control/screenshots/`; **raw `.raw` files are placed in a `raw/`
   subdir** so they don't sit next to `.png`s as a trap. PNG validation runs
   after every capture; a bad PNG raises `RuntimeError` before any API call can
-  fail.
+  fail. It automatically builds/pushes `r1_fb_capture.c` and captures the
+  currently visible framebuffer page.
 
 ## Double-buffer gotcha: page zero may not be visible
 
@@ -50,7 +51,7 @@ convincing but stale screenshots, including an old boot splash while the real
 screen was already on the launcher.
 
 `tools/r1_fb_capture.c` is the authoritative capture path when exact visible
-state matters. It:
+state matters. `r1_adb_control.py screenshot` uses it automatically. It:
 
 1. opens `/dev/fb0` read-only;
 2. queries `FBIOGET_FSCREENINFO` and `FBIOGET_VSCREENINFO`;

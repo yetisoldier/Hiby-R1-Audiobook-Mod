@@ -134,6 +134,7 @@ static const char *SCHEMA_SQL =
   "tokenize='unicode61 remove_diacritics 2'"
 ");"
 "CREATE INDEX IF NOT EXISTS idx_books_title_sort ON books(sort_title);"
+"CREATE INDEX IF NOT EXISTS idx_books_root_path ON books(root_path);"
 "CREATE INDEX IF NOT EXISTS idx_books_author ON books(author_id, sort_title);"
 "CREATE INDEX IF NOT EXISTS idx_books_series ON books(series_id, series_number, sort_title);"
 "CREATE INDEX IF NOT EXISTS idx_books_continue ON progress(completed, last_played_at DESC);"

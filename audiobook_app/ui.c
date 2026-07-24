@@ -195,6 +195,7 @@ static int ui_handle_longpress(ui_state_t *ui, int x, int y);
 
 static void navigate_to(ui_state_t *ui, ui_screen_t screen,
                         list_mode_t mode, int book_id);
+static int navigate_to_folder(ui_state_t *ui, const char *folder_path);
 static void navigate_back(ui_state_t *ui);
 
 /* ---- Render-cache rebuild (event thread) --------------------------------
@@ -1129,17 +1130,25 @@ int ui_run(uint16_t *fb, int fb_fd) {
 
 /* ---- Navigation --------------------------------------------------------- */
 
-static void navigate_to(ui_state_t *ui, ui_screen_t screen,
-                        list_mode_t mode, int book_id) {
-    if (ui->nav_depth < 8) {
-        ui->nav_stack[ui->nav_depth] = ui->screen;
-        ui->nav_list_mode[ui->nav_depth] = ui->list_mode;
-        ui->nav_book_id[ui->nav_depth] = ui->current_book_id;
-        strncpy(ui->nav_folder_path[ui->nav_depth], ui->folder_path,
-                sizeof(ui->nav_folder_path[0]) - 1);
-        ui->nav_folder_path[ui->nav_depth][sizeof(ui->nav_folder_path[0]) - 1] = '\0';
-        ui->nav_depth++;
+static int push_nav_state(ui_state_t *ui) {
+    if (ui->nav_depth >=
+        (int)(sizeof(ui->nav_stack) / sizeof(ui->nav_stack[0]))) {
+        ui_log("[ui] navigation refused: stack full at depth=%d\n",
+               ui->nav_depth);
+        return 0;
     }
+    ui->nav_stack[ui->nav_depth] = ui->screen;
+    ui->nav_list_mode[ui->nav_depth] = ui->list_mode;
+    ui->nav_book_id[ui->nav_depth] = ui->current_book_id;
+    strncpy(ui->nav_folder_path[ui->nav_depth], ui->folder_path,
+            sizeof(ui->nav_folder_path[0]) - 1);
+    ui->nav_folder_path[ui->nav_depth][sizeof(ui->nav_folder_path[0]) - 1] = '\0';
+    ui->nav_depth++;
+    return 1;
+}
+
+static void set_nav_destination(ui_state_t *ui, ui_screen_t screen,
+                                list_mode_t mode, int book_id) {
     ui->screen = screen;
     ui->list_mode = mode;
     ui->current_book_id = book_id;
@@ -1148,10 +1157,41 @@ static void navigate_to(ui_state_t *ui, ui_screen_t screen,
     ui->scrub_active = 0;  /* a scrub can't span screen changes */
     ui->thumb_warm_target = 0;  /* don't pre-warm a stale book_id */
     thumb_failed_clear(ui);  /* re-try covers on a fresh screen visit */
+}
+
+static void navigate_to(ui_state_t *ui, ui_screen_t screen,
+                        list_mode_t mode, int book_id) {
+    if (!push_nav_state(ui)) return;
+    set_nav_destination(ui, screen, mode, book_id);
     /* Build the entered screen's render cache now (event thread) so the next
      * frame the render thread draws has valid data. For Detail/Now-Playing this
      * also pre-decodes the cover off the render thread. */
     rebuild_screen(ui);
+}
+
+/* Folder entry is separate from navigate_to(). Previously navigate_to()
+ * rebuilt the parent before folder_path changed, then the caller rebuilt the
+ * child. Combined with the touch handler's row query, that scanned the full
+ * catalog three times and paused framebuffer panning during every folder tap. */
+static int navigate_to_folder(ui_state_t *ui, const char *folder_path) {
+    if (!folder_path || !folder_path[0]) return 0;
+    size_t path_len = strlen(folder_path);
+    if (path_len >= sizeof(ui->folder_path)) {
+        ui_log("[ui] folder path refused: %lu bytes (max %lu)\n",
+               (unsigned long)path_len,
+               (unsigned long)(sizeof(ui->folder_path) - 1));
+        return 0;
+    }
+    if (!push_nav_state(ui)) return 0;
+
+    set_nav_destination(ui, SCREEN_LIST, LIST_FOLDERS, 0);
+    memcpy(ui->folder_path, folder_path, path_len + 1);
+
+    uint64_t started = now_ms();
+    rebuild_list(ui);
+    ui_log("[ui] folder entered in %llums path='%s'\n",
+           (unsigned long long)(now_ms() - started), ui->folder_path);
+    return 1;
 }
 
 static void navigate_back(ui_state_t *ui) {
@@ -1426,9 +1466,24 @@ static void collect_list_books(ui_state_t *ui, list_ctx_t *lc) {
              * NULL-check keeps it bounded and avoids a large stack frame. */
             char (*folder_names)[256] = malloc((size_t)128 * 256);
             int folder_count = 0;
+            int hidden_folder_count = 0;
+            int long_segment_count = 0;
             if (!folder_names) break;   /* OOM: leave this view empty */
 
             sqlite3_stmt *stmt = NULL;
+            char child_lower[514];
+            char child_upper[514];
+            int lower_len = snprintf(child_lower, sizeof(child_lower),
+                                     "%s/", prefix);
+            int upper_len = snprintf(child_upper, sizeof(child_upper),
+                                     "%s0", prefix);
+            if (lower_len < 0 || lower_len >= (int)sizeof(child_lower) ||
+                upper_len < 0 || upper_len >= (int)sizeof(child_upper)) {
+                ui_log("[ui] FOLDERS prefix too long for child range: '%s'\n",
+                       prefix);
+                free(folder_names);
+                break;
+            }
             /* NOTE: the books table has NO `author` column — author is a FK
              * (author_id) into the separate `authors` table. Selecting a bare
              * `author` here made sqlite3_prepare_v2 fail with "no such column:
@@ -1441,8 +1496,13 @@ static void collect_list_books(ui_state_t *ui, list_ctx_t *lc) {
                 "SELECT b.book_id, b.title, COALESCE(a.display_name,''), "
                 "b.total_duration_ms, b.completed, b.root_path "
                 "FROM books b LEFT JOIN authors a ON a.author_id=b.author_id "
+                "WHERE b.root_path=?1 OR "
+                "(b.root_path>=?2 AND b.root_path<?3) "
                 "ORDER BY b.root_path, b.sort_title";
             if (sqlite3_prepare_v2(ui->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+                sqlite3_bind_text(stmt, 1, prefix, -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(stmt, 2, child_lower, -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(stmt, 3, child_upper, -1, SQLITE_TRANSIENT);
                 while (sqlite3_step(stmt) == SQLITE_ROW) {
                     int bid = sqlite3_column_int(stmt, 0);
                     const char *title = (const char *)sqlite3_column_text(stmt, 1);
@@ -1478,7 +1538,11 @@ static void collect_list_books(ui_state_t *ui, list_ctx_t *lc) {
                         const char *rest = rpath + plen + 1;
                         const char *end = strchr(rest, '/');
                         int seg_len = end ? (int)(end - rest) : (int)strlen(rest);
-                        if (seg_len <= 0 || seg_len >= 256) continue;
+                        if (seg_len <= 0) continue;
+                        if (seg_len >= 256) {
+                            long_segment_count++;
+                            continue;
+                        }
 
                         int found = 0;
                         for (int i = 0; i < folder_count; i++) {
@@ -1492,13 +1556,17 @@ static void collect_list_books(ui_state_t *ui, list_ctx_t *lc) {
                             strncpy(folder_names[folder_count], rest, seg_len);
                             folder_names[folder_count][seg_len] = '\0';
                             folder_count++;
+                        } else if (!found) {
+                            hidden_folder_count++;
                         }
                     }
                 }
                 sqlite3_finalize(stmt);
             }
-            ui_log("[ui] FOLDERS prefix='%s' folders=%d books=%d\n",
-                   prefix, folder_count, lc->count);
+            ui_log("[ui] FOLDERS prefix='%s' folders=%d books=%d "
+                   "hidden=%d long_segments=%d\n",
+                   prefix, folder_count, lc->count, hidden_folder_count,
+                   long_segment_count);
 
             /* Sort folders alphabetically (case-insensitive). */
             for (int i = 0; i < folder_count - 1; i++) {
@@ -1978,6 +2046,7 @@ static void draw_list(ui_state_t *ui) {
 }
 
 static int handle_list_touch(ui_state_t *ui, int x, int y) {
+    (void)x;
     /* Tap on title bar = back */
     if (y < TITLE_BAR_H) {
         navigate_back(ui);
@@ -1992,18 +2061,17 @@ static int handle_list_touch(ui_state_t *ui, int x, int y) {
 
     /* Authors/Series: tap a name → filtered book list. */
     if (ui->list_mode == LIST_AUTHORS || ui->list_mode == LIST_SERIES) {
-        strlist_ctx_t sc;
-        memset(&sc, 0, sizeof(sc));
-        sc.capacity = 64;
-        sc.names = calloc(sc.capacity, sizeof(char *));
-        if (sc.names) {
-            if (ui->list_mode == LIST_AUTHORS)
-                audiobook_list_authors(ui->db, strlist_collect_cb, &sc);
-            else
-                audiobook_list_series(ui->db, strlist_collect_cb, &sc);
+        char selected_name[256] = "";
+        pthread_mutex_lock(&g_cache_lock);
+        if (ui->list_is_strlist && idx < ui->strlist_count &&
+            ui->strlist[idx]) {
+            strncpy(selected_name, ui->strlist[idx],
+                    sizeof(selected_name) - 1);
+            selected_name[sizeof(selected_name) - 1] = '\0';
         }
-        if (idx < sc.count && sc.names[idx]) {
-            strncpy(ui->list_filter, sc.names[idx],
+        pthread_mutex_unlock(&g_cache_lock);
+        if (selected_name[0]) {
+            strncpy(ui->list_filter, selected_name,
                     sizeof(ui->list_filter) - 1);
             ui->list_filter[sizeof(ui->list_filter) - 1] = '\0';
             navigate_to(ui, SCREEN_LIST,
@@ -2011,41 +2079,37 @@ static int handle_list_touch(ui_state_t *ui, int x, int y) {
                                                        : LIST_SERIES_BOOKS,
                         0);
         }
-        free_strlist(&sc);
         return 1;
     }
 
-    /* Book rows: re-collect (same order as draw) and navigate to detail. */
-    list_ctx_t lc;
-    memset(&lc, 0, sizeof(lc));
-    lc.capacity = 64;
-    lc.items = calloc(lc.capacity, sizeof(list_item_t));
-    lc.db = ui->db;
-    if (lc.items) collect_list_books(ui, &lc);
-    if (idx < lc.count) {
-        if (lc.items[idx].is_folder) {
-            /* Folder row: descend into prefix/<folder name>. navigate_to()
-             * pushes the CURRENT (parent) folder_path onto the nav stack (so
-             * Back ascends) and rebuilds the list cache — but it rebuilds
-             * BEFORE we update folder_path below, so the cache would still
-             * reflect the parent level and the view would not descend (the
-             * "Folders shows nothing / tapping a folder does nothing" bug).
-             * Update folder_path after the push, then rebuild the cache again
-             * so it matches the new level. The one stale rebuild inside
-             * navigate_to is harmless (a tap, not per-frame). */
+    /* Use the exact book/folder row already cached for rendering. */
+    list_item_t selected;
+    int have_selected = 0;
+    memset(&selected, 0, sizeof(selected));
+    pthread_mutex_lock(&g_cache_lock);
+    if (!ui->list_is_strlist && idx < ui->list_count) {
+        selected = ui->list_items[idx];
+        have_selected = 1;
+    }
+    pthread_mutex_unlock(&g_cache_lock);
+    if (have_selected) {
+        if (selected.is_folder) {
+            /* Descend while preserving the current folder for Back. */
             const char *prefix = ui->folder_path[0] ? ui->folder_path
                                                     : AUDIOBOOK_LIBRARY_ROOT;
             char new_path[512];
-            snprintf(new_path, sizeof(new_path), "%s/%s", prefix, lc.items[idx].title);
-            navigate_to(ui, SCREEN_LIST, LIST_FOLDERS, 0);
-            strncpy(ui->folder_path, new_path, sizeof(ui->folder_path) - 1);
-            ui->folder_path[sizeof(ui->folder_path) - 1] = '\0';
-            rebuild_list(ui);
+            int written = snprintf(new_path, sizeof(new_path), "%s/%s",
+                                   prefix, selected.title);
+            if (written < 0 || written >= (int)sizeof(new_path)) {
+                ui_log("[ui] folder path too long: prefix='%s' child='%s'\n",
+                       prefix, selected.title);
+                return 1;
+            }
+            navigate_to_folder(ui, new_path);
         } else {
-            navigate_to(ui, SCREEN_DETAIL, ui->list_mode, lc.items[idx].book_id);
+            navigate_to(ui, SCREEN_DETAIL, ui->list_mode, selected.book_id);
         }
     }
-    free(lc.items);
     return 1;
 }
 

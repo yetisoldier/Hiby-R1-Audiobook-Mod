@@ -108,8 +108,27 @@ Invoke-Checked {
         tools\r1_hiby_player_listview_descriptor_report.py `
         tools\r1_hiby_player_ui_callsite_report.py `
         tools\r1_hiby_player_static_xrefs.py `
-        tools\generate_audiobook_launcher_icons.py
+        tools\generate_audiobook_launcher_icons.py `
+        tools\test_mp3_chapters.py
 } "Python compile"
+
+Invoke-Checked {
+    $zig = Get-ChildItem ".deps\zig" -Recurse -Filter "zig.exe" |
+        Select-Object -First 1 -ExpandProperty FullName
+    if (-not $zig) {
+        throw "Pinned Zig compiler not found under .deps\zig"
+    }
+    New-Item -ItemType Directory -Force "work\native-tests" | Out-Null
+    & $zig cc -target x86_64-linux-musl -std=gnu99 `
+        -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 `
+        -Iaudiobook_app audiobook_app\tags.c audiobook_app\tags_probe.c `
+        -o work\native-tests\tags_probe
+    if ($LASTEXITCODE -ne 0) {
+        throw "Host tags probe compilation failed with exit code $LASTEXITCODE"
+    }
+    wsl -d $Distro --cd $repoRoot --exec python3 `
+        tools/test_mp3_chapters.py --probe work/native-tests/tags_probe
+} "MP3 chapter parser fixtures"
 
 Invoke-Checked {
     powershell -NoProfile -ExecutionPolicy Bypass -File tools\test_r1_resume_daemon_logic_wsl.ps1 -Distro $Distro

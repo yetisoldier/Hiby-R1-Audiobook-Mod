@@ -874,8 +874,8 @@ int audiobook_scan_library(sqlite3 *db, const char *root_path,
                 continue;
             }
 
-            /* Upsert chapters. For M4B/M4A, parse real embedded chapters
-             * (Nero chpl or QuickTime chapter track) via audio_read_chapters;
+            /* Upsert chapters. For MP3/M4B/M4A, parse real embedded chapters
+             * (ID3 CHAP/CTOC, Nero chpl, or QuickTime chapter track) via audio_read_chapters;
              * they are offset to book-relative by scan_chapter_cb. If none are
              * found, synthesize: multi-file books get one chapter per file
              * titled after the track (NOT "Chapter 1" placeholders — that was
@@ -886,10 +886,12 @@ int audiobook_scan_library(sqlite3 *db, const char *root_path,
             int track_id = get_track_id_by_path(db, bd->files[j].path);
             if (track_id > 0) {
                 delete_chapters_for_track(db, track_id);
-                int is_m4b = (bd->files[j].type == AUDIO_EXT_M4B ||
-                              bd->files[j].type == AUDIO_EXT_M4A);
+                int has_embedded_chapter_format =
+                    (bd->files[j].type == AUDIO_EXT_MP3 ||
+                     bd->files[j].type == AUDIO_EXT_M4B ||
+                     bd->files[j].type == AUDIO_EXT_M4A);
                 int parsed = 0;
-                if (is_m4b) {
+                if (has_embedded_chapter_format) {
                     scan_chapter_ctx_t cctx;
                     cctx.db = db;
                     cctx.track_id = track_id;

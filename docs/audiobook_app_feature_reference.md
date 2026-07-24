@@ -32,9 +32,10 @@ the original resume/sequential-playback foundation:
 - **Bookmarks**: add from Now Playing ("Mark"), tap to jump, long-press to
   delete.
 - **M4B/AAC playback** (dlopen'd `libfdk-aac`, self-contained `mp4_audio.c`).
-- **M4B embedded chapters**: parsed from Nero `chpl` or QuickTime chapter track
-  (stsc-based sample resolution — handles multi-sample chunks); re-read at
-  scan time (Home → Refresh). MP3 books get one synthesized chapter per track.
+- **Embedded chapters**: M4B chapters are parsed from Nero `chpl` or QuickTime
+  chapter tracks; MP3 chapters are parsed from ID3v2.3/v2.4 `CHAP`/`CTOC`
+  frames. Metadata is re-read at scan time (Home → Refresh). MP3 files without
+  embedded chapters retain the one-synthesized-chapter-per-track fallback.
 - Library lists (Titles/Authors/Series/Folders/Finished) with on-demand
   thumbnails (progressive-JPEG-guarded pre-warm).
 - Swipe left → Now Playing.
@@ -83,9 +84,8 @@ organization. On the R1, the realistic split is:
   preserved). See `Hiby-R1-wsola-speed-findings.md`.
 - **[DONE]** Notes/bookmarks UI: add/jump/hold-to-delete in the NativeApp.
   See `Hiby-R1-...` bookmarks memory.
-- **[DONE]** True chapter list for M4B metadata: embedded M4B chapters parsed
-  (Nero `chpl` + QuickTime chapter track via stsc). See
-  `Hiby-R1-m4b-chapters-fix.md`.
+- **[DONE]** True chapter lists from embedded M4B and MP3 metadata: M4B uses
+  Nero `chpl`/QuickTime chapter tracks; MP3 uses ID3 `CHAP`/`CTOC`.
 - **[DONE]** Sleep timer: Off/15/30/60 min in the NativeApp.
 - Car Mode or lock-screen style UI: not a good fit for the R1 screen/UI stack.
 

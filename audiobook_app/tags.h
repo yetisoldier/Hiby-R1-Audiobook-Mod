@@ -29,7 +29,7 @@ typedef struct {
     int track_number;
     int disc_number;
     int64_t duration_ms;   /* 0 if unknown */
-    int embedded_chapters;  /* chapter count from M4B */
+    int embedded_chapters;  /* embedded/synthesized chapter count hint */
     int64_t file_size;
     int file_mtime;
 } audio_tags_t;
@@ -52,9 +52,9 @@ int64_t audio_estimate_mp3_duration(int64_t file_size, int bitrate);
 typedef int (*chapter_cb)(int ordinal, const char *title,
                           int64_t start_ms, int64_t end_ms, void *ctx);
 
-/* Read embedded chapters from an M4B/M4A file (Nero chpl or QuickTime
- * chapter track). Calls cb for each chapter. Returns chapter count, or 0 if
- * none found (caller should fall back to a placeholder). */
+/* Read embedded chapters from MP3 (ID3v2 CHAP/CTOC) or M4B/M4A (Nero chpl or
+ * QuickTime chapter track). Calls cb for each chapter. Returns chapter count,
+ * or 0 if none are found (caller should fall back to a placeholder). */
 int audio_read_chapters(const char *path, chapter_cb cb, void *ctx);
 
 /* Extract the embedded cover art from a file's metadata and write it as a

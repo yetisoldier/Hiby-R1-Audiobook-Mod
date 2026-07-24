@@ -399,6 +399,269 @@ static int64_t parse_mp3_duration(const char *path, int64_t file_size) {
     return (file_size * 8000) / bitrate;
 }
 
+/* ---- MP3 embedded chapter parsing (ID3v2 CHAP/CTOC) -------------------- */
+
+#define ID3_CHAPTER_CAP 512
+#define ID3_FRAME_SCAN_CAP 4096
+#define ID3_CHAP_PAYLOAD_CAP (64U * 1024U)
+#define ID3_TAG_SIZE_CAP (64U * 1024U * 1024U)
+#define ID3_ELEMENT_ID_LEN 96
+#define ID3_CHAPTER_TITLE_LEN 256
+
+typedef struct {
+    char element_id[ID3_ELEMENT_ID_LEN];
+    char title[ID3_CHAPTER_TITLE_LEN];
+    int64_t start_ms;
+    int64_t end_ms;
+    int toc_order;
+} id3_chapter_t;
+
+static uint32_t id3_read32(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+
+static uint32_t id3_frame_size(const uint8_t *p, int major) {
+    return major == 4 ? syncsafe_to_uint(p) : id3_read32(p);
+}
+
+static int id3_valid_frame_id(const uint8_t *id) {
+    for (int i = 0; i < 4; i++) {
+        if (!((id[i] >= 'A' && id[i] <= 'Z') ||
+              (id[i] >= '0' && id[i] <= '9')))
+            return 0;
+    }
+    return 1;
+}
+
+static int read_exact_at(FILE *f, int64_t off, void *buf, size_t len) {
+    if (!f || off < 0 || !buf) return 0;
+    if (fseeko(f, (off_t)off, SEEK_SET) != 0) return 0;
+    return fread(buf, 1, len, f) == len;
+}
+
+/* Locate a nested TIT2 frame in a CHAP payload. A CHAP frame starts with a
+ * NUL-terminated element id and four BE32 fields, followed by normal ID3
+ * subframes. Unsupported compressed/encrypted subframes are ignored. */
+static void id3_parse_chap_title(const uint8_t *data, size_t len, size_t pos,
+                                 int major, char *out, size_t out_len) {
+    while (pos + 10 <= len) {
+        const uint8_t *hdr = data + pos;
+        if (!id3_valid_frame_id(hdr)) break;
+        uint32_t frame_len = id3_frame_size(hdr + 4, major);
+        if (frame_len == 0 || frame_len > len - pos - 10) break;
+
+        /* The second flag byte contains grouping/compression/encryption/
+         * unsynchronisation format flags. TIT2 is safe to parse only when
+         * none are present. */
+        if (memcmp(hdr, "TIT2", 4) == 0 && hdr[9] == 0 && frame_len > 1) {
+            int encoding = data[pos + 10];
+            parse_id3v2_text(data + pos + 11, (int)frame_len - 1, encoding,
+                             out, (int)out_len);
+            return;
+        }
+        pos += 10 + frame_len;
+    }
+}
+
+static int id3_parse_chap_payload(const uint8_t *data, size_t len, int major,
+                                  id3_chapter_t *chapter) {
+    if (!data || !chapter || len < 18) return 0;
+    size_t id_len = 0;
+    while (id_len < len && data[id_len] != 0) id_len++;
+    if (id_len == 0 || id_len >= len || id_len + 17 > len) return 0;
+
+    size_t copy_len = id_len;
+    if (copy_len >= sizeof(chapter->element_id))
+        copy_len = sizeof(chapter->element_id) - 1;
+    memcpy(chapter->element_id, data, copy_len);
+    chapter->element_id[copy_len] = '\0';
+
+    size_t fields = id_len + 1;
+    uint32_t start = id3_read32(data + fields);
+    uint32_t end = id3_read32(data + fields + 4);
+    chapter->start_ms = start;
+    chapter->end_ms = end == UINT32_MAX ? 0 : end;
+    chapter->toc_order = ID3_CHAPTER_CAP;
+    id3_parse_chap_title(data, len, fields + 16, major,
+                         chapter->title, sizeof(chapter->title));
+    return 1;
+}
+
+static int id3_find_chapter(const id3_chapter_t *chapters, int count,
+                            const char *element_id) {
+    for (int i = 0; i < count; i++) {
+        if (strcmp(chapters[i].element_id, element_id) == 0) return i;
+    }
+    return -1;
+}
+
+/* Apply the first top-level ordered CTOC encountered. Chapters omitted from
+ * the table remain ordered by timestamp after the listed children. */
+static void id3_apply_ctoc(const uint8_t *data, size_t len,
+                           id3_chapter_t *chapters, int chapter_count) {
+    if (!data || len < 4 || !chapters || chapter_count <= 0) return;
+    size_t pos = 0;
+    while (pos < len && data[pos] != 0) pos++;
+    if (pos == 0 || pos + 3 > len) return;
+    pos++;
+    uint8_t flags = data[pos++];
+    uint8_t child_count = data[pos++];
+    if (!(flags & 0x02) || !(flags & 0x01)) return;
+
+    for (int order = 0; order < child_count && pos < len; order++) {
+        size_t start = pos;
+        while (pos < len && data[pos] != 0) pos++;
+        if (pos >= len) break;
+        size_t id_len = pos - start;
+        pos++;
+        if (id_len == 0 || id_len >= ID3_ELEMENT_ID_LEN) continue;
+        char element_id[ID3_ELEMENT_ID_LEN];
+        memcpy(element_id, data + start, id_len);
+        element_id[id_len] = '\0';
+        int index = id3_find_chapter(chapters, chapter_count, element_id);
+        if (index >= 0) chapters[index].toc_order = order;
+    }
+}
+
+static int id3_chapter_compare(const void *a, const void *b) {
+    const id3_chapter_t *ca = (const id3_chapter_t *)a;
+    const id3_chapter_t *cb = (const id3_chapter_t *)b;
+    int a_listed = ca->toc_order < ID3_CHAPTER_CAP;
+    int b_listed = cb->toc_order < ID3_CHAPTER_CAP;
+    if (a_listed != b_listed) return a_listed ? -1 : 1;
+    if (a_listed && b_listed && ca->toc_order != cb->toc_order)
+        return ca->toc_order < cb->toc_order ? -1 : 1;
+    if (ca->start_ms != cb->start_ms)
+        return ca->start_ms < cb->start_ms ? -1 : 1;
+    return strcmp(ca->element_id, cb->element_id);
+}
+
+/* Stream the outer ID3 tag frame-by-frame. APIC and other large frames are
+ * skipped with fseeko; only bounded CHAP/CTOC payloads are allocated. This
+ * avoids making large embedded cover art a scan-time RAM spike. */
+static int parse_mp3_chapters(const char *path, chapter_cb cb, void *ctx) {
+    struct stat st;
+    if (stat(path, &st) < 0 || st.st_size < 10) return 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+
+    uint8_t tag_hdr[10];
+    if (!read_exact_at(f, 0, tag_hdr, sizeof(tag_hdr)) ||
+        memcmp(tag_hdr, "ID3", 3) != 0 ||
+        (tag_hdr[3] != 3 && tag_hdr[3] != 4)) {
+        fclose(f);
+        return 0;
+    }
+
+    int major = tag_hdr[3];
+    uint8_t tag_flags = tag_hdr[5];
+    uint32_t declared_size = syncsafe_to_uint(tag_hdr + 6);
+    if (declared_size == 0 || declared_size > ID3_TAG_SIZE_CAP ||
+        (int64_t)declared_size + 10 > (int64_t)st.st_size ||
+        (tag_flags & 0x80)) {
+        /* Tag-level unsynchronisation requires rewriting the entire tag; skip
+         * it rather than allocating an unbounded scratch copy on the player. */
+        fclose(f);
+        return 0;
+    }
+
+    int64_t pos = 10;
+    int64_t end = 10 + (int64_t)declared_size;
+    if (tag_flags & 0x40) {
+        uint8_t ext_size_buf[4];
+        if (!read_exact_at(f, pos, ext_size_buf, sizeof(ext_size_buf))) {
+            fclose(f);
+            return 0;
+        }
+        uint32_t ext_size = major == 4 ? syncsafe_to_uint(ext_size_buf)
+                                       : id3_read32(ext_size_buf) + 4;
+        if (ext_size < 4 || ext_size > (uint32_t)(end - pos)) {
+            fclose(f);
+            return 0;
+        }
+        pos += ext_size;
+    }
+
+    id3_chapter_t *chapters = NULL;
+    uint8_t *ctoc = NULL;
+    size_t ctoc_len = 0;
+    int chapter_count = 0;
+    int frames_seen = 0;
+    while (pos + 10 <= end && frames_seen++ < ID3_FRAME_SCAN_CAP) {
+        uint8_t frame_hdr[10];
+        if (!read_exact_at(f, pos, frame_hdr, sizeof(frame_hdr))) break;
+        if (frame_hdr[0] == 0) break;
+        if (!id3_valid_frame_id(frame_hdr)) break;
+        uint32_t frame_len = id3_frame_size(frame_hdr + 4, major);
+        if (frame_len == 0 || frame_len > (uint64_t)(end - pos - 10)) break;
+
+        int is_chap = memcmp(frame_hdr, "CHAP", 4) == 0;
+        int is_ctoc = memcmp(frame_hdr, "CTOC", 4) == 0;
+        if ((is_chap || is_ctoc) && frame_hdr[9] == 0 &&
+            frame_len <= ID3_CHAP_PAYLOAD_CAP) {
+            uint8_t *payload = malloc(frame_len);
+            if (payload && read_exact_at(f, pos + 10, payload, frame_len)) {
+                if (is_chap && chapter_count < ID3_CHAPTER_CAP) {
+                    id3_chapter_t candidate;
+                    memset(&candidate, 0, sizeof(candidate));
+                    if (id3_parse_chap_payload(payload, frame_len, major,
+                                               &candidate)) {
+                        if (!chapters)
+                            chapters = calloc(ID3_CHAPTER_CAP,
+                                              sizeof(*chapters));
+                    }
+                    if (chapters &&
+                        id3_find_chapter(chapters, chapter_count,
+                                         candidate.element_id) < 0) {
+                        chapters[chapter_count++] = candidate;
+                    }
+                } else if (is_ctoc && !ctoc) {
+                    ctoc = payload;
+                    ctoc_len = frame_len;
+                    payload = NULL;
+                }
+            }
+            free(payload);
+        }
+        pos += 10 + frame_len;
+    }
+    fclose(f);
+
+    if (ctoc && chapters) {
+        id3_apply_ctoc(ctoc, ctoc_len, chapters, chapter_count);
+    }
+    free(ctoc);
+    if (!chapters || chapter_count == 0) {
+        free(chapters);
+        return 0;
+    }
+
+    qsort(chapters, chapter_count, sizeof(*chapters), id3_chapter_compare);
+    int64_t duration_ms = parse_mp3_duration(path, (int64_t)st.st_size);
+    int emitted = 0;
+    for (int i = 0; i < chapter_count; i++) {
+        if (chapters[i].end_ms <= chapters[i].start_ms) {
+            if (i + 1 < chapter_count &&
+                chapters[i + 1].start_ms > chapters[i].start_ms)
+                chapters[i].end_ms = chapters[i + 1].start_ms;
+            else if (duration_ms > chapters[i].start_ms)
+                chapters[i].end_ms = duration_ms;
+            else
+                chapters[i].end_ms = chapters[i].start_ms;
+        }
+        if (!chapters[i].title[0])
+            snprintf(chapters[i].title, sizeof(chapters[i].title),
+                     "Chapter %d", i + 1);
+        emitted++;
+        if (cb && cb(emitted, chapters[i].title, chapters[i].start_ms,
+                     chapters[i].end_ms, ctx) != 0)
+            break;
+    }
+    free(chapters);
+    return emitted;
+}
+
 /* ---- M4B/M4A (QuickTime) parsing ---------------------------------------- */
 
 /* Read a 32-bit big-endian value */
@@ -985,6 +1248,9 @@ static int parse_qt_chapters(const char *path, const uint8_t *moov, int moov_len
 
 int audio_read_chapters(const char *path, chapter_cb cb, void *ctx) {
     if (!path) return 0;
+    if (audio_file_type(path) == AUDIO_EXT_MP3)
+        return parse_mp3_chapters(path, cb, ctx);
+
     int64_t moov_len = 0;
     uint8_t *map_base = NULL;
     size_t map_len = 0;
