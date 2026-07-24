@@ -22,8 +22,10 @@ These are implemented and confirmed on-device in the NativeApp build, on top of
 the original resume/sequential-playback foundation:
 
 - Offline local playback; per-book + multipart resume across reboot/switch.
-- Now Playing screen with cover art (IJG libjpeg, scale-on-decode, progressive
-  skip), title/author/duration, draggable progress handle (scrub seek).
+- Now Playing screen with a centered 270×270 cover (IJG libjpeg,
+  scale-on-decode, progressive skip), title/author/duration, and a draggable
+  progress handle (scrub seek). Metadata and progress sit directly above the
+  bottom-anchored playback controls.
 - Hardware buttons: power (backlight toggle), play/pause, prev/next, vol±
   (fine-stepped + hold-to-ramp).
 - **Playback speed 1.0/1.1/1.25/1.5/2.0x via WSOLA time-stretch** (pitch

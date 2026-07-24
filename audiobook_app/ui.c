@@ -2302,9 +2302,10 @@ static void draw_now_playing(ui_state_t *ui) {
     ui->seek_bar_y = -1;   /* no scrub target unless we draw the bar below */
 
     /* Cover art: cached RGB565 (COVER_PX square), centered, with a 1px border.
+     * The 270px cover also pushes the title/progress block closer to the
+     * bottom-anchored controls without introducing a separate layout offset.
      * Blitted from cur_cover_buf (event-thread pre-decoded). If the book has no
-     * cover or the decode failed, has_cover is 0 and we skip with no gap — the
-     * existing layout follows. */
+     * cover or the decode failed, has_cover is 0 and we skip with no gap. */
     if (has_cover) {
         int cx = (RENDER_FB_W - COVER_PX) / 2;
         draw_cover_bordered(r, cx, y, COVER_PX, ui->cur_cover_buf);

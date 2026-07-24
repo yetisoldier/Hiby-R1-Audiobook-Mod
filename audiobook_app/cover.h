@@ -21,7 +21,7 @@ typedef struct sqlite3 sqlite3;
 /* Cover is decoded + cached at this pixel size (square). Now Playing displays
  * it 1:1 (220px); the detail/title page displays it downscaled (170px) via the
  * renderer's scaled blit. 220x220 RGB565 = ~96.8 KB cache. */
-#define COVER_PX 220
+#define COVER_PX 270
 
 /* Get the cached RGB565 cover for book_id, or NULL if none/not decodable.
  * Loads + caches on first request for a new book_id; frees the previous
