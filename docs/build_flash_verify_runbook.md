@@ -6,14 +6,13 @@ firmware, not for normal end users.
 
 ## Current Release Reference
 
-- Public release: `v2.0.24`
-- About-screen label: `HiBy R1 2.0.24`
-- Package: `r1-audiobooks-2.0.24.upt`
+- Public release: `v2.0.25`
+- About-screen label: `HiBy R1 2.0.25`
+- Package: `r1-audiobooks-2.0.25.upt`
 - Base firmware: stock HiBy R1 1.6 for the normal R1
 - Target device: normal HiBy R1 only, not R1 MIDI
-- Source branch: `codex/sd-runtime-stability` (the `main` branch has no
-  `audiobook_app/`; all source lives on the codex branch — GitHub release
-  `--target` must point at the codex branch).
+- Source branch: `main`. The complete NativeApp source and release history are
+  maintained on the repository's main branch.
 
 > This runbook was rewritten for the v2.0.x "NativeApp" pivot (in-process
 > `LD_PRELOAD` hook into `hiby_player`). The pre-2.0 v1.6.x resume-daemon /
@@ -90,15 +89,15 @@ that the pre-2.0 line carried and v2.0.17 restores:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File tools\build_r1_audiobook_firmware.ps1 `
-  -OutDir work\audiobook-firmware-2.0.24 `
-  -OutputUpt work\audiobook-firmware-2.0.24\r1-audiobooks-2.0.24.upt `
+  -OutDir work\audiobook-firmware-2.0.25 `
+  -OutputUpt work\audiobook-firmware-2.0.25\r1-audiobooks-2.0.25.upt `
   -IncludeAudiobookNativeApp `
   -EnableBootAdb `
   -UnlockNativeDsd `
   -EnableBluetoothSbcXq `
   -UnlockUsbDacMode `
-  -CustomVersionId 2.0.24 `
-  -CustomVersionLabel "HiBy R1 2.0.24"
+  -CustomVersionId 2.0.25 `
+  -CustomVersionLabel "HiBy R1 2.0.25"
 ```
 
 The NativeApp pivot is mutually exclusive with the legacy resume-daemon switches
@@ -135,10 +134,10 @@ Run the release package verifier against the NativeApp build:
 
 ```powershell
 py -3 tools\verify_r1_audiobook_build.py `
-  --out-dir work\audiobook-firmware-2.0.24 `
-  --upt-name r1-audiobooks-2.0.24.upt `
-  --expected-version 2.0.24 `
-  --expected-label "HiBy R1 2.0.24" `
+  --out-dir work\audiobook-firmware-2.0.25 `
+  --upt-name r1-audiobooks-2.0.25.upt `
+  --expected-version 2.0.25 `
+  --expected-label "HiBy R1 2.0.25" `
   --expect-native-app `
   --require-boot-adb `
   --expect-native-dsd `
@@ -165,10 +164,10 @@ verifies remote byte count + hashes:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File tools\adb_stage_verified_firmware.ps1 `
-  -Package work\audiobook-firmware-2.0.24\r1-audiobooks-2.0.24.upt `
-  -BuildOutDir work\audiobook-firmware-2.0.24 `
-  -ExpectedVersion 2.0.24 `
-  -ExpectedLabel "HiBy R1 2.0.24" `
+  -Package work\audiobook-firmware-2.0.25\r1-audiobooks-2.0.25.upt `
+  -BuildOutDir work\audiobook-firmware-2.0.25 `
+  -ExpectedVersion 2.0.25 `
+  -ExpectedLabel "HiBy R1 2.0.25" `
   -ExpectNativeApp `
   -RequireBootAdb `
   -ExpectNativeDsd `
@@ -184,7 +183,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 >
 > ```bash
 > adb shell cp /usr/data/mnt/sd_0/r1.upt /usr/data/mnt/sd_0/r1.upt.prev.bak
-> MSYS_NO_PATHCONV=1 adb -s <serial> push work\audiobook-firmware-2.0.24\r1-audiobooks-2.0.24.upt /usr/data/mnt/sd_0/r1.upt
+> MSYS_NO_PATHCONV=1 adb -s <serial> push work\audiobook-firmware-2.0.25\r1-audiobooks-2.0.25.upt /usr/data/mnt/sd_0/r1.upt
 > adb shell md5sum /usr/data/mnt/sd_0/r1.upt
 > ```
 >

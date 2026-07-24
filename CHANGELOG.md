@@ -2,6 +2,57 @@
 
 All public releases are for the normal HiBy R1 on stock firmware 1.6. Do not install these packages on the R1 MIDI.
 
+## v2.0.25 - 2026-07-24
+
+Firmware marker: `2.0.25` - About-screen label `HiBy R1 2.0.25`.
+
+Focused library-navigation, chapter, and Now Playing update built directly on
+v2.0.24. It retains publisher descriptions, the fast launcher handoff,
+app-scoped SD runtime-power protection, 15-second authoritative resume
+checkpoints, physical controls, and wired/Bluetooth playback.
+
+### Responsive folder navigation
+
+- Removed three synchronous full-catalog passes from each folder tap.
+- Folder selection now uses the already rendered row, updates the destination
+  before rebuilding, and performs one indexed subtree query.
+- Added the `idx_books_root_path` index and bounded folder timing diagnostics.
+- Verified every nested folder page on the test library rebuilt in 1-2 ms,
+  with normal back-stack behavior and no black or frozen-looking transitions.
+
+### Embedded MP3 chapters
+
+- Added a bounded streaming ID3v2.3/v2.4 `CHAP`/`CTOC` parser.
+- Ordered top-level `CTOC` entries are honored when present; otherwise chapters
+  are sorted by timestamp. Nested `TIT2` titles and safe fallback names are
+  supported.
+- Large artwork and unrelated metadata are skipped by seeking instead of being
+  loaded into RAM. Declared tag, frame count, frame payload, and chapter count
+  all have hard limits.
+- MP3 books without embedded chapter metadata retain the existing one-file-per-
+  chapter behavior.
+- Refresh Library now caches embedded MP3 chapters alongside M4B chapters.
+- Added generated MP3 chapter fixtures to the full local sanity suite.
+
+### Now Playing layout
+
+- Increased the cover from 220 to 270 pixels.
+- Moved title, author, duration, and progress down by 50 pixels while leaving
+  playback controls in their established positions.
+- Kept drawing and scrub hit targets tied to the same layout constants.
+- Verified the longest title in the test library wraps to two lines without
+  colliding with progress or controls.
+
+### Development and verification
+
+- ADB framebuffer screenshots now compile and deploy the native capture helper
+  automatically and capture the active framebuffer page instead of stale page
+  zero.
+- The full local sanity suite and strict production package verifier passed.
+- Repeated enter/exit cycles plateaued at about 17 MB RSS with no per-entry
+  memory or file-descriptor growth.
+- Normal reboot restored boot ADB and direct audiobook resume on the test R1.
+
 ## v2.0.24 - 2026-07-23
 
 Firmware marker: `2.0.24` - About-screen label `HiBy R1 2.0.24`.

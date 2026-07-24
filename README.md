@@ -3,19 +3,19 @@
 A self-contained audiobook app for the normal HiBy R1, based on stock HiBy R1
 firmware 1.6. **Not for the R1 MIDI.**
 
-> **v2.0.24 is the current release.** It adds publisher descriptions to the
-> book detail screen, improves the detail-page layout, restores a theme-aware
-> launcher icon, and fixes the delayed or apparently frozen return to HiBy's
-> launcher. It includes the v2.0.23 SD-card and resume stability work.
+> **v2.0.25 is the current release.** It fixes slow or frozen-looking folder
+> navigation, adds embedded MP3 chapter support, and gives Now Playing a larger
+> cover with a more compact lower information area. It includes all v2.0.24
+> description, launcher-return, SD-card, and resume stability work.
 
 ## Current release
 
-- **Version marker:** `2.0.24`
-- **About-screen label:** `HiBy R1 2.0.24`
-- **Download:** <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v2.0.24>
-- **Package:** `r1-audiobooks-2.0.24.upt` (rename to `r1.upt` to install)
-- **UPT MD5:** `17b56c5ff1a3b0dbf59073d24a23dc7a`
-- **UPT SHA256:** `377217abbefbb073cfbf9d85847a8c90717a59145134100713959883385f51ce`
+- **Version marker:** `2.0.25`
+- **About-screen label:** `HiBy R1 2.0.25`
+- **Download:** <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v2.0.25>
+- **Package:** `r1-audiobooks-2.0.25.upt` (rename to `r1.upt` to install)
+- **UPT MD5:** `58c186e02f7f68167cdc2e86cb6f4333`
+- **UPT SHA256:** `844bbe648832ac48031ad908815c11259042308b115369650bf3e3638e3d27b2`
 - **Boot ADB:** included (installs `/etc/init.d/S90adb`). ADB is available at
  boot whenever System → USB working mode is set to **Device** (mode 1). ADB and
  USB-DAC share the single USB gadget controller and are mutually exclusive by
@@ -30,7 +30,7 @@ firmware 1.6. **Not for the R1 MIDI.**
 
 **v2.0.20 compatibility note:** v2.0.20 was published from an experimental
 UTF-8/Cyrillic side branch. That text-rendering experiment is not included in
-v2.0.24 because this release follows the separately tested stability line. If
+v2.0.25 because this release follows the separately tested stability line. If
 you rely on Cyrillic audiobook names or tags, remain on v2.0.20 for now.
 
 Before flashing, keep a known-good stock 1.6 `r1.upt` for recovery. This is
@@ -53,7 +53,7 @@ the R1 MIDI or other HiBy players unless you are prepared to recover the device.
  <img src="docs/screenshots/08-launcher-after-exit.png" alt="HiBy launcher after exiting the app" width="200">
 </p>
 
-Captured directly from the test R1 running the tested v2.0.24 code. Full set in
+Captured directly from the test R1 running the tested v2.0.25 code. Full set in
 [`docs/screenshots/`](docs/screenshots/).
 
 ## How it works
@@ -82,7 +82,8 @@ browser, Bluetooth, USB, and system UI are otherwise untouched.
 **Library**
 - Home menu: Continue, Titles, Authors, Series, Folders, Finished, Refresh.
 - Folders follows the real `/Audiobooks` directory hierarchy instead of showing
-  a flattened list.
+  a flattened list. Folder taps use a cached row and one indexed subtree query,
+  keeping navigation responsive even with a large catalog.
 - Refresh Library runs in the background with visible progress, so playback,
   touch, and hardware controls remain responsive during a scan.
 - Book detail pages show publisher descriptions from MP3 `COMM` or M4B
@@ -103,8 +104,9 @@ browser, Bluetooth, USB, and system UI are otherwise untouched.
  seconds, the DB mirror is limited to once per minute, and the exact position is
  saved immediately on pause, stop, completion, and app exit. A book must play
  for at least 15 seconds before its first periodic checkpoint.
-- **Now Playing**: cover art, title/author/duration, and a **draggable progress
- handle** (scrub seek; tapping the bar elsewhere does not jump).
+- **Now Playing**: a larger 270-pixel cover, title/author/duration, and a
+  **draggable progress handle** in a compact lower information area (scrub
+  seek; tapping the bar elsewhere does not jump).
 - **Playback speed** 1.0 / 1.1 / 1.25 / 1.5 / 2.0x via **WSOLA time-stretch**
  (pitch preserved; 1.0x exact passthrough). Persists.
 - Now Playing Prev/Next rewind 30 seconds and advance 60 seconds, clamped to
@@ -112,7 +114,9 @@ browser, Bluetooth, USB, and system UI are otherwise untouched.
 - **Sleep timer** Off / 15 / 30 / 60 min with live countdown; auto-pauses and
  saves on expiry.
 - **M4B chapters** parsed from the embedded QuickTime chapter track (stsc-aware)
- or Nero `chpl`; MP3 books get one chapter per file. Tap a chapter to seek.
+  or Nero `chpl`. MP3 files with ID3v2.3/v2.4 `CHAP`/`CTOC` metadata expose
+  their embedded chapters; multipart MP3 books without embedded chapters still
+  get one chapter per file. Tap a chapter to seek directly.
 - **Bookmarks**: tap **Mark** on Now Playing to add; tap to jump; long-press to
  delete. Bookmarks are **SD-primary** — one tiny `<book_id>.bm` file per book on
  the SD card, written atomically (temp then rename) so a power cut cannot
@@ -210,7 +214,7 @@ browser, Bluetooth, USB, and system UI are otherwise untouched.
 
 ## Install
 
-1. Download `r1-audiobooks-2.0.24.upt` from the release page.
+1. Download `r1-audiobooks-2.0.25.upt` from the release page.
 2. Rename it to exactly `r1.upt` (the R1 will not recognize the update otherwise).
 3. Copy it to the root of the SD card.
 4. On the R1, run the normal firmware update
@@ -250,23 +254,23 @@ Build the hook/app shared library:
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\build_r1_audiobook_hook.ps1
 ```
 
-Build the public-release firmware (version 2.0.24):
+Build the public-release firmware (version 2.0.25):
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\build_r1_audiobook_firmware.ps1 `
- -OutDir work\audiobook-firmware-2.0.24 `
- -OutputUpt work\audiobook-firmware-2.0.24\r1-audiobooks-2.0.24.upt `
+ -OutDir work\audiobook-firmware-2.0.25 `
+ -OutputUpt work\audiobook-firmware-2.0.25\r1-audiobooks-2.0.25.upt `
  -IncludeAudiobookNativeApp `
  -EnableBootAdb `
  -UnlockNativeDsd `
  -EnableBluetoothSbcXq `
  -UnlockUsbDacMode `
- -CustomVersionId 2.0.24 `
- -CustomVersionLabel "HiBy R1 2.0.24"
+ -CustomVersionId 2.0.25 `
+ -CustomVersionLabel "HiBy R1 2.0.25"
 ```
 
 `-EnableBootAdb` installs `/etc/init.d/S90adb` so ADB starts automatically after
-every boot. The v2.0.24 public release ships with it on; drop the flag for a
+every boot. The v2.0.25 public release ships with it on; drop the flag for a
 build without persistent ADB. `-UnlockNativeDsd`, `-EnableBluetoothSbcXq`, and
 `-UnlockUsbDacMode` restore the three general device/music unlocks the pre-2.0
 line carried (Native DSD on the analog path, BlueALSA SBC XQ, and the USB DAC
@@ -299,7 +303,7 @@ alone.
 - `docs/screenshots/` - README screenshots.
 - `firmware/releases/v2.0.16/` - v2.0.16 release notes and checksums.
 - `firmware/releases/v2.0.17/` - v2.0.17 release notes and checksums.
-- `firmware/releases/v2.0.24/` - current release notes and checksums.
+- `firmware/releases/v2.0.25/` - current release notes and checksums.
 - `CHANGELOG.md` - release history.
 
 ## Attribution and sources
