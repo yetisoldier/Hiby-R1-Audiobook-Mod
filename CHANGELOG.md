@@ -2,6 +2,49 @@
 
 All public releases are for the normal HiBy R1 on stock firmware 1.6. Do not install these packages on the R1 MIDI.
 
+## v2.0.26 - 2026-07-27
+
+Firmware marker: `2.0.26` - About-screen label `HiBy R1 2.0.26`.
+
+Display-wake stability update built directly on v2.0.25. It retains responsive
+folder navigation, embedded MP3 chapters, the larger Now Playing cover,
+publisher descriptions, app-scoped SD protection, and 15-second resume
+checkpoints.
+
+### Fixed: audiobook continues behind an unwakeable black screen
+
+- Traced the failure to stock `hiby_player` hard-blanking the framebuffer while
+  the audiobook UI tracked only backlight brightness. Audio and hardware
+  controls remained alive, but brightness could still report a nonzero value
+  while framebuffer pans failed with `EBUSY`.
+- Intercepted stock `FBIOBLANK` requests while Audiobooks owns the display and
+  converted them to the existing lightweight backlight-only screen-off state.
+- Added a fallback that recognizes `FBIOPAN_DISPLAY = EBUSY`, explicitly
+  unblanks the framebuffer, turns only the backlight off, and records the
+  correct blank state.
+- Media and volume keys now perform an idempotent framebuffer wake before their
+  normal action. Power-button and double-tap wake behavior is preserved.
+- The recovery uses the existing UI event loop and a direct framebuffer ioctl;
+  it adds no monitor thread, persistent process, or recurring allocation.
+
+### Build and verification
+
+- Native-app firmware builds now recompile the preload hook from current source
+  instead of trusting a previously built library. The build fails rather than
+  packaging a missing or stale hook.
+- Updated the installed-release verifier for the NativeApp architecture. It now
+  checks the wrapper, preload hook, running host process, and SD library
+  integrity instead of requiring retired resume-daemon processes.
+- Added a reproducible MIPS framebuffer blank/unblank test helper and documented
+  the hard-blank test procedure.
+- The full local sanity suite and strict production package verifier passed.
+- On the production build, 10 forced hard blanks each converted and woke with
+  one power press. Double-tap, volume, play/pause, app exit, and stock Music
+  navigation passed. The player retained the same PID, 30 threads, and 37 open
+  descriptors; RSS changed by 56 KB during the run.
+- The same hook binary previously passed 30 consecutive forced wake cycles with
+  no change in RSS, thread count, or descriptors.
+
 ## v2.0.25 - 2026-07-24
 
 Firmware marker: `2.0.25` - About-screen label `HiBy R1 2.0.25`.

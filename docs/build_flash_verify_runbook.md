@@ -6,9 +6,9 @@ firmware, not for normal end users.
 
 ## Current Release Reference
 
-- Public release: `v2.0.25`
-- About-screen label: `HiBy R1 2.0.25`
-- Package: `r1-audiobooks-2.0.25.upt`
+- Public release: `v2.0.26`
+- About-screen label: `HiBy R1 2.0.26`
+- Package: `r1-audiobooks-2.0.26.upt`
 - Base firmware: stock HiBy R1 1.6 for the normal R1
 - Target device: normal HiBy R1 only, not R1 MIDI
 - Source branch: `main`. The complete NativeApp source and release history are
@@ -89,15 +89,15 @@ that the pre-2.0 line carried and v2.0.17 restores:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File tools\build_r1_audiobook_firmware.ps1 `
-  -OutDir work\audiobook-firmware-2.0.25 `
-  -OutputUpt work\audiobook-firmware-2.0.25\r1-audiobooks-2.0.25.upt `
+  -OutDir work\audiobook-firmware-2.0.26 `
+  -OutputUpt work\audiobook-firmware-2.0.26\r1-audiobooks-2.0.26.upt `
   -IncludeAudiobookNativeApp `
   -EnableBootAdb `
   -UnlockNativeDsd `
   -EnableBluetoothSbcXq `
   -UnlockUsbDacMode `
-  -CustomVersionId 2.0.25 `
-  -CustomVersionLabel "HiBy R1 2.0.25"
+  -CustomVersionId 2.0.26 `
+  -CustomVersionLabel "HiBy R1 2.0.26"
 ```
 
 The NativeApp pivot is mutually exclusive with the legacy resume-daemon switches
@@ -134,10 +134,10 @@ Run the release package verifier against the NativeApp build:
 
 ```powershell
 py -3 tools\verify_r1_audiobook_build.py `
-  --out-dir work\audiobook-firmware-2.0.25 `
-  --upt-name r1-audiobooks-2.0.25.upt `
-  --expected-version 2.0.25 `
-  --expected-label "HiBy R1 2.0.25" `
+  --out-dir work\audiobook-firmware-2.0.26 `
+  --upt-name r1-audiobooks-2.0.26.upt `
+  --expected-version 2.0.26 `
+  --expected-label "HiBy R1 2.0.26" `
   --expect-native-app `
   --require-boot-adb `
   --expect-native-dsd `
@@ -164,10 +164,10 @@ verifies remote byte count + hashes:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File tools\adb_stage_verified_firmware.ps1 `
-  -Package work\audiobook-firmware-2.0.25\r1-audiobooks-2.0.25.upt `
-  -BuildOutDir work\audiobook-firmware-2.0.25 `
-  -ExpectedVersion 2.0.25 `
-  -ExpectedLabel "HiBy R1 2.0.25" `
+  -Package work\audiobook-firmware-2.0.26\r1-audiobooks-2.0.26.upt `
+  -BuildOutDir work\audiobook-firmware-2.0.26 `
+  -ExpectedVersion 2.0.26 `
+  -ExpectedLabel "HiBy R1 2.0.26" `
   -ExpectNativeApp `
   -RequireBootAdb `
   -ExpectNativeDsd `
@@ -183,7 +183,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 >
 > ```bash
 > adb shell cp /usr/data/mnt/sd_0/r1.upt /usr/data/mnt/sd_0/r1.upt.prev.bak
-> MSYS_NO_PATHCONV=1 adb -s <serial> push work\audiobook-firmware-2.0.25\r1-audiobooks-2.0.25.upt /usr/data/mnt/sd_0/r1.upt
+> MSYS_NO_PATHCONV=1 adb -s <serial> push work\audiobook-firmware-2.0.26\r1-audiobooks-2.0.26.upt /usr/data/mnt/sd_0/r1.upt
 > adb shell md5sum /usr/data/mnt/sd_0/r1.upt
 > ```
 >
@@ -240,7 +240,8 @@ with boot ADB):
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File tools\adb_verify_installed_audiobook_release.ps1 `
-  -ExpectedVersion 2.0.17 `
+  -ExpectedVersion 2.0.26 `
+  -ExpectNativeApp `
   -ExpectNativeDsd `
   -ExpectBluetoothSbcXq `
   -ExpectUsbDacMode `
@@ -253,17 +254,14 @@ The installed verifier checks (NativeApp-relevant):
 - `/etc/r1_audiobook_version` (version + enabled-feature markers)
 - `/usr/resource/config.json` and audio unlock markers (`ot_devices.json`,
   `bt_init`, `set_functions.json`)
-- `libaudiobook_hook.so` present in the read-only rootfs
-- the NativeApp launches (drive via `tools/r1_adb_control.py preset
-  main-audiobooks`; the app log `/tmp/.audiobook_hook.log` is the truth source
-  when the screenshot classifier reports "unknown")
+- NativeApp wrapper, executable, preload hook, and running `hiby_player` host
+- SD-native `library.db` integrity plus nonempty `books` and `tracks` tables
 - staged firmware hygiene
 - free space
 - framebuffer capture
 
 (The legacy resume-daemon / DB-watcher / generated-catalog checks are
-v1.6.x-era and do not apply to the NativeApp pivot — those process/catalog
-checks will report absent, which is expected.) See
+v1.6.x-era and do not apply when `-ExpectNativeApp` is selected.) See
 [`modding/adb_automation_screenshots.md`](./modding/adb_automation_screenshots.md)
 for driving the UI over ADB safely.
 
@@ -294,28 +292,28 @@ Prepare release assets:
 
 ```text
 firmware\releases\vX.Y.Z\
-  README.md
+  RELEASE_NOTES.md
   MD5SUMS.txt
   SHA256SUMS.txt
-  r1-audiobooks-...upt
+
+work\audiobook-firmware-X.Y.Z\
+  r1-audiobooks-X.Y.Z.upt
 ```
 
-Update non-README release docs:
+Update release docs:
 
 ```text
 CHANGELOG.md
+README.md
 docs\production_release_checklist.md
-docs\release_recovery_notes.md
-docs\github_release_process.md
 ```
 
-Commit and push the **codex** branch (`codex/r1-hiby-modding-integration`) —
-`main` has no `audiobook_app/` and is far behind; all source lives on codex.
-Then tag:
+Commit the release documentation, fast-forward `main` to the tested release
+commit, and push `main`. Then create and push the annotated tag:
 
 ```powershell
 git tag -a vX.Y.Z -m "HiBy R1 Audiobook Mod vX.Y.Z"
-git push origin HEAD:codex/r1-hiby-modding-integration
+git push origin main
 git push origin vX.Y.Z
 ```
 
@@ -329,28 +327,17 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -File tools\publish_github_release.ps1 `
   -Tag vX.Y.Z `
   -Name "HiBy R1 Audiobook Mod vX.Y.Z" `
-  -BodyFile firmware\releases\vX.Y.Z\README.md `
-  -Assets "firmware\releases\vX.Y.Z\r1-audiobooks-...upt,firmware\releases\vX.Y.Z\MD5SUMS.txt,firmware\releases\vX.Y.Z\SHA256SUMS.txt"
+  -TargetCommitish main `
+  -BodyFile firmware\releases\vX.Y.Z\RELEASE_NOTES.md `
+  -Assets "work\audiobook-firmware-X.Y.Z\r1-audiobooks-X.Y.Z.upt,firmware\releases\vX.Y.Z\MD5SUMS.txt,firmware\releases\vX.Y.Z\SHA256SUMS.txt,firmware\releases\vX.Y.Z\RELEASE_NOTES.md"
 ```
 
 > **Gotchas** (see [`docs/github_release_process.md`](./github_release_process.md)):
-> `gh release --target` / the REST helper target must be the **codex** branch
-> (not `main`); a transient 503→422 "asset already exists" response cleans up
-> on retry; and on Windows git-bash, **unquoted backslashes in PowerShell
+> a transient 503→422 "asset already exists" response cleans up on retry; on
+> Windows git-bash, **unquoted backslashes in PowerShell
 > args are stripped** (`work\release-v2.0.17\r1-audiobooks-2.0.17.upt` →
 > `workrelease-v2.0.17r1-audiobooks-2.0.17.upt`) — quote paths or use forward
 > slashes when invoking PowerShell from git-bash.
-
-Publish the GitHub Release through the checked-in REST helper:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass `
-  -File tools\publish_github_release.ps1 `
-  -Tag vX.Y.Z `
-  -Name "HiBy R1 Audiobook Mod vX.Y.Z" `
-  -BodyFile firmware\releases\vX.Y.Z\README.md `
-  -Assets "firmware\releases\vX.Y.Z\r1-audiobooks-...upt,firmware\releases\vX.Y.Z\MD5SUMS.txt,firmware\releases\vX.Y.Z\SHA256SUMS.txt"
-```
 
 Always verify the release API object and assets:
 
@@ -359,7 +346,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -File tools\publish_github_release.ps1 `
   -Tag vX.Y.Z `
   -VerifyOnly `
-  -Assets "firmware\releases\vX.Y.Z\r1-audiobooks-...upt,firmware\releases\vX.Y.Z\MD5SUMS.txt,firmware\releases\vX.Y.Z\SHA256SUMS.txt"
+  -Assets "work\audiobook-firmware-X.Y.Z\r1-audiobooks-X.Y.Z.upt,firmware\releases\vX.Y.Z\MD5SUMS.txt,firmware\releases\vX.Y.Z\SHA256SUMS.txt,firmware\releases\vX.Y.Z\RELEASE_NOTES.md"
 ```
 
 A pushed tag is not enough. The GitHub Release object must exist and list the

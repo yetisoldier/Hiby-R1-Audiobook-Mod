@@ -3,19 +3,19 @@
 A self-contained audiobook app for the normal HiBy R1, based on stock HiBy R1
 firmware 1.6. **Not for the R1 MIDI.**
 
-> **v2.0.25 is the current release.** It fixes slow or frozen-looking folder
-> navigation, adds embedded MP3 chapter support, and gives Now Playing a larger
-> cover with a more compact lower information area. It includes all v2.0.24
-> description, launcher-return, SD-card, and resume stability work.
+> **v2.0.26 is the current release.** It fixes the black-screen wake failure
+> that could occur when an audiobook kept playing after the display timed out.
+> It includes all v2.0.25 folder-navigation, MP3 chapter, Now Playing, SD-card,
+> and resume stability work.
 
 ## Current release
 
-- **Version marker:** `2.0.25`
-- **About-screen label:** `HiBy R1 2.0.25`
-- **Download:** <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v2.0.25>
-- **Package:** `r1-audiobooks-2.0.25.upt` (rename to `r1.upt` to install)
-- **UPT MD5:** `58c186e02f7f68167cdc2e86cb6f4333`
-- **UPT SHA256:** `844bbe648832ac48031ad908815c11259042308b115369650bf3e3638e3d27b2`
+- **Version marker:** `2.0.26`
+- **About-screen label:** `HiBy R1 2.0.26`
+- **Download:** <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v2.0.26>
+- **Package:** `r1-audiobooks-2.0.26.upt` (rename to `r1.upt` to install)
+- **UPT MD5:** `3d7d87aff3a098b70e68825e577c32c5`
+- **UPT SHA256:** `a9c9fec73e2be9fdc664088a47ae6834378e7e6c112fe29fdc153b404005d938`
 - **Boot ADB:** included (installs `/etc/init.d/S90adb`). ADB is available at
  boot whenever System → USB working mode is set to **Device** (mode 1). ADB and
  USB-DAC share the single USB gadget controller and are mutually exclusive by
@@ -30,7 +30,7 @@ firmware 1.6. **Not for the R1 MIDI.**
 
 **v2.0.20 compatibility note:** v2.0.20 was published from an experimental
 UTF-8/Cyrillic side branch. That text-rendering experiment is not included in
-v2.0.25 because this release follows the separately tested stability line. If
+v2.0.26 because this release follows the separately tested stability line. If
 you rely on Cyrillic audiobook names or tags, remain on v2.0.20 for now.
 
 Before flashing, keep a known-good stock 1.6 `r1.upt` for recovery. This is
@@ -53,7 +53,7 @@ the R1 MIDI or other HiBy players unless you are prepared to recover the device.
  <img src="docs/screenshots/08-launcher-after-exit.png" alt="HiBy launcher after exiting the app" width="200">
 </p>
 
-Captured directly from the test R1 running the tested v2.0.25 code. Full set in
+Captured directly from the test R1 running the tested v2.0.26 code. Full set in
 [`docs/screenshots/`](docs/screenshots/).
 
 ## How it works
@@ -135,6 +135,9 @@ browser, Bluetooth, USB, and system UI are otherwise untouched.
 
 **Hardware**
 - Power button toggles backlight (audio keeps playing dark; double-tap wakes).
+- Stock hard-screen blanks are converted to the app's lightweight screen-off
+  state. If the panel ever enters that state unexpectedly, the next power,
+  media, or volume input explicitly restores the framebuffer before acting.
 - Play/pause, prev/next, volume keys in-app. Volume is fine-stepped (~2-2.5 dB)
   with hold-to-ramp and a temporary on-screen volume indicator.
 - Rapid button presses are queued in order instead of overwriting one another.
@@ -214,7 +217,7 @@ browser, Bluetooth, USB, and system UI are otherwise untouched.
 
 ## Install
 
-1. Download `r1-audiobooks-2.0.25.upt` from the release page.
+1. Download `r1-audiobooks-2.0.26.upt` from the release page.
 2. Rename it to exactly `r1.upt` (the R1 will not recognize the update otherwise).
 3. Copy it to the root of the SD card.
 4. On the R1, run the normal firmware update
@@ -248,29 +251,33 @@ The firmware is built offline from the extracted stock 1.6 rootfs plus the
 audiobook app. The audiobook app (`audiobook_app/`) is cross-compiled to MIPS32
 with `zig cc` (target `mipsel-linux-gnueabihf.2.22`).
 
-Build the hook/app shared library:
+Optionally build the hook/app shared library by itself:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\build_r1_audiobook_hook.ps1
 ```
 
-Build the public-release firmware (version 2.0.25):
+The production firmware command below recompiles the hook from current source
+before packaging it, so this separate command is useful for quick development
+checks but is not required for a release build.
+
+Build the public-release firmware (version 2.0.26):
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\build_r1_audiobook_firmware.ps1 `
- -OutDir work\audiobook-firmware-2.0.25 `
- -OutputUpt work\audiobook-firmware-2.0.25\r1-audiobooks-2.0.25.upt `
+ -OutDir work\audiobook-firmware-2.0.26 `
+ -OutputUpt work\audiobook-firmware-2.0.26\r1-audiobooks-2.0.26.upt `
  -IncludeAudiobookNativeApp `
  -EnableBootAdb `
  -UnlockNativeDsd `
  -EnableBluetoothSbcXq `
  -UnlockUsbDacMode `
- -CustomVersionId 2.0.25 `
- -CustomVersionLabel "HiBy R1 2.0.25"
+ -CustomVersionId 2.0.26 `
+ -CustomVersionLabel "HiBy R1 2.0.26"
 ```
 
 `-EnableBootAdb` installs `/etc/init.d/S90adb` so ADB starts automatically after
-every boot. The v2.0.25 public release ships with it on; drop the flag for a
+every boot. The v2.0.26 public release ships with it on; drop the flag for a
 build without persistent ADB. `-UnlockNativeDsd`, `-EnableBluetoothSbcXq`, and
 `-UnlockUsbDacMode` restore the three general device/music unlocks the pre-2.0
 line carried (Native DSD on the analog path, BlueALSA SBC XQ, and the USB DAC
@@ -303,7 +310,7 @@ alone.
 - `docs/screenshots/` - README screenshots.
 - `firmware/releases/v2.0.16/` - v2.0.16 release notes and checksums.
 - `firmware/releases/v2.0.17/` - v2.0.17 release notes and checksums.
-- `firmware/releases/v2.0.25/` - current release notes and checksums.
+- `firmware/releases/v2.0.26/` - current release notes and checksums.
 - `CHANGELOG.md` - release history.
 
 ## Attribution and sources

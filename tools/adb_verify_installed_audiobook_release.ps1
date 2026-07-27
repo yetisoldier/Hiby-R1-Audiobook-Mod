@@ -6,10 +6,15 @@ param(
     [string]$CheckScript = "tools\check_audiobook_release_state.py",
 
     [Parameter(Mandatory=$false)]
+    [string]$NativeDbCheckScript = "tools\check_native_audiobook_library.py",
+
+    [Parameter(Mandatory=$false)]
     [string]$OutDir = "work\installed-release-verification",
 
     [Parameter(Mandatory=$false)]
     [string]$ExpectedVersion = "1.6.16.5-audiobook",
+
+    [switch]$ExpectNativeApp,
 
     [Parameter(Mandatory=$false)]
     [int]$MinUsrDataFreeKb = 4096,
@@ -36,6 +41,14 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# Resolve Python: on Windows, the "python" command may be the nonfunctional
+# Microsoft Store alias. Match the build tools by falling back to py -3.
+$_pyOk = $true
+try { $_pyVer = & python --version 2>&1; if ($LASTEXITCODE -ne 0) { $_pyOk = $false } } catch { $_pyOk = $false }
+if (-not $_pyOk) {
+    function python { & py -3 @args }
+}
 
 function Resolve-PathStrict([string]$PathValue) {
     if (!(Test-Path -LiteralPath $PathValue)) {
@@ -121,6 +134,11 @@ done
 
 $adbPath = Resolve-AdbPath $Adb
 $checkScriptPath = Resolve-PathStrict $CheckScript
+$nativeDbCheckScriptPath = if ($ExpectNativeApp) {
+    Resolve-PathStrict $NativeDbCheckScript
+} else {
+    ""
+}
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $verifyDir = Join-Path (Resolve-Path -LiteralPath (Get-Location).Path).Path (Join-Path $OutDir $stamp)
 New-Item -ItemType Directory -Force -Path $verifyDir | Out-Null
@@ -181,6 +199,30 @@ if ($ExpectBluetoothSbcXq) {
     Assert-Contains $btInitText '/usr/bin/bluealsa -p a2dp-source --a2dp-volume --sbc-quality=xq &' "/usr/bin/bt_init"
 }
 
+if ($ExpectNativeApp) {
+    $nativeFilesText = Invoke-AdbText "ls -l /usr/bin/hiby_player.sh /usr/bin/r1_audiobook_app /usr/lib/libaudiobook_hook.so 2>/dev/null"
+    Set-Content -LiteralPath (Join-Path $verifyDir "native_app_files.txt") -Value $nativeFilesText
+    Assert-Contains $nativeFilesText "hiby_player.sh" "NativeApp files"
+    Assert-Contains $nativeFilesText "r1_audiobook_app" "NativeApp files"
+    Assert-Contains $nativeFilesText "libaudiobook_hook.so" "NativeApp files"
+
+    $nativeWrapperText = Invoke-AdbText "cat /usr/bin/hiby_player.sh 2>/dev/null"
+    Set-Content -LiteralPath (Join-Path $verifyDir "native_player_wrapper.sh") -Value $nativeWrapperText
+    if ($nativeWrapperText -like "*`r*") {
+        throw "/usr/bin/hiby_player.sh contains CR characters; BusyBox sh may fail to parse it"
+    }
+    Write-Host "OK   /usr/bin/hiby_player.sh uses LF line endings"
+    Assert-Contains $nativeWrapperText 'LD_PRELOAD="$HOOK_LIB" "$PLAYER"' "NativeApp wrapper"
+    Assert-Contains $nativeWrapperText "MAX_CRASHES=5" "NativeApp wrapper"
+
+    $nativeProcessText = Invoke-AdbText "ps | grep '[/]usr/bin/hiby_player' 2>/dev/null || true"
+    Set-Content -LiteralPath (Join-Path $verifyDir "native_player_process.txt") -Value $nativeProcessText
+    if ([string]::IsNullOrWhiteSpace($nativeProcessText)) {
+        throw "NativeApp host hiby_player is not running"
+    }
+    Write-Host "OK   NativeApp host hiby_player is running"
+}
+else {
 $daemonText = Invoke-AdbText "ps | grep '[r]1_audiobook_resume_daemon' 2>/dev/null || true"
 Set-Content -LiteralPath (Join-Path $verifyDir "daemon.txt") -Value $daemonText
 if ([string]::IsNullOrWhiteSpace($daemonText)) {
@@ -326,6 +368,7 @@ if ($RequireDbMaintenance) {
         Assert-Contains $dbInitScript 'rm -rf "$BASE/db-maint.lock"' "runtime DB init"
     }
 }
+}
 
 $uptText = Invoke-AdbText "if [ -e /usr/data/mnt/sd_0/r1.upt ]; then ls -l /usr/data/mnt/sd_0/r1.upt; else echo no-r1.upt; fi"
 Set-Content -LiteralPath (Join-Path $verifyDir "r1_upt_status.txt") -Value $uptText
@@ -364,44 +407,66 @@ else {
     Write-Host "WARN could not parse /usr/data free space"
 }
 
-$dbLocal = Join-Path $verifyDir "usrlocal_media.db"
-$catalogLocal = Join-Path $verifyDir "catalog.tsv"
-$booksCatalogLocal = Join-Path $verifyDir "catalog-books.tsv"
-$titlesCatalogLocal = Join-Path $verifyDir "catalog-view-title.tsv"
-$authorsCatalogLocal = Join-Path $verifyDir "catalog-view-author.tsv"
-$seriesCatalogLocal = Join-Path $verifyDir "catalog-view-series.tsv"
-Invoke-AdbPull "/usr/data/usrlocal_media.db" $dbLocal
-Invoke-AdbPull "/usr/data/audiobooks/catalog.tsv" $catalogLocal
-$booksCatalogArg = @()
-$viewCatalogArgs = @()
-$booksCatalogPresence = Invoke-AdbText "if [ -s /usr/data/audiobooks/catalog-books.tsv ]; then echo present; else echo missing; fi"
-if ($booksCatalogPresence -match "present") {
-    Invoke-AdbPull "/usr/data/audiobooks/catalog-books.tsv" $booksCatalogLocal
-    $booksCatalogArg = @("--books-catalog", $booksCatalogLocal)
+$releaseArtifacts = @()
+if ($ExpectNativeApp) {
+    $nativeDbLocal = Join-Path $verifyDir "native-library.db"
+    Invoke-AdbPull "/usr/data/mnt/sd_0/Audiobooks/.audiobook_library/library.db" $nativeDbLocal
+    $nativeDbCheck = python $nativeDbCheckScriptPath $nativeDbLocal
+    if ($LASTEXITCODE -ne 0) {
+        throw "NativeApp library database check failed"
+    }
+    Set-Content -LiteralPath (Join-Path $verifyDir "native_library_check.txt") -Value $nativeDbCheck
+    Write-Host "OK   NativeApp library database $nativeDbCheck"
+    $releaseArtifacts = @($nativeDbLocal)
 }
-$titlesCatalogPresence = Invoke-AdbText "if [ -s /usr/data/audiobooks/catalog-view-title.tsv ]; then echo present; else echo missing; fi"
-if ($titlesCatalogPresence -match "present") {
-    Invoke-AdbPull "/usr/data/audiobooks/catalog-view-title.tsv" $titlesCatalogLocal
-    $viewCatalogArgs += @("--titles-catalog", $titlesCatalogLocal)
-}
-$authorsCatalogPresence = Invoke-AdbText "if [ -s /usr/data/audiobooks/catalog-view-author.tsv ]; then echo present; else echo missing; fi"
-if ($authorsCatalogPresence -match "present") {
-    Invoke-AdbPull "/usr/data/audiobooks/catalog-view-author.tsv" $authorsCatalogLocal
-    $viewCatalogArgs += @("--authors-catalog", $authorsCatalogLocal)
-}
-$seriesCatalogPresence = Invoke-AdbText "if [ -s /usr/data/audiobooks/catalog-view-series.tsv ]; then echo present; else echo missing; fi"
-if ($seriesCatalogPresence -match "present") {
-    Invoke-AdbPull "/usr/data/audiobooks/catalog-view-series.tsv" $seriesCatalogLocal
-    $viewCatalogArgs += @("--series-catalog", $seriesCatalogLocal)
-}
+else {
+    $dbLocal = Join-Path $verifyDir "usrlocal_media.db"
+    $catalogLocal = Join-Path $verifyDir "catalog.tsv"
+    $booksCatalogLocal = Join-Path $verifyDir "catalog-books.tsv"
+    $titlesCatalogLocal = Join-Path $verifyDir "catalog-view-title.tsv"
+    $authorsCatalogLocal = Join-Path $verifyDir "catalog-view-author.tsv"
+    $seriesCatalogLocal = Join-Path $verifyDir "catalog-view-series.tsv"
+    Invoke-AdbPull "/usr/data/usrlocal_media.db" $dbLocal
+    Invoke-AdbPull "/usr/data/audiobooks/catalog.tsv" $catalogLocal
+    $booksCatalogArg = @()
+    $viewCatalogArgs = @()
+    $booksCatalogPresence = Invoke-AdbText "if [ -s /usr/data/audiobooks/catalog-books.tsv ]; then echo present; else echo missing; fi"
+    if ($booksCatalogPresence -match "present") {
+        Invoke-AdbPull "/usr/data/audiobooks/catalog-books.tsv" $booksCatalogLocal
+        $booksCatalogArg = @("--books-catalog", $booksCatalogLocal)
+    }
+    $titlesCatalogPresence = Invoke-AdbText "if [ -s /usr/data/audiobooks/catalog-view-title.tsv ]; then echo present; else echo missing; fi"
+    if ($titlesCatalogPresence -match "present") {
+        Invoke-AdbPull "/usr/data/audiobooks/catalog-view-title.tsv" $titlesCatalogLocal
+        $viewCatalogArgs += @("--titles-catalog", $titlesCatalogLocal)
+    }
+    $authorsCatalogPresence = Invoke-AdbText "if [ -s /usr/data/audiobooks/catalog-view-author.tsv ]; then echo present; else echo missing; fi"
+    if ($authorsCatalogPresence -match "present") {
+        Invoke-AdbPull "/usr/data/audiobooks/catalog-view-author.tsv" $authorsCatalogLocal
+        $viewCatalogArgs += @("--authors-catalog", $authorsCatalogLocal)
+    }
+    $seriesCatalogPresence = Invoke-AdbText "if [ -s /usr/data/audiobooks/catalog-view-series.tsv ]; then echo present; else echo missing; fi"
+    if ($seriesCatalogPresence -match "present") {
+        Invoke-AdbPull "/usr/data/audiobooks/catalog-view-series.tsv" $seriesCatalogLocal
+        $viewCatalogArgs += @("--series-catalog", $seriesCatalogLocal)
+    }
 
-python $checkScriptPath $dbLocal --catalog $catalogLocal @booksCatalogArg @viewCatalogArgs --expect-audiobooks
-if ($LASTEXITCODE -ne 0) {
-    throw "release-state database check failed"
+    python $checkScriptPath $dbLocal --catalog $catalogLocal @booksCatalogArg @viewCatalogArgs --expect-audiobooks
+    if ($LASTEXITCODE -ne 0) {
+        throw "release-state database check failed"
+    }
+    $releaseArtifacts = @(
+        $dbLocal,
+        $catalogLocal,
+        $booksCatalogLocal,
+        $titlesCatalogLocal,
+        $authorsCatalogLocal,
+        $seriesCatalogLocal
+    )
 }
 
 $hashLines = @()
-foreach ($path in @($dbLocal, $catalogLocal, $booksCatalogLocal, $titlesCatalogLocal, $authorsCatalogLocal, $seriesCatalogLocal)) {
+foreach ($path in $releaseArtifacts) {
     if (!(Test-Path -LiteralPath $path)) {
         continue
     }

@@ -12,19 +12,20 @@ Use the checked-in publisher instead of retyping REST calls by hand:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\publish_github_release.ps1 `
-  -Tag v1.6.1 `
-  -Name "HiBy R1 Audiobook Mod v1.6.1" `
-  -BodyFile firmware\releases\v1.6.1\README.md `
-  -Assets "firmware\releases\v1.6.1\r1-audiobooks-1.6.18-audiobook.upt,firmware\releases\v1.6.1\MD5SUMS.txt,firmware\releases\v1.6.1\SHA256SUMS.txt"
+  -Tag v2.0.26 `
+  -Name "HiBy R1 Audiobook Mod v2.0.26" `
+  -TargetCommitish main `
+  -BodyFile firmware\releases\v2.0.26\RELEASE_NOTES.md `
+  -Assets "work\audiobook-firmware-2.0.26\r1-audiobooks-2.0.26.upt,firmware\releases\v2.0.26\MD5SUMS.txt,firmware\releases\v2.0.26\SHA256SUMS.txt,firmware\releases\v2.0.26\RELEASE_NOTES.md"
 ```
 
 Then verify the public release object and assets:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\publish_github_release.ps1 `
-  -Tag v1.6.1 `
+  -Tag v2.0.26 `
   -VerifyOnly `
-  -Assets "firmware\releases\v1.6.1\r1-audiobooks-1.6.18-audiobook.upt,firmware\releases\v1.6.1\MD5SUMS.txt,firmware\releases\v1.6.1\SHA256SUMS.txt"
+  -Assets "work\audiobook-firmware-2.0.26\r1-audiobooks-2.0.26.upt,firmware\releases\v2.0.26\MD5SUMS.txt,firmware\releases\v2.0.26\SHA256SUMS.txt,firmware\releases\v2.0.26\RELEASE_NOTES.md"
 ```
 
 If an asset was uploaded incorrectly, re-run with `-ReplaceAssets` after
@@ -32,9 +33,9 @@ checking that the local files and hashes are correct.
 
 ## Credential Fix
 
-`gh` is useful if installed, but it has not been available in this development
-environment. The reliable path is Git for Windows plus Git Credential Manager.
-The publisher first checks `GITHUB_TOKEN`, `GH_TOKEN`, and `GITHUB_PAT`. If
+Confirm `gh auth status` succeeds before publishing. The checked-in publisher
+can also use Git for Windows plus Git Credential Manager. It first checks
+`GITHUB_TOKEN`, `GH_TOKEN`, and `GITHUB_PAT`. If
 those are not set, it asks Git Credential Manager for the saved GitHub token by
 feeding this exact credential request through a temporary file:
 
@@ -59,11 +60,11 @@ After that, re-run `tools\publish_github_release.ps1`.
 
 1. Build and locally verify the firmware package.
 2. Flash and run installed-device verification when device access is available.
-3. Copy the verified package and checksum files into `firmware\releases\vX.Y.Z`.
+3. Put release notes and checksum files in `firmware\releases\vX.Y.Z`; keep the
+   large `.upt` under `work\` and upload it directly as a release asset.
 4. Update `README.md`, `CHANGELOG.md`, and `docs\production_release_checklist.md`.
 5. Commit the release files.
-6. Push the **codex branch** (`codex/r1-hiby-modding-integration`) — `main` has
-   no `audiobook_app/` and is far behind; all source lives on codex.
+6. Fast-forward and push `main` to the tested release commit.
 7. Create and push the tag.
 8. Run `tools\publish_github_release.ps1` to create the GitHub Release and upload assets.
 9. Run the same script with `-VerifyOnly` and confirm the asset count, names, and sizes.
@@ -75,7 +76,7 @@ page:
 ```powershell
 Invoke-RestMethod `
   -Method Get `
-  -Uri "https://api.github.com/repos/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tags/v1.6.1" `
+  -Uri "https://api.github.com/repos/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tags/v2.0.26" `
   -Headers @{ "User-Agent" = "hiby-r1-audiobook-release-check"; Accept = "application/vnd.github+json" }
 ```
 
@@ -84,10 +85,9 @@ Invoke-RestMethod `
 These bit the v2.0.x (NativeApp) release process — learned the hard way across
 v2.0.15 → v2.0.17:
 
-- **Target the codex branch, not `main`.** `gh release --target` / the REST
-  helper target must be `codex/r1-hiby-modding-integration`. `main` has no
-  `audiobook_app/` and is far behind; a release pointed at `main` would tag a
-  tree with no audiobook source.
+- **Target `main`.** The complete NativeApp source and public release history
+  are now maintained on `main`; older notes referring to a separate codex
+  release branch are historical.
 - **The release BodyFile MUST be pure ASCII.** PowerShell 5.1 `Get-Content -Raw`
   reads no-BOM UTF-8 as cp1252, so `ConvertTo-Json` fails with HTTP 400 on any
   non-ASCII byte. Verify `0` non-ASCII bytes before publishing (the v2.0.0
