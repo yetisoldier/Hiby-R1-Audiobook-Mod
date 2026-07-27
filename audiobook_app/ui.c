@@ -20,6 +20,7 @@
 #include <sys/time.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
+#include <sys/syscall.h>
 #include <errno.h>
 #include <time.h>
 #include <pthread.h>
@@ -513,6 +514,7 @@ static void close_input(ui_state_t *ui) {
 /* ---- Screen blank (power button) --------------------------------------- */
 
 #define BACKLIGHT_PATH "/sys/class/backlight/backlight_pwm0/brightness"
+#define BACKLIGHT_POWER_PATH "/sys/class/backlight/backlight_pwm0/bl_power"
 
 static int read_brightness(void) {
     int fd = open(BACKLIGHT_PATH, O_RDONLY);
@@ -531,24 +533,59 @@ static void write_brightness(int v) {
     close(fd);
 }
 
+static void write_backlight_power(int v) {
+    int fd = open(BACKLIGHT_POWER_PATH, O_WRONLY);
+    if (fd < 0) return;
+    char b[16]; int len = snprintf(b, sizeof(b), "%d", v);
+    write(fd, b, len);
+    close(fd);
+}
+
+/* Brightness alone cannot recover a framebuffer that stock hiby_player
+ * hard-blanked. Use a direct syscall so this does not re-enter the LD_PRELOAD
+ * ioctl hook. */
+static int framebuffer_unblank(int fb_fd) {
+    int rc = -1;
+    if (fb_fd >= 0)
+        rc = (int)syscall(SYS_ioctl, fb_fd, FBIOBLANK,
+                          (void *)(intptr_t)FB_BLANK_UNBLANK);
+    return rc;
+}
+
 /* Lightweight blank: backlight off only. We keep panning (touch IC stays
  * alive → double-tap wake works) and the decode thread runs (audiobook plays
  * with the screen dark). Wake on power press or touchscreen double-tap. */
 static void set_blanked(ui_state_t *ui, int on, int fb_fd) {
-    (void)fb_fd;
     if (on) {
-        if (ui->blanked) return;
-        ui->saved_brightness = read_brightness();
-        if (ui->saved_brightness <= 0) ui->saved_brightness = 50;
+        int was_blanked = ui->blanked;
+        if (!was_blanked) {
+            ui->saved_brightness = read_brightness();
+            if (ui->saved_brightness <= 0) ui->saved_brightness = 50;
+        }
+        /* Recover a pre-existing hard blank, then leave only the backlight
+         * dark so panning and the touch controller continue running. */
+        int fb_rc = framebuffer_unblank(fb_fd);
+        write_backlight_power(FB_BLANK_UNBLANK);
         write_brightness(0);
         ui->blanked = 1;
         ui->last_touch_up_ms = 0;
-        ui_log("[ui] BLANK on (saved brightness=%d)\n", ui->saved_brightness);
+        if (!was_blanked)
+            ui_log("[ui] BLANK on (saved brightness=%d fb_unblank=%d)\n",
+                   ui->saved_brightness, fb_rc);
     } else {
-        if (!ui->blanked) return;
-        write_brightness(ui->saved_brightness ? ui->saved_brightness : 50);
+        int was_blanked = ui->blanked;
+        int restore = ui->saved_brightness;
+        if (restore <= 0) {
+            restore = read_brightness();
+            if (restore <= 0) restore = 50;
+        }
+        int fb_rc = framebuffer_unblank(fb_fd);
+        write_backlight_power(FB_BLANK_UNBLANK);
+        write_brightness(restore);
         ui->blanked = 0;
-        ui_log("[ui] BLANK off (restored brightness=%d)\n", ui->saved_brightness);
+        if (was_blanked)
+            ui_log("[ui] BLANK off (restored brightness=%d fb_unblank=%d)\n",
+                   restore, fb_rc);
     }
 }
 
@@ -792,6 +829,15 @@ static int process_touch_event(ui_state_t *ui, struct input_event *ev) {
  * harmless (worst case: one frame of stale content). */
 static ui_state_t g_ui;
 static volatile int g_ui_active = 0;
+/* -1 = no pending stock FBIOBLANK event, 0 = unblank, 1 = blank. The ioctl
+ * hook may run on hiby_player's render thread, so it only publishes this tiny
+ * state change; the UI thread performs framebuffer and sysfs work. */
+static volatile int g_pending_fb_blank = -1;
+
+void ui_notify_fb_blank(int blanked) {
+    if (!g_ui_active) return;
+    g_pending_fb_blank = blanked ? 1 : 0;
+}
 
 /* Render cache lock. The render/pan thread (hiby_player's render thread OR our
  * event-loop manual pan, both via the ioctl hook → ui_draw_frame) holds this
@@ -831,6 +877,7 @@ void ui_draw_frame(uint16_t *buf) {
 int ui_run(uint16_t *fb, int fb_fd) {
     ui_state_t *ui = &g_ui;
     memset(ui, 0, sizeof(*ui));
+    g_pending_fb_blank = -1;
     renderer_init(&ui->rend, fb, fb_fd);
     ui->screen = SCREEN_HOME;
     ui->home_selected = 0;
@@ -929,6 +976,13 @@ int ui_run(uint16_t *fb, int fb_fd) {
         timeout.tv_usec = 20000;  /* 20ms — short so we can pan promptly */
         int rv = select(maxfd + 1, &rfds, NULL, NULL, &timeout);
         uint64_t now = now_ms();
+        int pending_fb_blank = g_pending_fb_blank;
+        if (pending_fb_blank >= 0) {
+            g_pending_fb_blank = -1;
+            set_blanked(ui, pending_fb_blank, fb_fd);
+            ui_log("[ui] stock FBIOBLANK converted to %s\n",
+                   pending_fb_blank ? "lightweight blank" : "wake");
+        }
         /* Periodically sync blank state and reopen dead key fds */
         if (now - last_blank_sync >= 1000) {
             last_blank_sync = now;
@@ -988,10 +1042,14 @@ int ui_run(uint16_t *fb, int fb_fd) {
                                ev.code, ev.code, ev.value, ui->key_fds[i],
                                (unsigned long long)now_ms());
                     }
-                    /* Any key press (except power, which toggles) wakes the
-                     * screen if it is dark — matches stock player behavior. */
-                    if (ev.value == 1 && ev.code != KEY_POWER && ui->blanked) {
-                        set_blanked(ui, 0, fb_fd);
+                    /* Every non-power key performs an idempotent framebuffer
+                     * wake before its normal action. This also recovers a hard
+                     * blank whose brightness value stayed nonzero. */
+                    if (ev.value == 1 && ev.code != KEY_POWER) {
+                        if (ui->blanked)
+                            set_blanked(ui, 0, fb_fd);
+                        else
+                            framebuffer_unblank(fb_fd);
                     }
                     /* The R1 driver does not reliably emit value=2 repeats.
                      * Track volume down/up ourselves and let the event-loop
@@ -1067,13 +1125,25 @@ int ui_run(uint16_t *fb, int fb_fd) {
             last_pan = now;
             vinfo.yoffset = (vinfo.yoffset == 0) ? vinfo.yres : 0;
             /* This ioctl goes through our hook → draws UI → real pan */
-            ioctl(fb_fd, FBIOPAN_DISPLAY, &vinfo);
+            if (ioctl(fb_fd, FBIOPAN_DISPLAY, &vinfo) < 0
+                && errno == EBUSY) {
+                /* A hard FBIOBLANK makes pan return EBUSY while brightness
+                 * may still report a nonzero value. Convert it to our
+                 * lightweight blank so the next power press or double-tap
+                 * reliably wakes the panel. */
+                ui_log("[ui] hard blank detected from pan EBUSY\n");
+                set_blanked(ui, 1, fb_fd);
+            }
         } else if (!can_pan && fb_fd >= 0 && (now - last_pan) >= PAN_INTERVAL_MS) {
             /* Single-buffer: still call FBIOPAN_DISPLAY (no-op pan) so
              * the ioctl hook fires and draws our UI. */
             last_pan = now;
             vinfo.yoffset = 0;
-            ioctl(fb_fd, FBIOPAN_DISPLAY, &vinfo);
+            if (ioctl(fb_fd, FBIOPAN_DISPLAY, &vinfo) < 0
+                && errno == EBUSY) {
+                ui_log("[ui] hard blank detected from pan EBUSY\n");
+                set_blanked(ui, 1, fb_fd);
+            }
         }
 
         /* Pre-warm ONE list thumbnail per tick. draw_list (run inside the pan

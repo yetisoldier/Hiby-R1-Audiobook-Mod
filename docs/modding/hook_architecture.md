@@ -190,6 +190,28 @@ on power press or touchscreen double-tap. Restoring to 50 wakes. No
 `FBIOBLANK`, no suspend, ADB survives. This is exactly the control path
 `hiby_player` itself uses for the backlight sysfs node.
 
+Stock idle handling can still request `FBIOBLANK` while the audiobook UI owns
+the display. A hard blank leaves brightness reporting its previous nonzero
+value, so brightness-only state tracking cannot tell that the panel is off.
+Audio and hardware controls continue working, but the framebuffer refuses
+`FBIOPAN_DISPLAY` with `EBUSY` and the screen may appear permanently black.
+
+The hook prevents that split state in three layers:
+
+1. While audiobook mode is active, stock hard-blank requests are intercepted
+   and published to the UI event loop as lightweight blank requests.
+2. Every media or volume key performs an idempotent framebuffer unblank before
+   its normal action.
+3. An `EBUSY` pan is treated as a missed hard blank. The UI unblanks the
+   framebuffer, turns only the backlight off, and records the screen as
+   blanked. One power press or a double-tap can then wake it normally.
+
+The framebuffer unblank uses a direct `SYS_ioctl` call so it does not recurse
+through the preload hook. No monitor thread or extra allocation is involved.
+On-device stress testing forced 30 hard blanks in succession; all converted
+and woke with one power press while RSS, thread count, and descriptor count
+remained unchanged.
+
 ## Render coordinates
 
 The R1 framebuffer is 480x800, RGB565, stride 960 bytes (480 px * 2 B):

@@ -285,6 +285,11 @@ int ui_run(uint16_t *fb, int fb_fd);
  * offset by yoffset). Clears the buffer then draws the current screen. */
 void ui_draw_frame(uint16_t *buf);
 
+/* Called by the LD_PRELOAD ioctl hook when stock hiby_player requests
+ * FBIOBLANK while the audiobook UI is active. The event loop converts hard
+ * display power-down into the app's lightweight backlight-only blank. */
+void ui_notify_fb_blank(int blanked);
+
 /* Touch event handlers (called from event loop). */
 int ui_handle_tap(ui_state_t *ui, int x, int y);
 int ui_handle_swipe(ui_state_t *ui, int dx, int dy);

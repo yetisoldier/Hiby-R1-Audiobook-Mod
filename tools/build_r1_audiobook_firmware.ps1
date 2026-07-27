@@ -131,6 +131,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$repoRoot = Split-Path -Parent $PSScriptRoot
 
 # Resolve Python: on Windows, the "python" stub in WindowsApps may not work.
 # Use the py launcher (which finds the real install) as a fallback.
@@ -403,15 +404,18 @@ if ($IncludeAudiobookNativeApp) {
     Copy-Item -Force -LiteralPath $nativeAppSource -Destination $nativeAppDest
     Write-Host ("Installed native app: {0} ({1} bytes)" -f $nativeAppDest, (Get-Item -LiteralPath $nativeAppSource).Length)
 
-    # Install the LD_PRELOAD hook library for in-process audiobook UI.
-    $hookLibSource = "work\native-app\libaudiobook_hook.so"
-    if (Test-Path -LiteralPath $hookLibSource) {
-        $hookLibDest = Join-Path $rootTree "usr\lib\libaudiobook_hook.so"
-        Copy-Item -Force -LiteralPath $hookLibSource -Destination $hookLibDest
-        Write-Host ("Installed hook lib: {0} ({1} bytes)" -f $hookLibDest, (Get-Item -LiteralPath $hookLibSource).Length)
-    } else {
-        Write-Host ("WARNING: hook lib not found at {0} - supervisor will run without LD_PRELOAD" -f $hookLibSource)
+    # Rebuild the preload hook from the current source on every native-app
+    # firmware build. Packaging a stale library can otherwise produce a valid
+    # update file that silently omits the latest fixes.
+    $hookBuildScript = Join-Path $PSScriptRoot "build_r1_audiobook_hook.ps1"
+    $hookLibSource = Join-Path $repoRoot "work\native-app\libaudiobook_hook.so"
+    & $hookBuildScript -OutFile $hookLibSource
+    if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $hookLibSource)) {
+        throw "Audiobook hook build failed: $hookLibSource"
     }
+    $hookLibDest = Join-Path $rootTree "usr\lib\libaudiobook_hook.so"
+    Copy-Item -Force -LiteralPath $hookLibSource -Destination $hookLibDest
+    Write-Host ("Built and installed hook lib: {0} ({1} bytes)" -f $hookLibDest, (Get-Item -LiteralPath $hookLibSource).Length)
 }
 
 # Stock firmware ships the ADB startup helper as T90adb, but rcS only runs

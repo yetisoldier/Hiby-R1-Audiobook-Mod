@@ -180,6 +180,42 @@ Use this only for development recovery. The stock wrapper reboots the device
 when `hiby_player` exits, so the helper stops the wrapper before forcing a
 restart and records the local holder PID under `work\adb-control`.
 
+## Framebuffer Blank/Wake Test
+
+`r1_fb_blank_ctl` reproduces the panel-power state where audio keeps playing
+but framebuffer pans fail with `EBUSY`. It is a development helper and is not
+installed in release firmware.
+
+Build and push it:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File tools\build_r1_fb_blank_ctl.ps1
+
+adb -s ingenic_2233 push `
+  work\fb-blank-test\r1_fb_blank_ctl /tmp/r1_fb_blank_ctl
+adb -s ingenic_2233 shell chmod 755 /tmp/r1_fb_blank_ctl
+```
+
+With an audiobook playing, force a hard blank:
+
+```powershell
+adb -s ingenic_2233 shell /tmp/r1_fb_blank_ctl blank
+```
+
+The audiobook UI should convert it to a lightweight blank within one pan tick.
+`brightness` should read `0`, and one power press or a touchscreen double-tap
+should restore the saved brightness. The helper can always issue a direct
+development recovery unblank:
+
+```powershell
+adb -s ingenic_2233 shell /tmp/r1_fb_blank_ctl unblank
+```
+
+For syscall-level diagnosis, attach `strace` to `hiby_player` and look for an
+`FBIOPAN_DISPLAY = -1 EBUSY` followed by `FBIOBLANK, 0`. Do not leave `strace`
+attached during normal playback; it adds substantial scheduling overhead.
+
 ## Launcher And List Navigation
 
 From the main launcher:

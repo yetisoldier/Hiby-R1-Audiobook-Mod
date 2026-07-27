@@ -263,6 +263,19 @@ int ioctl(int fd, unsigned long request, ...) {
                arg ? ((struct fb_var_screeninfo*)arg)->yoffset : -1);
     }
 
+    /* Stock hiby_player's idle path may hard-blank fb0 independently of the
+     * audiobook UI. That leaves audio and hardware controls alive but powers
+     * down the panel/touch path. While Audiobooks owns the screen, convert the
+     * request into our lightweight backlight-only blank. */
+    if (audiobook_mode && request == FBIOBLANK) {
+        int blank = (int)(intptr_t)arg;
+        ui_notify_fb_blank(blank != FB_BLANK_UNBLANK);
+        logmsg("[hook] FBIOBLANK intercepted value=%d action=%s\n",
+               blank, blank == FB_BLANK_UNBLANK ? "unblank" : "lightweight");
+        if (blank != FB_BLANK_UNBLANK)
+            return 0;
+    }
+
     if (audiobook_mode && g_fb && request == FBIOPAN_DISPLAY && arg) {
         struct fb_var_screeninfo *vinfo = (struct fb_var_screeninfo *)arg;
         int yoffset = vinfo->yoffset;
