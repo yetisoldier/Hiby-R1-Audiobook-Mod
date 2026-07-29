@@ -1587,6 +1587,20 @@ static int handle_settings_touch(ui_state_t *ui, int x, int y) {
     return 1;
 }
 
+
+/* Wall-clock conversion for the "Times follow speed" setting.
+ *
+ * Book positions are stored in book time. At 1.5x an hour of book takes forty
+ * minutes to hear, so a listener asking "how much is left" wants the forty, not
+ * the sixty. Dividing by the speed converts book time to real time; with the
+ * setting off, callers use the raw value and nothing changes. */
+static int64_t speed_scaled_ms(const ui_state_t *ui, int64_t ms) {
+    if (!ui->settings_val[SETTING_SPEED_ADJUSTS_TIME]) return ms;
+    int permille = player_get_speed();
+    if (permille <= 0) return ms;
+    return ms * 1000 / permille;
+}
+
 /* ---- Screen drawing: List ---------------------------------------------- */
 
 /* list_item_t is defined in ui.h (shared with the render cache). */
@@ -2544,9 +2558,12 @@ static void draw_now_playing(ui_state_t *ui) {
         total_ms = ui->scrub_total_ms;
     }
 
-    render_text(r, 16, y, "Position:", FONT_SCALE_1, COL_GRAY_LT);
+    render_text(r, 16, y,
+                ui->settings_val[SETTING_SPEED_ADJUSTS_TIME] ? "Listened:"
+                                                             : "Position:",
+                FONT_SCALE_1, COL_GRAY_LT);
     y += 30;
-    render_time(r, 16, y, pos_ms, FONT_SCALE_3, COL_WHITE);
+    render_time(r, 16, y, speed_scaled_ms(ui, pos_ms), FONT_SCALE_3, COL_WHITE);
     y += 70;
 
     /* Progress bar with a draggable handle at the current position. Pressing
@@ -2569,13 +2586,24 @@ static void draw_now_playing(ui_state_t *ui) {
         y += 18;
 
         /* Time labels */
-        render_time(r, 16, y, pos_ms, FONT_SCALE_1, COL_GRAY_LT);
+        render_time(r, 16, y, speed_scaled_ms(ui, pos_ms), FONT_SCALE_1,
+                    COL_GRAY_LT);
         {
             char dur_buf[32];
-            int tsec = (int)(total_ms / 1000);
+            /* With the setting on the right-hand figure becomes time left at
+             * the current speed, which is the number a listener is actually
+             * asking for; with it off it stays the book's total duration. */
+            int64_t right_ms = total_ms;
+            const char *pfx = "";
+            if (ui->settings_val[SETTING_SPEED_ADJUSTS_TIME]) {
+                right_ms = speed_scaled_ms(ui, total_ms - pos_ms);
+                if (right_ms < 0) right_ms = 0;
+                pfx = "-";
+            }
+            int tsec = (int)(right_ms / 1000);
             int th = tsec / 3600, tm = (tsec % 3600) / 60;
-            if (th > 0) snprintf(dur_buf, sizeof(dur_buf), "%d:%02d:%02d", th, tm, tsec % 60);
-            else snprintf(dur_buf, sizeof(dur_buf), "%d:%02d", tm, tsec % 60);
+            if (th > 0) snprintf(dur_buf, sizeof(dur_buf), "%s%d:%02d:%02d", pfx, th, tm, tsec % 60);
+            else snprintf(dur_buf, sizeof(dur_buf), "%s%d:%02d", pfx, tm, tsec % 60);
             render_text_right(r, RENDER_FB_W - 18, y, dur_buf,
                              FONT_SCALE_1, COL_GRAY_LT);
         }
