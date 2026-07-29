@@ -76,6 +76,7 @@ typedef enum {
     HOME_FOLDERS,
     HOME_FINISHED,
     HOME_REFRESH,
+    HOME_SETTINGS,
     HOME_BACK,
     HOME_ITEM_COUNT
 } home_item_t;
@@ -88,6 +89,7 @@ static const char *home_labels[HOME_ITEM_COUNT] = {
     "Folders",
     "Finished",
     "Refresh Library",
+    "Settings",
     "Back to Menu",
 };
 
@@ -98,6 +100,7 @@ static void draw_list(ui_state_t *ui);
 static void draw_detail(ui_state_t *ui);
 static void draw_now_playing(ui_state_t *ui);
 static void draw_bookmarks(ui_state_t *ui);
+static void draw_settings(ui_state_t *ui);
 static void draw_chapters(ui_state_t *ui);
 static void draw_volume_overlay(ui_state_t *ui);
 
@@ -183,6 +186,7 @@ static int handle_list_touch(ui_state_t *ui, int x, int y);
 static int handle_detail_touch(ui_state_t *ui, int x, int y);
 static int handle_now_playing_touch(ui_state_t *ui, int x, int y);
 static int handle_bookmarks_touch(ui_state_t *ui, int x, int y);
+static int handle_settings_touch(ui_state_t *ui, int x, int y);
 static int handle_chapters_touch(ui_state_t *ui, int x, int y);
 static int handle_bookmarks_longpress(ui_state_t *ui, int x, int y);
 
@@ -863,6 +867,7 @@ void ui_draw_frame(uint16_t *buf) {
     render_clear(&g_ui.rend);
     switch (g_ui.screen) {
         case SCREEN_HOME:       draw_home(&g_ui); break;
+        case SCREEN_SETTINGS:   draw_settings(&g_ui); break;
         case SCREEN_LIST:       draw_list(&g_ui); break;
         case SCREEN_DETAIL:     draw_detail(&g_ui); break;
         case SCREEN_NOW_PLAYING: draw_now_playing(&g_ui); break;
@@ -891,6 +896,10 @@ int ui_run(uint16_t *fb, int fb_fd) {
         return -1;
     }
     ui_log("[ui] DB opened, starting event loop\n");
+
+    /* Load user settings before the first frame so the opening screen already
+     * reflects them rather than flipping a frame later. */
+    ui_settings_load(ui, ui->db);
 
     /* Build the initial screen's render cache (HOME) before enabling the draw
      * hook, so the first frame the render thread draws has valid data. */
@@ -1003,7 +1012,13 @@ int ui_run(uint16_t *fb, int fb_fd) {
             if (ui->input_fd >= 0 && FD_ISSET(ui->input_fd, &rfds)) {
                 struct input_event ev;
                 while (read(ui->input_fd, &ev, sizeof(ev)) == sizeof(ev)) {
-                    if (ui->blanked) {
+                    if (ui->blanked
+                        && ui->settings_val[SETTING_LOCK_DISABLE_TOUCH]) {
+                        /* "Lock disables touch": read and discard so nothing
+                         * queues up against our grab and replays on wake, but
+                         * act on none of it. Power key is then the only way
+                         * back. */
+                    } else if (ui->blanked) {
                         /* While blanked, don't navigate on taps; watch for a
                          * double-tap (two finger-ups within 350ms) to wake. */
                         int is_up = 0;
@@ -1289,6 +1304,7 @@ static void navigate_back(ui_state_t *ui) {
 int ui_handle_tap(ui_state_t *ui, int x, int y) {
     switch (ui->screen) {
         case SCREEN_HOME:       return handle_home_touch(ui, x, y);
+        case SCREEN_SETTINGS:   return handle_settings_touch(ui, x, y);
         case SCREEN_LIST:       return handle_list_touch(ui, x, y);
         case SCREEN_DETAIL:     return handle_detail_touch(ui, x, y);
         case SCREEN_NOW_PLAYING: return handle_now_playing_touch(ui, x, y);
@@ -1466,10 +1482,108 @@ static int handle_home_touch(ui_state_t *ui, int x, int y) {
             }
             break;
         }
+        case HOME_SETTINGS:
+            ui->settings_selected = 0;
+            navigate_to(ui, SCREEN_SETTINGS, ui->list_mode, 0);
+            break;
         case HOME_BACK:
             if (!ui->refresh_scanning) ui->running = 0;
             break;
     }
+    return 1;
+}
+
+
+/* ---- Screen drawing: Settings ------------------------------------------
+ *
+ * Three toggles, persisted in the same SQLite settings table playback_speed
+ * already uses. Each defaults to 0, i.e. exactly how the app behaved before
+ * the setting existed, so an upgrade changes nothing until it is asked to.
+ *
+ * The values are cached in ui_state_t because the render thread must not do
+ * database I/O; the DB is touched only when a row is tapped. */
+
+static const char *const settings_keys[SETTING_COUNT] = {
+    "lock_disable_touch",
+    "player_progress_bars",
+    "speed_adjusts_time",
+};
+
+static const char *const settings_labels[SETTING_COUNT] = {
+    "Lock disables touch",
+    "Chapter & book progress",
+    "Times follow speed",
+};
+
+/* Second line under each label: these settings are not self-explanatory from
+ * three words, and the screen is the only place they are documented. */
+static const char *const settings_help[SETTING_COUNT] = {
+    "No double-tap wake; power key only",
+    "Show both bars in Now Playing",
+    "Scale elapsed and remaining",
+};
+
+void ui_settings_load(ui_state_t *ui, sqlite3 *db) {
+    for (int i = 0; i < SETTING_COUNT; i++) {
+        char buf[16];
+        ui->settings_val[i] = 0;
+        if (db && audiobook_get_setting(db, settings_keys[i], buf, sizeof(buf)) == 0)
+            ui->settings_val[i] = (atoi(buf) != 0);
+    }
+}
+
+static void settings_toggle(ui_state_t *ui, int idx) {
+    if (idx < 0 || idx >= SETTING_COUNT) return;
+    ui->settings_val[idx] = !ui->settings_val[idx];
+    if (ui->db) {
+        char buf[4];
+        snprintf(buf, sizeof(buf), "%d", ui->settings_val[idx]);
+        audiobook_set_setting(ui->db, settings_keys[idx], buf);
+    }
+    ui_log("[ui] setting %s = %d\n", settings_keys[idx], ui->settings_val[idx]);
+}
+
+#define SETTINGS_ITEM_H 82
+
+static void draw_settings(ui_state_t *ui) {
+    renderer_t *r = &ui->rend;
+
+    render_text(r, 18, 16, "Settings", FONT_SCALE_2, COL_WHITE);
+    render_draw_hline(r, 0, TITLE_BAR_H - 1, RENDER_FB_W, COL_DIVIDER);
+
+    int y = TITLE_BAR_H;
+    for (int i = 0; i < SETTING_COUNT; i++) {
+        if (i == ui->settings_selected)
+            render_fill_rect(r, 0, y, 4, SETTINGS_ITEM_H, COL_ACCENT);
+
+        render_text(r, 24, y + 16, settings_labels[i], FONT_SCALE_2, COL_WHITE);
+        render_text(r, 24, y + 48, settings_help[i], FONT_SCALE_1, COL_GRAY_LT);
+
+        /* A filled pill reads as on/off at a glance on a 480px panel, where a
+         * tick box would be a few pixels of detail. */
+        int on = ui->settings_val[i];
+        int pw = 56, ph = 28;
+        int px = RENDER_FB_W - 24 - pw, py = y + 22;
+        render_fill_rect(r, px, py, pw, ph, on ? COL_ACCENT : COL_GRAY_DK);
+        render_fill_rect(r, on ? px + pw - ph : px, py, ph, ph, COL_WHITE);
+
+        y += SETTINGS_ITEM_H;
+        render_draw_hline(r, 0, y, RENDER_FB_W, COL_DIVIDER);
+    }
+
+    render_text(r, 24, RENDER_FB_H - 40, "Back", FONT_SCALE_2, COL_GRAY_LT);
+}
+
+static int handle_settings_touch(ui_state_t *ui, int x, int y) {
+    (void)x;
+    if (y < TITLE_BAR_H) { navigate_back(ui); return 1; }
+
+    if (y >= RENDER_FB_H - 56) { navigate_back(ui); return 1; }
+
+    int idx = (y - TITLE_BAR_H) / SETTINGS_ITEM_H;
+    if (idx < 0 || idx >= SETTING_COUNT) return 0;
+    ui->settings_selected = idx;
+    settings_toggle(ui, idx);
     return 1;
 }
 
@@ -1895,6 +2009,9 @@ static void rebuild_screen(ui_state_t *ui) {
         case SCREEN_NOW_PLAYING: rebuild_current_book(ui, 1); break;
         case SCREEN_BOOKMARKS:   rebuild_bookmarks(ui); break;
         case SCREEN_CHAPTERS:    rebuild_chapters(ui); break;
+        /* Settings draws from ui->settings_val, which is loaded once at startup
+         * and updated in place on tap, so there is no cache to rebuild. */
+        case SCREEN_SETTINGS:    break;
     }
 }
 

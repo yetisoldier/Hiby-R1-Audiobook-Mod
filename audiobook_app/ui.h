@@ -27,7 +27,19 @@ typedef enum {
     SCREEN_NOW_PLAYING,
     SCREEN_BOOKMARKS,
     SCREEN_CHAPTERS,
+    SCREEN_SETTINGS,
 } ui_screen_t;
+
+/* ---- User settings ------------------------------------------------------
+ * Persisted in the same SQLite settings table as playback_speed, and cached
+ * here so the render thread never touches the database. Every one defaults to
+ * 0, which is the behaviour the app had before they existed. */
+typedef enum {
+    SETTING_LOCK_DISABLE_TOUCH = 0,  /* blanked screen ignores touch entirely */
+    SETTING_PROGRESS_BARS,           /* chapter + book bars in Now Playing */
+    SETTING_SPEED_ADJUSTS_TIME,      /* elapsed/remaining follow playback speed */
+    SETTING_COUNT
+} ui_setting_t;
 
 /* List view modes (what SCREEN_LIST shows) */
 typedef enum {
@@ -131,6 +143,8 @@ typedef struct {
 
     /* Home screen selection */
     int home_selected;
+    int settings_selected;
+    int settings_val[SETTING_COUNT];
 
     /* Current book for detail/now-playing */
     int current_book_id;
@@ -278,6 +292,10 @@ typedef struct {
  * The event loop reads touch but does NOT draw — the ioctl hook in hook.c
  * calls ui_draw_frame() on every hiby_player frame to render the UI. */
 int ui_run(uint16_t *fb, int fb_fd);
+
+/* Load the persisted user settings into ui->settings_val. Called once at
+ * startup; the screen updates the cache in place thereafter. */
+void ui_settings_load(ui_state_t *ui, sqlite3 *db);
 
 /* Draw the current screen to a specific framebuffer buffer.
  * Called from the ioctl hook (in hiby_player's render thread) on every
