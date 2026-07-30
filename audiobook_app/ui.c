@@ -211,6 +211,7 @@ static void rebuild_home(ui_state_t *ui);
 static void rebuild_list(ui_state_t *ui);
 static void rebuild_current_book(ui_state_t *ui, int with_cover);
 static void rebuild_cur_prog(ui_state_t *ui);
+static void refresh_chapter_cache(ui_state_t *ui);
 static void rebuild_bookmarks(ui_state_t *ui);
 static void rebuild_chapters(ui_state_t *ui);
 static void rebuild_screen(ui_state_t *ui);
@@ -1183,6 +1184,15 @@ int ui_run(uint16_t *fb, int fb_fd) {
             g_progress_dirty = 0;
             rebuild_cur_prog(ui);
             rebuild_home(ui);
+        } else if (ui->screen == SCREEN_NOW_PLAYING &&
+                   ui->settings_val[SETTING_PROGRESS_BARS]) {
+            /* The chapter bar needs bounds for the chapter being played, and
+             * rebuild_cur_prog only runs when the player saves progress — up to
+             * a minute apart, and never at all in the moments after entering
+             * this screen, when the snapshot is still empty. Refresh here
+             * instead; the staleness test inside means the DB is only queried
+             * when playback actually crosses into a different chapter. */
+            refresh_chapter_cache(ui);
         }
 
         int scan_rc = -1;
@@ -1954,14 +1964,124 @@ static void rebuild_current_book(ui_state_t *ui, int with_cover) {
 
 /* Progress-only refresh of the current-book cache (used on g_progress_dirty
  * ticks — the cover and book metadata don't change, so skip the decode). */
+/* Collector for the current track's duration: the snapshot carries a track_id
+ * and a position within the track, but not the track's length, and the chapter
+ * bar needs all three. */
+typedef struct { int want_id; int64_t dur_ms; } track_dur_ctx_t;
+
+static int track_dur_cb(const audiobook_track_t *t, void *ctx) {
+    track_dur_ctx_t *c = ctx;
+    if (t->track_id == c->want_id) c->dur_ms = t->duration_ms;
+    return 0;
+}
+
+/* Find the chapter containing a position within a track. */
+typedef struct {
+    int     want_track;
+    int64_t pos_ms;
+    int64_t start_ms, end_ms;
+    int     found;
+} chap_at_ctx_t;
+
+static int chap_at_cb(const audiobook_chapter_t *ch, void *ctx) {
+    chap_at_ctx_t *c = ctx;
+    if (c->found) return 0;
+    if (ch->track_id != c->want_track) return 0;
+    if (c->pos_ms >= ch->start_ms && (ch->end_ms <= 0 || c->pos_ms < ch->end_ms)) {
+        c->start_ms = ch->start_ms;
+        c->end_ms = ch->end_ms;
+        c->found = 1;
+    }
+    return 0;
+}
+
+
+/* Keep ui->cur_chap_* pointing at the chapter now playing.
+ *
+ * Split out of rebuild_cur_prog so the event loop can call it every tick while
+ * Now Playing is on screen: that function also re-reads progress from the DB
+ * and is far too heavy to run per tick, but the chapter bounds are needed
+ * promptly or the bar sits empty. The staleness test does the real work — the
+ * chapters query only runs when playback has actually left the cached range. */
+static void refresh_chapter_cache(ui_state_t *ui) {
+    if (ui->current_book_id <= 0) return;
+
+    player_snapshot_t snap;
+    player_get_snapshot(&snap);
+    if (snap.track_id <= 0 || snap.book_id != ui->current_book_id) return;
+
+    int64_t tpos = snap.track_position_ms;
+    if (ui->cur_chap_track_id == snap.track_id &&
+        ui->cur_chap_end_ms > ui->cur_chap_start_ms &&
+        tpos >= ui->cur_chap_start_ms && tpos < ui->cur_chap_end_ms)
+        return;   /* still inside the cached chapter */
+
+    chap_at_ctx_t c;
+    memset(&c, 0, sizeof(c));
+    c.want_track = snap.track_id;
+    c.pos_ms = tpos;
+    audiobook_get_chapters(ui->db, ui->current_book_id, chap_at_cb, &c);
+    if (!c.found) return;
+
+    int64_t end = c.end_ms > c.start_ms ? c.end_ms
+                  : ((ui->cur_track_dur_id == snap.track_id) ? ui->cur_track_dur_ms : 0);
+
+    pthread_mutex_lock(&g_cache_lock);
+    ui->cur_chap_track_id = snap.track_id;
+    ui->cur_chap_start_ms = c.start_ms;
+    ui->cur_chap_end_ms = end;
+    pthread_mutex_unlock(&g_cache_lock);
+}
+
 static void rebuild_cur_prog(ui_state_t *ui) {
     audiobook_progress_t p;
     int pok = 0;
     memset(&p, 0, sizeof(p));
     if (ui->current_book_id > 0)
         pok = (audiobook_get_progress(ui->db, ui->current_book_id, &p) > 0);
+
+    /* Refresh the cached track length only when the engine has moved to a
+     * different track — this walks the book's tracks, so it is not something to
+     * do on every rebuild, let alone every frame. */
+    player_snapshot_t snap;
+    player_get_snapshot(&snap);
+    int64_t tdur = ui->cur_track_dur_ms;
+    int tid = ui->cur_track_dur_id;
+    if (snap.track_id > 0 && snap.track_id != tid && ui->current_book_id > 0) {
+        track_dur_ctx_t c = { snap.track_id, 0 };
+        audiobook_get_tracks(ui->db, ui->current_book_id, track_dur_cb, &c);
+        tid = snap.track_id;
+        tdur = c.dur_ms;
+    }
+
+    /* Chapter bounds, re-queried only when playback leaves the cached chapter —
+     * otherwise this would walk every chapter of the book on each progress
+     * save, which happens every few seconds. */
+    int     ctid  = ui->cur_chap_track_id;
+    int64_t cstart = ui->cur_chap_start_ms, cend = ui->cur_chap_end_ms;
+    int64_t tpos  = snap.track_position_ms;
+    int stale = (ctid != snap.track_id) || (cend <= cstart) ||
+                (tpos < cstart) || (tpos >= cend);
+    if (snap.track_id > 0 && ui->current_book_id > 0 && stale) {
+        chap_at_ctx_t c;
+        memset(&c, 0, sizeof(c));
+        c.want_track = snap.track_id;
+        c.pos_ms = tpos;
+        audiobook_get_chapters(ui->db, ui->current_book_id, chap_at_cb, &c);
+        ctid = snap.track_id;
+        cstart = c.found ? c.start_ms : 0;
+        /* A final chapter often has no end; fall back to the track length so
+         * the bar still has a scale. */
+        cend = c.found ? (c.end_ms > c.start_ms ? c.end_ms : tdur) : 0;
+    }
+
     pthread_mutex_lock(&g_cache_lock);
     ui->cur_prog = p; ui->cur_prog_ok = pok;
+    ui->cur_track_dur_id = tid;
+    ui->cur_track_dur_ms = tdur;
+    ui->cur_chap_track_id = ctid;
+    ui->cur_chap_start_ms = cstart;
+    ui->cur_chap_end_ms = cend;
     pthread_mutex_unlock(&g_cache_lock);
 }
 
@@ -2020,7 +2140,13 @@ static void rebuild_screen(ui_state_t *ui) {
         case SCREEN_HOME:        rebuild_home(ui); break;
         case SCREEN_LIST:        rebuild_list(ui); break;
         case SCREEN_DETAIL:      rebuild_current_book(ui, 1); break;
-        case SCREEN_NOW_PLAYING: rebuild_current_book(ui, 1); break;
+        case SCREEN_NOW_PLAYING:
+            rebuild_current_book(ui, 1);
+            /* Also prime the progress/chapter cache. Without this the chapter
+             * bar stays blank on entry and only appears once the player
+             * happens to save progress, which can be tens of seconds. */
+            rebuild_cur_prog(ui);
+            break;
         case SCREEN_BOOKMARKS:   rebuild_bookmarks(ui); break;
         case SCREEN_CHAPTERS:    rebuild_chapters(ui); break;
         /* Settings draws from ui->settings_val, which is loaded once at startup
@@ -2558,17 +2684,69 @@ static void draw_now_playing(ui_state_t *ui) {
         total_ms = ui->scrub_total_ms;
     }
 
-    render_text(r, 16, y,
-                ui->settings_val[SETTING_SPEED_ADJUSTS_TIME] ? "Listened:"
-                                                             : "Position:",
-                FONT_SCALE_1, COL_GRAY_LT);
-    y += 30;
+    /* With the bars on, the "Chapter" and "Book" captions below already say
+     * what each figure is, and the two extra rows have to come from somewhere —
+     * so this header and part of the gap under the clock are given up rather
+     * than letting the screen overflow into the transport buttons. */
+    int bars_on = ui->settings_val[SETTING_PROGRESS_BARS] && engine_live;
+    if (!bars_on) {
+        render_text(r, 16, y,
+                    ui->settings_val[SETTING_SPEED_ADJUSTS_TIME] ? "Listened:"
+                                                                 : "Position:",
+                    FONT_SCALE_1, COL_GRAY_LT);
+        y += 30;
+    }
     render_time(r, 16, y, speed_scaled_ms(ui, pos_ms), FONT_SCALE_3, COL_WHITE);
-    y += 70;
+    y += bars_on ? 56 : 70;
 
     /* Progress bar with a draggable handle at the current position. Pressing
      * the handle (handle_now_playing_down) starts a scrub; the handle follows
      * the finger and the seek commits on release. */
+    /* Optional chapter bar, drawn above the book bar so the pair reads
+     * chapter-then-book, matching how a listener thinks about position. */
+    if (bars_on) {
+        /* No locking here: draw_now_playing already holds g_cache_lock for the
+         * whole draw, and it is a normal, non-recursive mutex — taking it again
+         * deadlocks the render thread against itself while the audio thread
+         * plays happily on, which is precisely how this first showed up. */
+        int64_t tpos = snap.track_position_ms;
+        int64_t tdur = (ui->cur_track_dur_id == snap.track_id)
+                       ? ui->cur_track_dur_ms : 0;
+
+        /* Prefer real chapter bounds: most audiobooks are one .m4b with
+         * embedded chapters, where track length is the whole book and would
+         * duplicate the bar below. Fall back to the track for multi-file books
+         * that carry no chapter marks, where a file is effectively a chapter. */
+        int64_t cstart = 0, clen = 0, cpos = 0;
+        if (ui->cur_chap_track_id == snap.track_id &&
+            ui->cur_chap_end_ms > ui->cur_chap_start_ms) {
+            cstart = ui->cur_chap_start_ms;
+            clen = ui->cur_chap_end_ms - cstart;
+            cpos = tpos - cstart;
+        } else if (tdur > 0 && tdur < total_ms) {
+            clen = tdur;
+            cpos = tpos;
+        }
+
+        if (clen > 0) {
+            int64_t tdur_unused = tdur; (void)tdur_unused;
+            tpos = cpos; tdur = clen;
+            double cfrac = (double)tpos / (double)tdur;
+            if (cfrac < 0) cfrac = 0;
+            if (cfrac > 1) cfrac = 1;
+            render_text(r, 16, y, "Chapter", FONT_SCALE_1, COL_GRAY_LT);
+            render_time(r, RENDER_FB_W - 96, y,
+                        speed_scaled_ms(ui, tdur - tpos), FONT_SCALE_1,
+                        COL_GRAY_LT);
+            y += 24;
+            render_progress_bar(r, 16, y, RENDER_FB_W - 32, 8, cfrac,
+                                COL_ORANGE, COL_GRAY_DK);
+            y += 22;
+            render_text(r, 16, y, "Book", FONT_SCALE_1, COL_GRAY_LT);
+            y += 24;
+        }
+    }
+
     if (total_ms > 0) {
         double frac = (double)pos_ms / (double)total_ms;
         if (frac < 0) frac = 0;

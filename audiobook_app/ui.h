@@ -146,6 +146,19 @@ typedef struct {
     int settings_selected;
     int settings_val[SETTING_COUNT];
 
+    /* Duration of the track the engine is on, cached by rebuild_cur_prog so
+     * draw_now_playing can size the chapter bar without touching the DB. */
+    int     cur_track_dur_id;    /* track_id the duration below belongs to */
+    int64_t cur_track_dur_ms;
+
+    /* Bounds of the chapter the engine is inside, in track time, cached by
+     * rebuild_cur_prog. Most audiobooks are a single .m4b with embedded
+     * chapters, so a chapter bar built only from track lengths would never
+     * appear for them. end <= start means "not known". */
+    int     cur_chap_track_id;
+    int64_t cur_chap_start_ms;
+    int64_t cur_chap_end_ms;
+
     /* Current book for detail/now-playing */
     int current_book_id;
 
