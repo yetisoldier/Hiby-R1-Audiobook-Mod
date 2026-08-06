@@ -1,0 +1,27 @@
+#!/bin/sh
+
+# An ADB shell is a child of adbd. Run the destructive half of this transition
+# in a detached worker so stopping adbd cannot terminate the script before it
+# creates the mass-storage gadget.
+if [ "${R1_USB_TRANSITION_CHILD:-0}" != "1" ]; then
+    transition_pid=/tmp/r1-usb-transition.pid
+    owner=$(cat $transition_pid 2>/dev/null)
+    if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
+        rm -f $transition_pid
+    fi
+    start-stop-daemon -S -b -m -p $transition_pid -x /bin/sh -- -c \
+        'sleep 1; R1_USB_TRANSITION_CHILD=1 /usr/bin/adboff >>/tmp/r1-usb-mode.log 2>&1; rc=$?; rm -f /tmp/r1-usb-transition.pid; exit $rc'
+    exit $?
+fi
+
+. /usr/bin/r1_usb_gadget_common.sh || exit 1
+
+if ! usb_lock; then
+    usb_log "mass-storage request rejected: USB transition already active"
+    exit 1
+fi
+trap usb_unlock EXIT INT TERM
+
+usb_log "mass storage requested"
+usb_start_mass_storage
+exit $?

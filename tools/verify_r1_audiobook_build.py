@@ -403,6 +403,13 @@ BOOT_ADB_FILE_MODE_CHECKS = {
     "squashfs-root/etc/init.d/S90adb": "-rwxr-xr-x",
 }
 
+USB_GADGET_FILE_MODE_CHECKS = {
+    "squashfs-root/usr/bin/r1_usb_gadget_common.sh": "-rwxr-xr-x",
+    # adbon/adboff are replaced stock paths and retain HiBy's stock 0775 mode.
+    "squashfs-root/usr/bin/adbon": "-rwxrwxr-x",
+    "squashfs-root/usr/bin/adboff": "-rwxrwxr-x",
+}
+
 DB_MAINT_FILE_MODE_CHECKS = {
     "squashfs-root/etc/init.d/S92audiobook_db_maint.sh": "-rwxr-xr-x",
     "squashfs-root/usr/bin/r1_audiobook_db_maint": "-rwxr-xr-x",
@@ -663,6 +670,9 @@ def verify(
             player,
             root / "usr/bin/hiby_player.sh",
             root / "usr/bin/r1_audiobook_app",
+            root / "usr/bin/r1_usb_gadget_common.sh",
+            root / "usr/bin/adbon",
+            root / "usr/bin/adboff",
             root / "usr/lib/libaudiobook_hook.so",
             root / "etc/r1_audiobook_version",
         ]
@@ -709,6 +719,7 @@ def verify(
         native_modes = {
             "squashfs-root/usr/bin/hiby_player.sh": "-rwxr-xr-x",
             "squashfs-root/usr/bin/r1_audiobook_app": "-rwxr-xr-x",
+            **USB_GADGET_FILE_MODE_CHECKS,
             "squashfs-root/usr/lib/libaudiobook_hook.so": "-rw-r--r--",
             "squashfs-root/etc/r1_audiobook_version": "-rw-r--r--",
         }
@@ -733,6 +744,11 @@ def verify(
             if require_boot_adb:
                 require("boot_adb=enabled" in marker_text,
                         "custom version marker records boot ADB enabled", failures)
+            else:
+                require("boot_adb=disabled" in marker_text,
+                        "custom version marker records boot ADB disabled", failures)
+            require("usb_gadget_scripts=hardened" in marker_text,
+                    "custom version marker records hardened USB scripts", failures)
             if expect_audiobook_launcher_icon:
                 require("launcher_icon=audiobook" in marker_text,
                         "custom version marker records audiobook launcher icon", failures)
@@ -747,6 +763,50 @@ def verify(
                         "custom version marker records USB DAC mode", failures)
         if expect_audiobook_launcher_icon:
             check_audiobook_launcher_icons(root, failures)
+
+        common_script = root / "usr/bin/r1_usb_gadget_common.sh"
+        adbon_script = root / "usr/bin/adbon"
+        adboff_script = root / "usr/bin/adboff"
+        if common_script.exists():
+            text = common_script.read_text(encoding="ascii", errors="replace")
+            require("\r" not in text, "USB gadget helper uses LF line endings", failures)
+            require("usb_unmount_sd_local" in text,
+                    "USB gadget helper guards SD unmount", failures)
+            require("usb_remove_mass_storage_gadget" in text,
+                    "USB gadget helper removes stale mass-storage state", failures)
+            require("refused mass-storage export" in text,
+                    "USB gadget helper refuses busy SD export", failures)
+            require('cat "$1/UDC"' in text,
+                    "USB gadget readiness reads configfs UDC value", failures)
+            require("usb_start_adb_direct" in text,
+                    "USB gadget helper has configfs-mounted ADB rollback", failures)
+            require("stock ADB start failed; using direct configfs fallback" in text,
+                    "USB gadget helper logs direct ADB rollback", failures)
+        if adbon_script.exists():
+            text = adbon_script.read_text(encoding="ascii", errors="replace")
+            require("usb_start_adb" in text, "adbon uses hardened transition", failures)
+        if adboff_script.exists():
+            text = adboff_script.read_text(encoding="ascii", errors="replace")
+            require("usb_start_mass_storage" in text,
+                    "adboff uses hardened transition", failures)
+            require("start-stop-daemon -S -b -m -p" in text,
+                    "adboff detaches before stopping its ADB transport", failures)
+
+        boot_adb_script = root / "etc/init.d/S90adb"
+        if require_boot_adb:
+            if boot_adb_script.exists():
+                text = boot_adb_script.read_text(encoding="ascii", errors="replace")
+                require("/usr/data/enable_boot_adb" in text,
+                        "development boot ADB requires explicit opt-in marker", failures)
+                require('[ "$(read_usb_working_mode)" = "1" ]' in text,
+                        "development boot ADB accepts Device mode only", failures)
+                require("sleep 20" in text,
+                        "development boot ADB waits for stock USB setup", failures)
+                require("start_adb_with_retries" not in text,
+                        "development boot ADB has no controller-stealing retry loop", failures)
+        else:
+            require(not boot_adb_script.exists(),
+                    "public build omits persistent boot ADB", failures)
 
         ota_dir_name = f"ota_v{expected_ota_version}"
         ota_update = out_dir / "ota-tree" / ota_dir_name / "ota_update.in"
@@ -782,7 +842,15 @@ def verify(
         print("\nNative-app verification passed.")
         return 0
 
-    required_paths = [upt, rootfs, player, root / "etc/init.d/S91audiobook_resume.sh"]
+    required_paths = [
+        upt,
+        rootfs,
+        player,
+        root / "etc/init.d/S91audiobook_resume.sh",
+        root / "usr/bin/r1_usb_gadget_common.sh",
+        root / "usr/bin/adbon",
+        root / "usr/bin/adboff",
+    ]
     if require_boot_adb:
         required_paths.append(root / "etc/init.d/S90adb")
     if require_db_maintenance:
@@ -847,6 +915,9 @@ def verify(
     if entries and stock_entries:
         require_stock_modes(entries, stock_entries, failures)
         require_all_root_owned(entries, failures)
+    for relative, expected_mode in USB_GADGET_FILE_MODE_CHECKS.items():
+        actual_mode = entries.get(relative, SquashfsEntry("", "")).mode
+        require(actual_mode == expected_mode, f"{relative} mode {actual_mode}", failures)
     for relative, expected_mode in NEW_FILE_MODE_CHECKS.items():
         actual_mode = entries.get(relative, SquashfsEntry("", "")).mode
         require(actual_mode == expected_mode, f"{relative} mode {actual_mode}", failures)
@@ -863,17 +934,18 @@ def verify(
             text = boot_adb_script.read_text(errors="replace")
             require("\r" not in text, "boot ADB wrapper uses LF line endings", failures)
             require("skip=1856" in text, "boot ADB wrapper reads USB working mode offset", failures)
-            require('0|1)' in text, "boot ADB wrapper accepts Auto and Device USB modes", failures)
-            require("/etc/init.d/T90adb start" in text, "boot ADB wrapper delegates to stock helper", failures)
-            require("start_adb_with_retries" in text, "boot ADB wrapper retries after player USB setup", failures)
-            require('= "configured"' in text, "boot ADB wrapper verifies host USB enumeration", failures)
+            require("/usr/data/enable_boot_adb" in text,
+                    "boot ADB wrapper requires explicit opt-in marker", failures)
+            require('[ "$(read_usb_working_mode)" = "1" ]' in text,
+                    "boot ADB wrapper accepts Device mode only", failures)
+            require("/usr/bin/adbon" in text,
+                    "boot ADB wrapper delegates to hardened helper", failures)
+            require("start_adb_with_retries" not in text,
+                    "boot ADB wrapper has no retry race", failures)
     else:
         for relative in BOOT_ADB_FILE_MODE_CHECKS:
             actual_mode = entries.get(relative, SquashfsEntry("", "")).mode
-            if actual_mode:
-                print(f"OK   optional boot ADB present: {relative} mode {actual_mode}")
-            else:
-                print(f"OK   optional boot ADB absent: {relative}")
+            require(not actual_mode, f"optional boot ADB absent: {relative}", failures)
     if require_db_maintenance:
         for relative, expected_mode in DB_MAINT_FILE_MODE_CHECKS.items():
             actual_mode = entries.get(relative, SquashfsEntry("", "")).mode
@@ -905,8 +977,11 @@ def verify(
             require("audiobook_entry=direct-private-route" in version_text, "custom version marker records private direct route mode", failures)
         if require_boot_adb:
             require("boot_adb=enabled" in version_text, "custom version marker records boot ADB enabled", failures)
-        elif "boot_adb=" in version_text:
-            print("OK   custom version marker records boot ADB state")
+        else:
+            require("boot_adb=disabled" in version_text,
+                    "custom version marker records boot ADB disabled", failures)
+        require("usb_gadget_scripts=hardened" in version_text,
+                "custom version marker records hardened USB scripts", failures)
         if expect_batd_disabled:
             require("batd_logger=disabled" in version_text, "custom version marker records batd logger disabled", failures)
         elif "batd_logger=" in version_text:

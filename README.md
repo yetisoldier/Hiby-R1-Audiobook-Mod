@@ -3,25 +3,23 @@
 A self-contained audiobook app for the normal HiBy R1, based on stock HiBy R1
 firmware 1.6. **Not for the R1 MIDI.**
 
-> **v2.0.26 is the current release.** It fixes the black-screen wake failure
-> that could occur when an audiobook kept playing after the display timed out.
-> It includes all v2.0.25 folder-navigation, MP3 chapter, Now Playing, SD-card,
-> and resume stability work.
+> **v2.0.27 is the current release.** It restores normal SD-card USB storage
+> and keeps persistent ADB disabled in public builds. It includes all v2.0.26
+> display-wake work and the v2.0.25 folder, chapter, Now Playing, SD-card, and
+> resume improvements.
 
 ## Current release
 
-- **Version marker:** `2.0.26`
-- **About-screen label:** `HiBy R1 2.0.26`
-- **Download:** <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v2.0.26>
-- **Package:** `r1-audiobooks-2.0.26.upt` (rename to `r1.upt` to install)
-- **UPT MD5:** `3d7d87aff3a098b70e68825e577c32c5`
-- **UPT SHA256:** `a9c9fec73e2be9fdc664088a47ae6834378e7e6c112fe29fdc153b404005d938`
-- **Boot ADB:** included (installs `/etc/init.d/S90adb`). ADB is available at
- boot whenever System → USB working mode is set to **Device** (mode 1). ADB and
- USB-DAC share the single USB gadget controller and are mutually exclusive by
- USB working mode, so this does not block USB-DAC (set the mode to DAC and ADB
- stays off that session). Drop `-EnableBootAdb` from the build for a no-ADB
- variant.
+- **Version marker:** `2.0.27`
+- **About-screen label:** `HiBy R1 2.0.27`
+- **Download:** <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v2.0.27>
+- **Package:** `r1-audiobooks-2.0.27.upt` (rename to `r1.upt` to install)
+- **UPT MD5:** `8a208aeb24087aee59c0ac02581aef0a`
+- **UPT SHA256:** `4b04586414aff6bceaf4cd6d50f88291199c94180bf3dac2793e9fbdf0b7d368`
+- **Boot ADB:** disabled. The public package omits `/etc/init.d/S90adb`, so
+ connecting the R1 in Device mode exposes the SD card as normal USB storage.
+ ADB can still be enabled manually for development, but ADB and USB storage
+ share one controller and cannot be active simultaneously.
 - **Restored stock unlocks:** USB DAC mode, Native DSD (analog), and Bluetooth
  SBC XQ - the three general device/music unlocks the v1.5.0-v1.6.3 line carried,
  re-enabled on the 2.0.x build via `-UnlockNativeDsd -EnableBluetoothSbcXq
@@ -30,7 +28,7 @@ firmware 1.6. **Not for the R1 MIDI.**
 
 **v2.0.20 compatibility note:** v2.0.20 was published from an experimental
 UTF-8/Cyrillic side branch. That text-rendering experiment is not included in
-v2.0.26 because this release follows the separately tested stability line. If
+v2.0.27 because this release follows the separately tested stability line. If
 you rely on Cyrillic audiobook names or tags, remain on v2.0.20 for now.
 
 Before flashing, keep a known-good stock 1.6 `r1.upt` for recovery. This is
@@ -53,8 +51,8 @@ the R1 MIDI or other HiBy players unless you are prepared to recover the device.
  <img src="docs/screenshots/08-launcher-after-exit.png" alt="HiBy launcher after exiting the app" width="200">
 </p>
 
-Captured directly from the test R1 running the tested v2.0.26 code. Full set in
-[`docs/screenshots/`](docs/screenshots/).
+Captured directly from the test R1. The v2.0.27 USB maintenance update does not
+change these screens. Full set in [`docs/screenshots/`](docs/screenshots/).
 
 ## How it works
 
@@ -145,10 +143,16 @@ browser, Bluetooth, USB, and system UI are otherwise untouched.
 - The launcher uses HiBy's stock Books icon resources, so Audiobooks remains
   readable in both light and dark themes.
 
-**ADB (since v2.0.15)**
-- ADB is available at boot when USB working mode is set to **Device**, via the
- `S90adb` init script baked into the rootfs. No in-app toggle needed. ADB and
- USB-DAC are mutually exclusive by USB working mode.
+**USB storage and development ADB**
+- Public builds leave persistent ADB off, restoring normal SD-card mounting on
+ a connected computer.
+- Manual ADB mode keeps the SD mounted locally for audiobook/music access and
+ cleans stale USB gadget state before taking control of USB.
+- Returning to mass storage first unmounts the local SD cleanly. If an app is
+ still using the card, the transition is refused instead of exposing a live
+ filesystem to the computer.
+- ADB, USB mass storage, and USB DAC share one USB controller and remain
+ mutually exclusive.
 
 **SD-card stability (since v2.0.23)**
 - While Audiobooks is open, the app keeps the removable-card platform, host,
@@ -170,9 +174,8 @@ browser, Bluetooth, USB, and system UI are otherwise untouched.
  v2.0.16.
 - **USB DAC mode**: unlocks the USB-DAC working mode and related Settings flags,
  so you can set System -> USB working mode to **DAC** and use the R1 as a USB
- DAC. USB-DAC and boot-ADB share the single USB gadget controller and stay
- mutually exclusive by USB working mode (Device = ADB on; DAC = USB audio out,
- ADB off that session) - complementary to boot-ADB, not a conflict.
+ DAC. USB DAC, USB storage, and manually enabled ADB share the single USB
+ gadget controller and are mutually exclusive.
 - **Native DSD**: sets `AnalogDsdNative: native` on the analog output device in
  `ot_devices.json`, enabling native DSD on the analog output path for the stock
  Music player (was `dop`).
@@ -217,7 +220,7 @@ browser, Bluetooth, USB, and system UI are otherwise untouched.
 
 ## Install
 
-1. Download `r1-audiobooks-2.0.26.upt` from the release page.
+1. Download `r1-audiobooks-2.0.27.upt` from the release page.
 2. Rename it to exactly `r1.upt` (the R1 will not recognize the update otherwise).
 3. Copy it to the root of the SD card.
 4. On the R1, run the normal firmware update
@@ -261,28 +264,28 @@ The production firmware command below recompiles the hook from current source
 before packaging it, so this separate command is useful for quick development
 checks but is not required for a release build.
 
-Build the public-release firmware (version 2.0.26):
+Build the public-release firmware (version 2.0.27):
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\build_r1_audiobook_firmware.ps1 `
- -OutDir work\audiobook-firmware-2.0.26 `
- -OutputUpt work\audiobook-firmware-2.0.26\r1-audiobooks-2.0.26.upt `
+ -OutDir work\audiobook-firmware-2.0.27 `
+ -OutputUpt work\audiobook-firmware-2.0.27\r1-audiobooks-2.0.27.upt `
  -IncludeAudiobookNativeApp `
- -EnableBootAdb `
  -UnlockNativeDsd `
  -EnableBluetoothSbcXq `
  -UnlockUsbDacMode `
- -CustomVersionId 2.0.26 `
- -CustomVersionLabel "HiBy R1 2.0.26"
+ -CustomVersionId 2.0.27 `
+ -CustomVersionLabel "HiBy R1 2.0.27"
 ```
 
-`-EnableBootAdb` installs `/etc/init.d/S90adb` so ADB starts automatically after
-every boot. The v2.0.26 public release ships with it on; drop the flag for a
-build without persistent ADB. `-UnlockNativeDsd`, `-EnableBluetoothSbcXq`, and
-`-UnlockUsbDacMode` restore the three general device/music unlocks the pre-2.0
-line carried (Native DSD on the analog path, BlueALSA SBC XQ, and the USB DAC
-working mode). They are independent of the NativeApp pivot and combine cleanly
-with it.
+The public build intentionally omits `-EnableBootAdb`. For a development-only
+image, that flag installs `/etc/init.d/S90adb`; persistent ADB still remains off
+until `/usr/data/enable_boot_adb` is explicitly created with
+`tools\adb_manage_boot_adb.ps1 -Action enable`. `-UnlockNativeDsd`,
+`-EnableBluetoothSbcXq`, and `-UnlockUsbDacMode` restore the three general
+device/music unlocks the pre-2.0 line carried (Native DSD on the analog path,
+BlueALSA SBC XQ, and the USB DAC working mode). They are independent of the
+NativeApp pivot and combine cleanly with it.
 
 The NativeApp build is mutually exclusive with the legacy resume-daemon
 switches (`-IncludeAudiobookLauncherGenre`, `-IncludeAudiobookResumeRuntime`,
@@ -310,7 +313,7 @@ alone.
 - `docs/screenshots/` - README screenshots.
 - `firmware/releases/v2.0.16/` - v2.0.16 release notes and checksums.
 - `firmware/releases/v2.0.17/` - v2.0.17 release notes and checksums.
-- `firmware/releases/v2.0.26/` - current release notes and checksums.
+- `firmware/releases/v2.0.27/` - current release notes and checksums.
 - `CHANGELOG.md` - release history.
 
 ## Attribution and sources

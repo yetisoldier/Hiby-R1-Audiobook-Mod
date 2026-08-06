@@ -33,6 +33,10 @@ param(
 
     [switch]$ExpectUsbDacMode,
 
+    [switch]$ExpectHardenedUsbGadgetScripts,
+
+    [switch]$ExpectBootAdbDisabled,
+
     [switch]$ExpectConservativeResumeRuntime,
 
     [switch]$AllowStagedFirmware,
@@ -105,6 +109,21 @@ function Assert-Contains([string]$Text, [string]$Needle, [string]$Label) {
     Write-Host "OK   $Label contains $Needle"
 }
 
+function Assert-RemoteMd5Matches([string]$RemotePath, [string]$LocalPath) {
+    $resolvedLocal = Resolve-PathStrict $LocalPath
+    $localMd5 = (Get-FileHash -LiteralPath $resolvedLocal -Algorithm MD5).Hash.ToLowerInvariant()
+    $remoteText = Invoke-AdbText "md5sum '$RemotePath' 2>/dev/null || true"
+    $match = [regex]::Match($remoteText, "(?im)^([0-9a-f]{32})\s+")
+    if (!$match.Success) {
+        throw "Unable to read remote MD5: $RemotePath"
+    }
+    $remoteMd5 = $match.Groups[1].Value.ToLowerInvariant()
+    if ($remoteMd5 -ne $localMd5) {
+        throw "$RemotePath MD5 mismatch: remote $remoteMd5, expected $localMd5"
+    }
+    Write-Host "OK   $RemotePath matches $LocalPath ($localMd5)"
+}
+
 function Assert-SingleTopLevelScriptProcess([string]$Pattern, [string]$Label, [string]$ArtifactName, [string]$PidFile) {
     $command = @'
 for p in $(ps | grep '__PATTERN__' | grep -v grep | awk '{print $1}'); do
@@ -161,6 +180,14 @@ if ($ExpectBluetoothSbcXq) {
 if ($ExpectUsbDacMode) {
     Assert-Contains $versionText "usb_dac_mode=enabled" "/etc/r1_audiobook_version"
 }
+if ($ExpectHardenedUsbGadgetScripts) {
+    Assert-Contains $versionText "usb_gadget_scripts=hardened" "/etc/r1_audiobook_version"
+}
+if ($ExpectBootAdbDisabled) {
+    Assert-Contains $versionText "boot_adb=disabled" "/etc/r1_audiobook_version"
+    $bootAdbText = Invoke-AdbText "if [ -e /etc/init.d/S90adb ]; then echo present; else echo absent; fi"
+    Assert-Contains $bootAdbText "absent" "/etc/init.d/S90adb status"
+}
 if ($ExpectConservativeResumeRuntime) {
     Assert-Contains $versionText "resume_runtime_profile=conservative" "/etc/r1_audiobook_version"
 }
@@ -197,6 +224,17 @@ if ($ExpectBluetoothSbcXq) {
     }
     Write-Host "OK   /usr/bin/bt_init uses LF line endings"
     Assert-Contains $btInitText '/usr/bin/bluealsa -p a2dp-source --a2dp-volume --sbc-quality=xq &' "/usr/bin/bt_init"
+}
+
+if ($ExpectHardenedUsbGadgetScripts) {
+    $usbFilesText = Invoke-AdbText "ls -l /usr/bin/r1_usb_gadget_common.sh /usr/bin/adbon /usr/bin/adboff 2>/dev/null"
+    Set-Content -LiteralPath (Join-Path $verifyDir "usb_gadget_files.txt") -Value $usbFilesText
+    foreach ($fileName in @("r1_usb_gadget_common.sh", "adbon", "adboff")) {
+        Assert-Contains $usbFilesText $fileName "USB gadget helper files"
+    }
+    Assert-RemoteMd5Matches "/usr/bin/r1_usb_gadget_common.sh" "firmware\scripts\r1_usb_gadget_common.sh"
+    Assert-RemoteMd5Matches "/usr/bin/adbon" "firmware\scripts\adbon"
+    Assert-RemoteMd5Matches "/usr/bin/adboff" "firmware\scripts\adboff"
 }
 
 if ($ExpectNativeApp) {

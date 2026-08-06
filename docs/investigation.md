@@ -146,7 +146,7 @@ Collected from the connected R1 over ADB on 2026-06-09.
 - Root filesystem is read-only SquashFS; `/usr/data` is writable UBIFS; SD card is mounted at `/usr/data/mnt/sd_0`.
 - Stock ADB boot support exists but is not run automatically: `/etc/init.d/T90adb` starts ADB, while `/etc/init.d/rcS` only runs `/etc/init.d/S??*`.
 - The writable `/usr/data/disableadb` marker blocks ADB startup when present, but on this device it was already absent. Both stock ADB backends, `/etc/init.d/adb/S310adb` and `/etc/init.d/adb/S440adb`, check that marker before starting.
-- For development firmware builds, `tools/build_r1_audiobook_firmware.ps1 -EnableBootAdb` installs `S90adb` as a wrapper around stock `T90adb`; release verification must not assume persistent ADB unless that opt-in marker is present.
+- For development firmware builds, `tools/build_r1_audiobook_firmware.ps1 -EnableBootAdb` installs a hardened `S90adb` wrapper. It still requires `/usr/data/enable_boot_adb` and Device mode. Public release builds omit the script.
 - Static strings in `hiby_player` point the stock USB UI toward `/data/user.ini`, `usb_mode`, `usb_working_mode`, `/usr/bin/adbon`, and `/usr/bin/adboff`.
 - The default WSL `objdump` can read the ELF sections but cannot disassemble MIPS. `tools/install_mips_binutils_wsl.ps1` downloads `binutils-mipsel-linux-gnu` into `.deps`, and `tools/mips_objdump_wsl.ps1` runs the extracted `mipsel-linux-gnu-objdump` with the required local library path.
 - MIPS data inspection shows a stock settings table with adjacent numeric IDs:
@@ -155,8 +155,8 @@ Collected from the connected R1 over ADB on 2026-06-09.
   slots in `/data/user.ini`, not only whole-file hash changes.
 - Live Auto -> Device testing found the stock `USB working mode` value at
   `/usr/data/user.ini` offset `0x740` (`1856` decimal): Auto is `0`, Device is
-  `1`. Development boot ADB can safely honor this existing UI value instead of
-  adding a new settings page.
+  `1`. Development boot ADB uses this existing UI value plus a separate opt-in
+  marker instead of adding a settings page.
 - Current SD card has `/Audiobooks`, `/Books`, and `/Music`.
 - Current media DB has 114 normal music tracks in `MEDIA_TABLE`/`MEDIA2_TABLE`, all under `a:\Music\`.
 - Current audiobook records are not in `MEDIA_TABLE`; they are in `BOOK_TABLE`, `BOOK_RECENT_TABLE`, `BOOKMARK_TABLE`, and a few `HISTORY_TABLE` rows.
@@ -212,8 +212,8 @@ Generated package on 2026-06-09:
 - Rootfs MD5: `0574354b74af722a8d359d755c8957d6`
 - Rootfs SHA256: `cc959c26abd79f73f060d79e718fff3859d3f8f1d0fdfef29cac72d5229e35c0`
 - `/usr/bin/hiby_player` MD5 inside the unsquashed rootfs: `ad69fa8377fb85b01ed5d65fe976b19a`
-- Development ADB persistence: later dev builds can include `/etc/init.d/S90adb` as an opt-in wrapper around stock `/etc/init.d/T90adb`. The wrapper checks `/usr/data/user.ini` offset `0x740` and only starts ADB when the stock `System -> USB working mode` setting is `Device`.
-- Earlier device testing corrected the initial assumption that a straight `T90adb` copy was enough; current release builds still omit boot ADB.
+- Development ADB persistence: later dev builds can include `/etc/init.d/S90adb`. The hardened wrapper checks `/usr/data/user.ini` offset `0x740`, requires `/usr/data/enable_boot_adb`, and only starts ADB when the stock `System -> USB working mode` setting is `Device`.
+- v2.0.27 testing showed that the old delayed retry could steal the USB controller from mass storage and leave its LUN holding the SD block device. Current release builds omit boot ADB, and development builds use a delayed one-shot transition with no retry loop.
 - English resource labels are patched from Books/E-book to Audiobooks.
 - No experimental `hiby_player` binary patches are applied by default.
 

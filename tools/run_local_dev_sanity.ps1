@@ -80,7 +80,7 @@ foreach ($file in $psFiles) {
 }
 
 Invoke-Checked {
-    wsl -d $Distro --cd $repoRoot --exec sh -lc 'sh -n tools/r1_audiobook_resume_daemon.sh && sh -n tools/r1_audiobook_db_watch.sh && sh -n tools/r1_audiobook_refresh.sh && sh -n tools/test_r1_resume_daemon_logic.sh && sh -n tools/test_r1_db_watch_logic.sh'
+    wsl -d $Distro --cd $repoRoot --exec sh -lc 'sh -n tools/r1_audiobook_resume_daemon.sh && sh -n tools/r1_audiobook_db_watch.sh && sh -n tools/r1_audiobook_refresh.sh && sh -n tools/test_r1_resume_daemon_logic.sh && sh -n tools/test_r1_db_watch_logic.sh && sh -n tools/test_r1_usb_adb_fallback.sh && sh -n firmware/scripts/r1_usb_gadget_common.sh && sh -n firmware/scripts/adbon && sh -n firmware/scripts/adboff && sh -n firmware/scripts/S90adb'
 } "Shell syntax"
 
 Invoke-Checked {

@@ -1,0 +1,56 @@
+#!/bin/sh
+
+# Development-only, explicitly opted-in boot ADB.
+# Public builds omit this script. Development builds install it, but it still
+# requires /usr/data/enable_boot_adb and Device USB mode (1). The delayed,
+# one-shot transition lets HiBy finish its USB setup and avoids the old retry
+# loop that could steal the controller back from mass storage.
+
+read_usb_working_mode() {
+    if [ ! -f /usr/data/user.ini ]; then
+        echo ""
+        return
+    fi
+    set -- $(dd if=/usr/data/user.ini bs=1 skip=1856 count=1 2>/dev/null | od -An -t u1 2>/dev/null)
+    echo "${1:-}"
+}
+
+boot_adb_allowed() {
+    [ -f /usr/data/enable_boot_adb ] || return 1
+    [ ! -f /usr/data/disableadb ] || return 1
+    [ "$(read_usb_working_mode)" = "1" ]
+}
+
+case "$1" in
+  start)
+    boot_adb_allowed || {
+        echo "Boot ADB disabled; manual ADB remains available"
+        exit 0
+    }
+    (
+        sleep 20
+        boot_adb_allowed || exit 0
+        /usr/bin/adbon >>/tmp/boot-adb.log 2>&1
+    ) &
+    ;;
+  stop)
+    if [ -r /usr/bin/r1_usb_gadget_common.sh ]; then
+        . /usr/bin/r1_usb_gadget_common.sh
+        if usb_lock; then
+            usb_stop_adb_gadget || true
+            usb_unmount_empty_configfs
+            usb_unlock
+        fi
+    fi
+    ;;
+  restart|reload)
+    "$0" stop
+    "$0" start
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart}"
+    exit 1
+    ;;
+esac
+
+exit 0

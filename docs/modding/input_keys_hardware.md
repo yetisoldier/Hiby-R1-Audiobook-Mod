@@ -99,15 +99,17 @@ Persist to `/usr/data/.audiobook_volume` (0..100).
 ## Persistent boot ADB via `S90adb` in rootfs
 
 ADB is NOT persistent by default. Persistent boot-ADB needs `/etc/init.d/S90adb`
-(0755) in the rootfs; `rcS` runs it at boot → it calls `T90adb start` ONLY when
-System → USB working mode == 1 (Device). `T90adb` checks
-`/sys/class/android_usb/android0/functions` (ABSENT on this device) →
-dispatches to **`S440adb`** (configfs `/sys/kernel/config/usb_gadget/adb_demo`
-+ FunctionFS `/dev/usb-ffs/adb` + `adbd`) = exactly what the tap-About session
-ADB uses (adbd parent = `/sbin/adbserver.sh 440`). `T90adb` is T-prefixed →
-NOT run by `rcS` at boot (`rcS` only runs `S??*`); stock has no `S90adb`, so ADB
-is off by default and only our hook's durable call started it. Built via
-`-EnableBootAdb`.
+(0755) in the rootfs. Since v2.0.27, a development build made with
+`-EnableBootAdb` also requires `/usr/data/enable_boot_adb` and System → USB
+working mode == 1 (Device). It waits 20 seconds for HiBy's USB setup and calls
+the hardened `/usr/bin/adbon` exactly once. Public builds omit `S90adb`.
+
+`adbon` and `adboff` share `/usr/bin/r1_usb_gadget_common.sh`. The helper
+serializes transitions, removes stale configfs gadgets/LUNs, mounts the SD
+locally for ADB, and refuses mass-storage export until the local filesystem
+unmounts cleanly. `adboff` launches a detached worker because an ADB shell is a
+child of the `adbd` process it must stop. Diagnostics go to
+`/tmp/r1-usb-mode.log`.
 
 ### Gotcha — the multiple dead-ends before `S90adb`
 - A durable-ADB TOGGLE via a marker file on `/usr/data` (v2.0.7) didn't
@@ -121,12 +123,16 @@ is off by default and only our hook's durable call started it. Built via
   runs `sleep 2; ps | grep -q '[a]dbd' || /etc/init.d/T90adb start`.
 - v2.0.14 abandoned the toggle entirely for always-on `S90adb` in rootfs.
 
-### Gotcha — ADB gadget sometimes needs a physical USB replug after reboot
-to re-enumerate even with the durable marker set.
+### v2.0.26 regression — retry stole the USB controller
+
+The old wrapper retried/rebound `adb_demo` after HiBy configured `android0`
+mass storage. This could leave an unbound mass-storage LUN holding
+`/dev/mmcblk0`, so neither the computer nor audiobook playback could access the
+SD. v2.0.27 removes boot ADB from public images and replaces the retry loop with
+the marker-gated one-shot transition above.
 
 ### USB-DAC mutual exclusion
-ADB does NOT block USB-DAC — there is a single USB gadget controller and the
-modes are mutually exclusive by design. `S90adb`'s `read_usb_working_mode`
-guard skips ADB when mode != 1, so DAC mode works (ADB off that session);
-Device mode has ADB. This is why boot-ADB and the USB DAC unlock ship together
-cleanly. See [brick_lessons_build_categories.md](./brick_lessons_build_categories.md).
+There is one USB gadget controller. ADB, mass storage, and USB DAC are mutually
+exclusive by design. The development `S90adb` guard skips ADB when mode != 1,
+so DAC mode remains available. See
+[brick_lessons_build_categories.md](./brick_lessons_build_categories.md).

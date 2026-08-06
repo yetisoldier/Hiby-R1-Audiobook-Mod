@@ -15,10 +15,11 @@ The safe release set is:
 -IncludeAudiobookNativeApp -CustomVersionId <ver> -CustomVersionLabel "HiBy R1 <ver>"
 ```
 
-…optionally plus `-EnableBootAdb` (approved, verified safe — see
-[input_keys_hardware.md](./input_keys_hardware.md)) and, since v2.0.17, the
-three audio-unlock flags (`-UnlockNativeDsd -EnableBluetoothSbcXq
--UnlockUsbDacMode` — pure JSON/shell config, verified safe in isolation).
+...plus, since v2.0.17, the three audio-unlock flags (`-UnlockNativeDsd
+-EnableBluetoothSbcXq -UnlockUsbDacMode` - pure JSON/shell config, verified
+safe in isolation). Public builds must omit `-EnableBootAdb`. That option is
+development-only, explicitly marker-gated, and documented in
+[input_keys_hardware.md](./input_keys_hardware.md).
 
 All **app-level hook changes** (moov mmap, storage guards, SD-primary
 positions, BT force-take/hand-back, durable ADB, cover fixes, WSOLA, etc.) are
@@ -137,8 +138,8 @@ glibc (2.28/2.33) boots into a reset loop; the `.2.22` pins the stock ABI.
 
 ### Build flags
 Safe releases: `-IncludeAudiobookNativeApp -CustomVersionId <ver>
--CustomVersionLabel "HiBy R1 <ver>"` ONLY (plus `-EnableBootAdb` and the three
-audio-unlock flags, all verified). The NativeApp build is mutually exclusive
+-CustomVersionLabel "HiBy R1 <ver>"` plus the three audio-unlock flags. Do not
+add `-EnableBootAdb` to a public build. The NativeApp build is mutually exclusive
 with the legacy resume-daemon switches
 (`-IncludeAudiobookLauncherGenre`, `-IncludeAudiobookResumeRuntime`,
 `-IncludeAudiobookDbMaintenance`, etc.) — the guard at
@@ -146,10 +147,12 @@ with the legacy resume-daemon switches
 `-IncludeAudiobookNativeApp` alone (plus the safe extras).
 
 ### Staging gotcha
-`adb_stage_verified_firmware.ps1` stages STALE 1.6.16.6 by default (it does
-not know the NativeApp pivot output path). For NativeApp builds, `adb push`
-the `.upt` to `/usr/data/mnt/sd_0/r1.upt` directly with `MSYS_NO_PATHCONV=1` +
-md5-verify. See [flash_and_recovery.md](./flash_and_recovery.md).
+Always pass the package, output directory, expected version, expected label,
+and feature switches explicitly to `adb_stage_verified_firmware.ps1`. The tool
+supports NativeApp packages, performs local verification, stages through a
+temporary file, and verifies the device-side MD5/SHA256 before replacing
+`/usr/data/mnt/sd_0/r1.upt`. See
+[flash_and_recovery.md](./flash_and_recovery.md).
 
 ## Revert path
 

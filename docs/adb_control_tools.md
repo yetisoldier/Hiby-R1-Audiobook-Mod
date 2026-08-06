@@ -43,9 +43,11 @@ power cost while plugged into USB.
 
 Stock firmware includes `/etc/init.d/T90adb`, but the boot script only runs
 `/etc/init.d/S??*`. Development firmware can opt into boot ADB by building with
-`-EnableBootAdb`, which installs `/etc/init.d/S90adb` as a wrapper around the
-stock helper and adds `boot_adb=enabled` to `/etc/r1_audiobook_version`. The
-wrapper starts ADB only when `System -> USB working mode` is set to `Device`.
+`-EnableBootAdb`, which installs `/etc/init.d/S90adb` and adds
+`boot_adb=enabled` to `/etc/r1_audiobook_version`. Installation alone does not
+enable persistence: `/usr/data/enable_boot_adb` must also exist, and
+`System -> USB working mode` must be `Device`. The wrapper waits 20 seconds for
+HiBy's USB setup, performs one guarded transition, and does not retry/rebind.
 
 Check the currently connected device:
 
@@ -70,10 +72,11 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -Action disable
 ```
 
-The live helper only toggles `/usr/data/disableadb`; it does not modify the
-read-only rootfs and does not restart the current ADB session. If the installed
-firmware lacks `/etc/init.d/S90adb`, a new development firmware must be built
-with `-EnableBootAdb`.
+The live helper creates or removes `/usr/data/enable_boot_adb` and maintains the
+legacy `/usr/data/disableadb` guard. It does not modify the read-only rootfs and
+does not restart the current ADB session. If the installed firmware lacks
+`/etc/init.d/S90adb`, a new development firmware must be built with
+`-EnableBootAdb`. Public releases omit it.
 
 ## Finding A UI Toggle
 
@@ -133,8 +136,11 @@ Static firmware notes that narrow the live test:
   should be watched in settings snapshots.
 - The stock settings table stores `usb_working_mode` as ID `8` and `usb_mode`
   as ID `9`, which may help interpret byte-level `/data/user.ini` diffs.
-- `/usr/bin/adbon` stops mass storage and starts `/etc/init.d/adb/S440adb`;
-  `/usr/bin/adboff` stops ADB and restarts mass storage.
+- v2.0.27 replaces `/usr/bin/adbon` and `/usr/bin/adboff` with serialized
+  wrappers around a shared USB gadget helper. ADB mode releases stale
+  mass-storage LUNs and mounts the SD locally. Mass-storage mode runs detached,
+  unmounts the SD first, and restores ADB if a busy filesystem prevents export.
+- Transition diagnostics are written to `/tmp/r1-usb-mode.log`.
 - Both stock ADB backends, `S310adb` and `S440adb`, refuse to start when
   `/usr/data/disableadb` exists.
 - Live testing found `USB working mode` in `/usr/data/user.ini` at offset

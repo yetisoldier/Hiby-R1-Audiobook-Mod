@@ -1,0 +1,13 @@
+#!/bin/sh
+
+. /usr/bin/r1_usb_gadget_common.sh || exit 1
+
+if ! usb_lock; then
+    usb_log "ADB request rejected: USB transition already active"
+    exit 1
+fi
+trap usb_unlock EXIT INT TERM
+
+usb_log "ADB requested"
+usb_start_adb
+exit $?

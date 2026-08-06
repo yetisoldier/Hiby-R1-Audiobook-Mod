@@ -103,7 +103,8 @@ The v2.0.x mod keeps the stock player untouched and runs the audiobook app
   scrub, SD-primary positions + bookmarks.
 - Native DSD, Bluetooth SBC XQ, and USB DAC mode (since v2.0.17) — pure
   stock-resource / shell-config unlocks, independent of the audiobook app.
-- Boot ADB (since v2.0.15) via `/etc/init.d/S90adb`.
+- Hardened manual ADB/mass-storage switching (since v2.0.27). Persistent ADB is
+  omitted from public builds and marker-gated in development builds.
 
 ## Development strategy that worked
 

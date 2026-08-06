@@ -33,7 +33,7 @@ If you have a device, ADB, and this repo:
 | [flash_and_recovery.md](./flash_and_recovery.md) | `.upt` format, MTD layout, the ADB-driven data-preserving flash sequence, `bootmode.sh` semantics, recovery vs factory reset, revert path. |
 | [audio_decode_alsa.md](./audio_decode_alsa.md) | HiBy `libmp3.so` stubbed readers, minimp3_ex, ALSA `plughw:0,0`, CS43131 DAC volume, the port-switch pitfall, M4B/AAC via `libfdk-aac`, VBR resume. |
 | [bluetooth_avrcp.md](./bluetooth_avrcp.md) | BlueALSA `pcm.bluealsa`, the EBUSY contention root cause + force-take, hand-back on exit, AVRCP remote, SBC XQ, the resume race. |
-| [input_keys_hardware.md](./input_keys_hardware.md) | Why buttons did nothing (dup the grabbed fds), key devices/codes, evdev injection, volume, persistent boot ADB via `S90adb`, USB-DAC mutual exclusion. |
+| [input_keys_hardware.md](./input_keys_hardware.md) | Why buttons did nothing (dup the grabbed fds), key devices/codes, evdev injection, volume, hardened ADB/storage transitions, optional boot ADB, and USB-mode mutual exclusion. |
 | [cover_art.md](./cover_art.md) | Why not stb_image, device libjpeg 9.x dlopen, setjmp error handling, progressive-JPEG OOM + memory cap, thumbnail pre-warm starvation, PNG via `libz`. |
 | [wsola_seek_resume.md](./wsola_seek_resume.md) | WSOLA time-stretch (pitch-preserved), the MP3 1.5x cutoff fix, smart rewind on resume, save-on-quit, SD-primary positions. |
 | [library_scan_storage.md](./library_scan_storage.md) | The moov-mmap scan-hang fix, M4B and MP3 ID3 chapter parsing, indexed folder navigation, SQLite-on-exFAT, the chronic `/usr/data` near-full + guards, SD-primary store. |

@@ -6,9 +6,9 @@ firmware, not for normal end users.
 
 ## Current Release Reference
 
-- Public release: `v2.0.26`
-- About-screen label: `HiBy R1 2.0.26`
-- Package: `r1-audiobooks-2.0.26.upt`
+- Public release: `v2.0.27`
+- About-screen label: `HiBy R1 2.0.27`
+- Package: `r1-audiobooks-2.0.27.upt`
 - Base firmware: stock HiBy R1 1.6 for the normal R1
 - Target device: normal HiBy R1 only, not R1 MIDI
 - Source branch: `main`. The complete NativeApp source and release history are
@@ -83,21 +83,20 @@ and are NOT used by the NativeApp pivot.)
 ## 3. Build The Audiobook Firmware
 
 The current (v2.0.x) release-style build uses the NativeApp pivot
-(`-IncludeAudiobookNativeApp`), boot ADB, and the three optional audio unlocks
-that the pre-2.0 line carried and v2.0.17 restores:
+(`-IncludeAudiobookNativeApp`) and the three optional audio unlocks that the
+pre-2.0 line carried and v2.0.17 restores. Public builds omit persistent ADB:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File tools\build_r1_audiobook_firmware.ps1 `
-  -OutDir work\audiobook-firmware-2.0.26 `
-  -OutputUpt work\audiobook-firmware-2.0.26\r1-audiobooks-2.0.26.upt `
+  -OutDir work\audiobook-firmware-2.0.27 `
+  -OutputUpt work\audiobook-firmware-2.0.27\r1-audiobooks-2.0.27.upt `
   -IncludeAudiobookNativeApp `
-  -EnableBootAdb `
   -UnlockNativeDsd `
   -EnableBluetoothSbcXq `
   -UnlockUsbDacMode `
-  -CustomVersionId 2.0.26 `
-  -CustomVersionLabel "HiBy R1 2.0.26"
+  -CustomVersionId 2.0.27 `
+  -CustomVersionLabel "HiBy R1 2.0.27"
 ```
 
 The NativeApp pivot is mutually exclusive with the legacy resume-daemon switches
@@ -134,12 +133,11 @@ Run the release package verifier against the NativeApp build:
 
 ```powershell
 py -3 tools\verify_r1_audiobook_build.py `
-  --out-dir work\audiobook-firmware-2.0.26 `
-  --upt-name r1-audiobooks-2.0.26.upt `
-  --expected-version 2.0.26 `
-  --expected-label "HiBy R1 2.0.26" `
+  --out-dir work\audiobook-firmware-2.0.27 `
+  --upt-name r1-audiobooks-2.0.27.upt `
+  --expected-version 2.0.27 `
+  --expected-label "HiBy R1 2.0.27" `
   --expect-native-app `
-  --require-boot-adb `
   --expect-native-dsd `
   --expect-sbc-xq `
   --expect-usb-dac-mode
@@ -155,8 +153,8 @@ OTA rootfs hash, and known-bad package hashes. Do not add the legacy
 
 ## 5. Stage Firmware On The R1
 
-Enable ADB on the R1 (System → USB working mode = Device, since v2.0.14 boot
-ADB starts it automatically), connect it, then stage the verified package.
+Enable ADB manually on the R1 for development, connect it, then stage the
+verified package. Public builds intentionally do not restart ADB after reboot.
 The staging script runs local verification, refuses known-bad hashes, pushes
 to `/usr/data/mnt/sd_0/r1.upt`, backs up an existing different `r1.upt`, and
 verifies remote byte count + hashes:
@@ -164,12 +162,11 @@ verifies remote byte count + hashes:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File tools\adb_stage_verified_firmware.ps1 `
-  -Package work\audiobook-firmware-2.0.26\r1-audiobooks-2.0.26.upt `
-  -BuildOutDir work\audiobook-firmware-2.0.26 `
-  -ExpectedVersion 2.0.26 `
-  -ExpectedLabel "HiBy R1 2.0.26" `
+  -Package work\audiobook-firmware-2.0.27\r1-audiobooks-2.0.27.upt `
+  -BuildOutDir work\audiobook-firmware-2.0.27 `
+  -ExpectedVersion 2.0.27 `
+  -ExpectedLabel "HiBy R1 2.0.27" `
   -ExpectNativeApp `
-  -RequireBootAdb `
   -ExpectNativeDsd `
   -ExpectBluetoothSbcXq `
   -ExpectUsbDacMode `
@@ -183,7 +180,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 >
 > ```bash
 > adb shell cp /usr/data/mnt/sd_0/r1.upt /usr/data/mnt/sd_0/r1.upt.prev.bak
-> MSYS_NO_PATHCONV=1 adb -s <serial> push work\audiobook-firmware-2.0.26\r1-audiobooks-2.0.26.upt /usr/data/mnt/sd_0/r1.upt
+> MSYS_NO_PATHCONV=1 adb -s <serial> push work\audiobook-firmware-2.0.27\r1-audiobooks-2.0.27.upt /usr/data/mnt/sd_0/r1.upt
 > adb shell md5sum /usr/data/mnt/sd_0/r1.upt
 > ```
 >
@@ -234,13 +231,13 @@ stops offering it.
 
 ## 7. Verify The Installed Firmware
 
-After flashing (ADB returns on the new version; no manual re-enable needed
-with boot ADB):
+After flashing, manually enable ADB for development verification. Public builds
+do not start it automatically:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File tools\adb_verify_installed_audiobook_release.ps1 `
-  -ExpectedVersion 2.0.26 `
+  -ExpectedVersion 2.0.27 `
   -ExpectNativeApp `
   -ExpectNativeDsd `
   -ExpectBluetoothSbcXq `
@@ -362,8 +359,9 @@ If a custom build fails (or bricks — two historical builds did, see
 2. Use the normal R1 SD-card firmware update / recovery flow. The bootloader's
    recovery path reads the SD root even when the main rootfs is broken.
 3. Once it boots the known-good firmware, re-stage and re-flash normally.
-4. Re-enable ADB after boot if further inspection is needed (or rely on boot
-   ADB if the known-good build has `-EnableBootAdb`).
+4. Re-enable ADB manually after boot if further inspection is needed. A
+   development build may use marker-gated `-EnableBootAdb`, but public builds
+   intentionally omit it.
 5. Do not keep trying unverified packages. Inspect rootfs modes,
    `hiby_player` executable bit, and verifier failures first.
 

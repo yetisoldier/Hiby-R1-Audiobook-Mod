@@ -2,6 +2,57 @@
 
 All public releases are for the normal HiBy R1 on stock firmware 1.6. Do not install these packages on the R1 MIDI.
 
+## v2.0.27 - 2026-08-06
+
+Firmware marker: `2.0.27` - About-screen label `HiBy R1 2.0.27`.
+
+USB storage and development-ADB maintenance update built directly on v2.0.26.
+Audiobook playback, resume, library, chapters, bookmarks, display wake, and UI
+behavior are unchanged.
+
+### Fixed: SD card unavailable over USB and inside Audiobooks
+
+- Removed persistent boot ADB from the public build. `/etc/init.d/S90adb` is no
+  longer installed, so Device mode once again presents the SD card to a
+  connected computer through normal USB mass storage.
+- Traced the regression to the old boot retry rebinding `adb_demo` after HiBy
+  had configured `android0` mass storage. The unbound mass-storage LUN could
+  continue holding `/dev/mmcblk0`, leaving the card unavailable both to the
+  computer and to audiobook file opens.
+- Confirmed that a reported 1.25 GiB, 23:34:05 M4B was valid AAC-LC at 44.1 kHz
+  stereo. It decoded at the beginning and at 60 seconds and played in the real
+  app as soon as the SD was mounted; no re-encoding was required.
+
+### Hardened manual USB transitions
+
+- Replaced the stock `adbon`/`adboff` wrappers with serialized transitions and
+  stale-lock recovery.
+- ADB mode now releases dormant mass-storage LUNs before mounting the SD
+  locally, preserving audiobook and music access during development.
+- Mass-storage mode syncs and cleanly unmounts the local SD before exposing the
+  block device. A busy filesystem is refused rather than exported live.
+- ADB shutdown runs in a detached worker so dismantling the ADB transport does
+  not kill the transition halfway through. If another process still prevents
+  unmounting, the helper restores ADB instead of leaving USB unusable.
+- If stock ADB startup refuses an already-mounted empty configfs during that
+  rollback, the helper now reconstructs the same FunctionFS gadget directly.
+  This keeps the debug connection recoverable after a deliberately refused
+  busy-SD transition.
+- USB transition diagnostics are written to `/tmp/r1-usb-mode.log`.
+- Development builds may still include `S90adb` with `-EnableBootAdb`, but it
+  requires an explicit `/usr/data/enable_boot_adb` marker, accepts Device mode
+  only, waits for stock USB setup, and performs one transition without the old
+  controller-stealing retry loop.
+
+### Verification
+
+- The full local sanity suite and strict production package verifier passed.
+- On the test R1, an active audiobook correctly blocked mass-storage export.
+- After leaving Audiobooks, the detached transition stopped ADB and Windows
+  detected `Linux File-Stor Gadget`; the `HibyR1` exFAT volume mounted normally.
+- The production package contains the hardened manual helpers, records
+  `boot_adb=disabled`, and contains no `/etc/init.d/S90adb`.
+
 ## v2.0.26 - 2026-07-27
 
 Firmware marker: `2.0.26` - About-screen label `HiBy R1 2.0.26`.

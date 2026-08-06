@@ -48,6 +48,7 @@ function Read-BootAdbStatus {
 echo "s90adb=$(if [ -x /etc/init.d/S90adb ]; then echo yes; elif [ -e /etc/init.d/S90adb ]; then echo present-not-exec; else echo no; fi)"
 echo "s90adb_wrapper=$(if grep -q skip=1856 /etc/init.d/S90adb 2>/dev/null; then echo yes; elif [ -e /etc/init.d/S90adb ]; then echo no; else echo missing; fi)"
 echo "t90adb=$(if [ -x /etc/init.d/T90adb ]; then echo yes; elif [ -e /etc/init.d/T90adb ]; then echo present-not-exec; else echo no; fi)"
+echo "enable_boot_adb=$(if [ -e /usr/data/enable_boot_adb ]; then echo yes; else echo no; fi)"
 echo "disableadb=$(if [ -e /usr/data/disableadb ]; then echo yes; else echo no; fi)"
 echo "adbd=$(ps | grep '[a]dbd' >/dev/null && echo running || echo stopped)"
 echo "adb_gadget=$(if [ -d /sys/kernel/config/usb_gadget/adb_demo ]; then echo yes; else echo no; fi)"
@@ -72,8 +73,12 @@ function Write-BootAdbAdvice($Status) {
     $values = $Status.Values
     Write-Host $Status.Raw
     Write-Host ""
-    if ($values["s90adb"] -eq "yes" -and $values["s90adb_wrapper"] -eq "yes" -and $values["disableadb"] -eq "no" -and $values["usb_working_mode"] -eq "1") {
+    if ($values["s90adb"] -eq "yes" -and $values["s90adb_wrapper"] -eq "yes" -and $values["enable_boot_adb"] -eq "yes" -and $values["disableadb"] -eq "no" -and $values["usb_working_mode"] -eq "1") {
         Write-Host "OK   ADB should be allowed to start on the next boot."
+    }
+    elseif ($values["s90adb"] -eq "yes" -and $values["s90adb_wrapper"] -eq "yes" -and $values["enable_boot_adb"] -ne "yes") {
+        Write-Host "INFO Development boot ADB is installed but not opted in."
+        Write-Host "     Run with -Action enable to create /usr/data/enable_boot_adb."
     }
     elseif ($values["s90adb"] -eq "yes" -and $values["s90adb_wrapper"] -eq "yes" -and $values["disableadb"] -eq "no") {
         Write-Host "INFO Firmware has /etc/init.d/S90adb, but USB working mode is not Device."
@@ -112,12 +117,12 @@ if ($LASTEXITCODE -ne 0) {
 
 switch ($Action) {
     "enable" {
-        Invoke-AdbText "rm -f /usr/data/disableadb; sync" | Out-Null
-        Write-Host "Removed /usr/data/disableadb. This affects the next boot if /etc/init.d/S90adb exists."
+        Invoke-AdbText "rm -f /usr/data/disableadb; touch /usr/data/enable_boot_adb; sync" | Out-Null
+        Write-Host "Enabled development boot ADB for the next reboot, if /etc/init.d/S90adb is installed."
     }
     "disable" {
-        Invoke-AdbText "touch /usr/data/disableadb; sync" | Out-Null
-        Write-Host "Created /usr/data/disableadb. This should block boot ADB on the next reboot."
+        Invoke-AdbText "rm -f /usr/data/enable_boot_adb; touch /usr/data/disableadb; sync" | Out-Null
+        Write-Host "Disabled development boot ADB for the next reboot."
         Write-Host "The current ADB session is left running."
     }
 }

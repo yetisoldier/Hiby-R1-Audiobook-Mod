@@ -72,8 +72,12 @@ The release installs these into the read-only rootfs:
 - `/usr/lib/libaudiobook_hook.so` — the LD_PRELOAD library (production lives
   in read-only rootfs, NOT on `/usr/data`).
 - The native helper binary.
-- `/etc/init.d/S90adb` (when built with `-EnableBootAdb`) — persistent boot
-  ADB. See [`modding/input_keys_hardware.md`](./modding/input_keys_hardware.md).
+- `/usr/bin/r1_usb_gadget_common.sh` plus hardened `/usr/bin/adbon` and
+  `/usr/bin/adboff` — serialized ADB/mass-storage transitions with clean SD
+  unmount checks and stale-gadget cleanup.
+- `/etc/init.d/S90adb` only in development builds made with `-EnableBootAdb`.
+  It additionally requires `/usr/data/enable_boot_adb`; public builds omit it.
+  See [`modding/input_keys_hardware.md`](./modding/input_keys_hardware.md).
 - `/etc/r1_audiobook_version` — the version marker (records enabled features).
 
 Runtime state lives under writable storage:
@@ -176,10 +180,10 @@ Three general device/music stock-feature unlocks, applied by
 These were carried by every pre-2.0 release (v1.5.0–v1.6.3) but dropped at the
 v2.0.0 NativeApp pivot; v2.0.17 restores them. They are pure
 resource/shell-config tweaks (no binary, boot, PMIC, or mount changes), so
-they are independent of the audiobook app and its hook. USB DAC and boot-ADB
-share the single USB gadget controller and are mutually exclusive by USB
-working mode, so both ship together. SBC XQ applies to the audiobook BT path
-too (the app drives `pcm.bluealsa` directly).
+they are independent of the audiobook app and its hook. USB DAC, mass storage,
+and manually enabled ADB share the single USB gadget controller and are
+mutually exclusive. SBC XQ applies to the audiobook BT path too (the app drives
+`pcm.bluealsa` directly).
 
 ## Build and flash
 
@@ -199,8 +203,8 @@ see [`modding/flash_and_recovery.md`](./modding/flash_and_recovery.md).
 - No full custom audiobook search UI.
 - PEQ requires a 1.7-beta `hiby_player` that breaks the LD_PRELOAD hook →
   excluded.
-- ADB is gated on USB working mode == Device (one USB gadget controller;
-  mutually exclusive with USB-DAC by mode).
+- ADB, USB mass storage, and USB DAC are mutually exclusive. Public builds do
+  not enable persistent ADB.
 - Full QEMU system emulation is not a release-confidence replacement.
 
 ## Safer extension points

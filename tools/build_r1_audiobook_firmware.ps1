@@ -340,6 +340,7 @@ ota_version=$OtaVersion
 ota_site=$effectiveOtaSite
 audiobook_entry=$audiobookEntryMarker
 boot_adb=$bootAdbMarker
+usb_gadget_scripts=hardened
 batd_logger=$batdLoggerMarker
 launcher_icon=$launcherIconMarker
 native_dsd=$nativeDsdMarker
@@ -418,124 +419,29 @@ if ($IncludeAudiobookNativeApp) {
     Write-Host ("Built and installed hook lib: {0} ({1} bytes)" -f $hookLibDest, (Get-Item -LiteralPath $hookLibSource).Length)
 }
 
-# Stock firmware ships the ADB startup helper as T90adb, but rcS only runs
-# /etc/init.d/S??* scripts. Keep boot ADB opt-in so shareable release builds do
-# not silently expose a debug bridge after reboot.
+# Replace the fragile stock ADB/mass-storage wrappers with serialized helpers
+# that release stale gadget LUNs, keep the SD mounted locally for ADB, and
+# refuse host mass-storage export while the local filesystem is busy.
+$usbScriptSources = @{
+    "firmware\scripts\r1_usb_gadget_common.sh" = "usr\bin\r1_usb_gadget_common.sh"
+    "firmware\scripts\adbon" = "usr\bin\adbon"
+    "firmware\scripts\adboff" = "usr\bin\adboff"
+}
+foreach ($sourceRelative in $usbScriptSources.Keys) {
+    $source = Resolve-PathStrict $sourceRelative
+    $destination = Join-Path $rootTree $usbScriptSources[$sourceRelative]
+    $text = (Get-Content -Raw -LiteralPath $source) -replace "`r`n", "`n" -replace "`r", "`n"
+    [System.IO.File]::WriteAllText($destination, $text, [System.Text.Encoding]::ASCII)
+}
+
+# Stock firmware ships T90adb, but rcS only runs S??* scripts. Public builds
+# deliberately omit S90adb. Development builds may install it, but persistent
+# ADB remains disabled until /usr/data/enable_boot_adb is explicitly created.
 if ($EnableBootAdb) {
     $persistentAdbBootScript = Join-Path $rootTree "etc\init.d\S90adb"
-    $persistentAdbBootScriptText = @'
-#!/bin/sh
-#
-# Development-only boot ADB wrapper.
-# The stock helper is T90adb, but rcS only starts S??* scripts. This wrapper
-# starts ADB when USB working mode is Auto (0) or Device (1). DAC/OTG modes
-# remain excluded because they need exclusive ownership of the USB gadget.
-# The stock player can reconfigure USB shortly after rcS starts us. A small
-# background retry therefore checks the already-created ADB gadget after the
-# player has finished booting and restarts its FunctionFS service if needed.
-#
-
-read_usb_working_mode() {
-    if [ ! -f /usr/data/user.ini ]; then
-        echo ""
-        return
-    fi
-
-    set -- $(dd if=/usr/data/user.ini bs=1 skip=1856 count=1 2>/dev/null | od -An -t u1 2>/dev/null)
-    echo "${1:-}"
-}
-
-adb_gadget_ready() {
-    [ -d /sys/kernel/config/usb_gadget/adb_demo ] &&
-    [ -s /sys/kernel/config/usb_gadget/adb_demo/UDC ] &&
-    pidof adbd >/dev/null 2>&1 || return 1
-
-    # A bound gadget and running adbd are not sufficient: on some boots the
-    # host never completes enumeration. Require the UDC's real state.
-    for state_file in /sys/class/udc/*/state; do
-        [ -f "$state_file" ] || continue
-        [ "$(cat "$state_file" 2>/dev/null)" = "configured" ] && return 0
-    done
-    return 1
-}
-
-start_adb_once() {
-    if adb_gadget_ready; then
-        return 0
-    fi
-
-    if [ -d /sys/kernel/config/usb_gadget/adb_demo ]; then
-        # If FunctionFS/adbd are healthy but the host did not enumerate, a
-        # brief UDC unbind/rebind is enough and avoids restarting the daemon.
-        if pidof adbd >/dev/null 2>&1; then
-            udc=$(cat /sys/kernel/config/usb_gadget/adb_demo/UDC 2>/dev/null)
-            [ -n "$udc" ] || udc=$(ls /sys/class/udc 2>/dev/null | head -n 1)
-            if [ -n "$udc" ]; then
-                echo "" > /sys/kernel/config/usb_gadget/adb_demo/UDC 2>/dev/null
-                sleep 1
-                echo "$udc" > /sys/kernel/config/usb_gadget/adb_demo/UDC 2>/dev/null
-                echo "Rebound ADB gadget on $udc" >>/tmp/boot-adb.log
-                return 0
-            fi
-        fi
-
-        # S440adb refuses to run when configfs is already mounted, even when
-        # its own gadget is present but was unbound by the player. Restarting
-        # the stock FunctionFS supervisor is the idempotent recovery path.
-        killall adbserver.sh >/dev/null 2>&1 || true
-        killall adbd >/dev/null 2>&1 || true
-        if [ -x /sbin/adbserver.sh ]; then
-            /sbin/adbserver.sh 440 >/tmp/boot-adb.log 2>&1 &
-        else
-            /usr/bin/adbd >/tmp/boot-adb.log 2>&1 &
-        fi
-        return 0
-    fi
-
-    /etc/init.d/T90adb start >>/tmp/boot-adb.log 2>&1
-}
-
-start_adb_with_retries() {
-    start_adb_once
-    (
-        for delay in 15 15 20; do
-            sleep "$delay"
-            mode=$(read_usb_working_mode)
-            case "$mode" in
-              0|1) ;;
-              *) exit 0 ;;
-            esac
-            adb_gadget_ready || start_adb_once
-        done
-    ) &
-}
-
-case "$1" in
-  start)
-    mode=$(read_usb_working_mode)
-    case "$mode" in
-      0|1) ;;
-      *) echo "Skip boot adb: usb_working_mode=$mode"; exit 0 ;;
-    esac
-    start_adb_with_retries
-    ;;
-  stop)
-    /etc/init.d/T90adb stop
-    ;;
-  restart|reload)
-    /etc/init.d/T90adb stop
-    start_adb_with_retries
-    ;;
-  *)
-    echo "Usage: $0 {start|stop|restart}"
-    exit 1
-esac
-
-exit $?
-'@
-    $persistentAdbBootScriptText = $persistentAdbBootScriptText -replace "`r`n", "`n"
-    $persistentAdbBootScriptText = $persistentAdbBootScriptText -replace "`r", "`n"
-    [System.IO.File]::WriteAllText($persistentAdbBootScript, $persistentAdbBootScriptText, [System.Text.Encoding]::ASCII)
+    $source = Resolve-PathStrict "firmware\scripts\S90adb"
+    $text = (Get-Content -Raw -LiteralPath $source) -replace "`r`n", "`n" -replace "`r", "`n"
+    [System.IO.File]::WriteAllText($persistentAdbBootScript, $text, [System.Text.Encoding]::ASCII)
 }
 
 if ($IncludeAudiobookResumeRuntime) {
@@ -970,6 +876,11 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $newFileModeOverrides = @()
+$newFileModeOverrides += @(
+    @{ Path = "usr\bin\r1_usb_gadget_common.sh"; Mode = "0755" },
+    @{ Path = "usr\bin\adbon"; Mode = "0755" },
+    @{ Path = "usr\bin\adboff"; Mode = "0755" }
+)
 if ($EnableBootAdb) {
     $newFileModeOverrides += @{ Path = "etc\init.d\S90adb"; Mode = "0755" }
 }
