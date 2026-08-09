@@ -31,6 +31,7 @@
 #include "player.h"
 #include "cover.h"
 #include "storage_guard.h"
+#include "music_catalog.h"
 
 /* EVIOCGRAB: exclusive grab on an input device so hiby_player's own fd
  * doesn't receive touch events while we're in audiobook mode. */
@@ -100,6 +101,7 @@ static void draw_now_playing(ui_state_t *ui);
 static void draw_bookmarks(ui_state_t *ui);
 static void draw_chapters(ui_state_t *ui);
 static void draw_volume_overlay(ui_state_t *ui);
+static void ui_log(const char *fmt, ...);
 
 typedef struct {
     pthread_t thread;
@@ -112,6 +114,52 @@ typedef struct {
 static scan_worker_t g_scan = {
     .mu = PTHREAD_MUTEX_INITIALIZER,
 };
+
+typedef struct {
+    pthread_t thread;
+    int started;
+} catalog_worker_t;
+
+static catalog_worker_t g_catalog;
+
+static void *catalog_worker_main(void *arg) {
+    (void)arg;
+    music_catalog_cleanup_result_t cleanup = {0};
+    int rc = -1;
+    /* A just-finished stock scan can hold the DB briefly after its progress
+     * screen closes. Retry in the background; the audiobook UI remains live. */
+    for (int attempt = 1; attempt <= 3; attempt++) {
+        memset(&cleanup, 0, sizeof(cleanup));
+        rc = music_catalog_remove_audiobooks_default(&cleanup);
+        ui_log("[catalog] attempt=%d checked=%d changed=%d removed=%d "
+               "failed=%d rc=%d\n", attempt, cleanup.databases_checked,
+               cleanup.databases_changed, cleanup.audiobook_rows_removed,
+               cleanup.databases_failed, rc);
+        if (rc == 0) break;
+        sleep(1);
+    }
+    return NULL;
+}
+
+static void catalog_worker_start(void) {
+    memset(&g_catalog, 0, sizeof(g_catalog));
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 256 * 1024);
+    int create_rc = pthread_create(
+        &g_catalog.thread, &attr, catalog_worker_main, NULL);
+    pthread_attr_destroy(&attr);
+    if (create_rc == 0)
+        g_catalog.started = 1;
+    else
+        ui_log("[catalog] worker start failed\n");
+}
+
+static void catalog_worker_join(void) {
+    if (!g_catalog.started) return;
+    pthread_join(g_catalog.thread, NULL);
+    g_catalog.started = 0;
+}
 
 static void *scan_worker_main(void *arg) {
     (void)arg;
@@ -892,6 +940,11 @@ int ui_run(uint16_t *fb, int fb_fd) {
     }
     ui_log("[ui] DB opened, starting event loop\n");
 
+    /* Clean HiBy's Music catalog in the background on every entry. This makes
+     * the result independent of whether Music Update Database or Audiobooks
+     * Refresh Library was run last. */
+    catalog_worker_start();
+
     /* Build the initial screen's render cache (HOME) before enabling the draw
      * hook, so the first frame the render thread draws has valid data. */
     rebuild_screen(ui);
@@ -908,6 +961,7 @@ int ui_run(uint16_t *fb, int fb_fd) {
         ui_log("[ui] No input device — will run for 30s then exit\n");
         sleep(30);
         g_ui_active = 0;
+        catalog_worker_join();
         player_shutdown();
         audiobook_db_close(ui->db);
         return 0;
@@ -1190,6 +1244,7 @@ int ui_run(uint16_t *fb, int fb_fd) {
     set_blanked(ui, 0, fb_fd);  /* restore backlight on exit */
     close_input(ui);
     scan_worker_join();
+    catalog_worker_join();
     free_render_cache(ui);  /* free the list/bookmark/chapter caches */
     player_shutdown();   /* stop playback + save progress (uses db) */
     cover_shutdown();   /* free the cached cover art */

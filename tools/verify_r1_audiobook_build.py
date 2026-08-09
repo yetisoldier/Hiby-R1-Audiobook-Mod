@@ -709,6 +709,15 @@ def verify(
             require("MAX_CRASHES=5" in text,
                     "native player wrapper bounds restart loops", failures)
 
+        hook_lib = root / "usr/lib/libaudiobook_hook.so"
+        if hook_lib.exists():
+            hook_data = hook_lib.read_bytes()
+            require(
+                b"[catalog] attempt=" in hook_data,
+                "native hook includes on-entry Music catalog cleanup",
+                failures,
+            )
+
         entries = squashfs_entries(rootfs, unsquashfs)
         stock_entries = squashfs_entries(stock_rootfs, unsquashfs)
         require(bool(entries), f"read rebuilt squashfs entries with {unsquashfs}", failures)

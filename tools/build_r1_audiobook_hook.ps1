@@ -41,6 +41,7 @@ $sources = @(
     "audiobook_app\pngdec.c",
     "audiobook_app\bookmark_sd.c",
     "audiobook_app\storage_guard.c",
+    "audiobook_app\music_catalog.c",
     "audiobook_app\player.c",
     "audiobook_app\wsola.c",
     "audiobook_app\sqlite3.c"

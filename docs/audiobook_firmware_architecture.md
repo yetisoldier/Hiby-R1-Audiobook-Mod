@@ -41,6 +41,9 @@ LD_PRELOAD hook (libaudiobook_hook.so, ~1.6 MB)
             decode, seek, speed, and mixer work stay on the player thread.
   - Refresh worker: scans on a private SQLite connection while the event loop,
             playback, and hardware controls continue running.
+  - Music catalog cleanup: a short-lived background worker removes root
+            `/Audiobooks` paths from HiBy's stock Music DB copies on app entry.
+            It is not a daemon and has no idle RAM or battery cost.
   - Storage guard: keeps the removable-card runtime-PM path active only while
             Audiobooks owns SD-backed media and restores stock policy on exit.
   - Library scan / chapters / bookmarks / positions (audiobook_app/).
@@ -146,6 +149,14 @@ See [`modding/audio_decode_alsa.md`](./modding/audio_decode_alsa.md) and
   private worker connection. Catalog writes are transactional and serialized;
   SD-primary progress saves skip their optional DB mirror while the scanner owns
   the writer lock, so a refresh cannot stall audio decoding.
+- The native app does not need audiobook rows in HiBy's stock Music database.
+  On every Audiobooks entry, `audiobook_app/music_catalog.c` transactionally
+  removes root `/Audiobooks` rows from the known internal, `/data`, and SD-root
+  DB copies and reconciles Music's search, metadata, format, count, and time
+  indexes. The work runs on a background thread and retries brief post-scan DB
+  locks. This makes isolation independent of whether Music Update Database or
+  Audiobooks Refresh Library was run last, without restoring the pre-2.0
+  always-running DB watcher.
 - M4B chapters parsed from the embedded QuickTime chapter track
   (stsc-aware) or Nero `chpl`. See
   [`modding/library_scan_storage.md`](./modding/library_scan_storage.md).

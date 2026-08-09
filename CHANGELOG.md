@@ -2,6 +2,47 @@
 
 All public releases are for the normal HiBy R1 on stock firmware 1.6. Do not install these packages on the R1 MIDI.
 
+## v2.0.28 - 2026-08-09
+
+Firmware marker: `2.0.28` - About-screen label `HiBy R1 2.0.28`.
+
+Music-catalog isolation fix built directly on v2.0.27. Playback, resume,
+chapters, bookmarks, display wake, USB handling, and the audiobook UI are
+otherwise unchanged.
+
+### Fixed: audiobooks also appearing in Music
+
+- Traced fresh-install reports to two independent catalogs: the native
+  Audiobooks app correctly scanned `/Audiobooks` into its own `library.db`, but
+  HiBy's stock Update Database scanner still imported the same files into the
+  stock Music database.
+- The development R1 masked the regression because pre-2.0 maintenance builds
+  had already cleaned its long-lived Music database. Downgrading among v2.0.x
+  did not help affected users because those releases all used the independent
+  native catalog without the old maintenance component.
+- Added an on-entry, background Music-catalog cleanup. It removes only root
+  `/Audiobooks` paths from all known HiBy Music DB copies and transactionally
+  reconciles search rows, named catalogs, format counts, total counts, and
+  time indexes.
+- Cleanup is independent of refresh order: after Music -> Update Database,
+  simply opening Audiobooks converges the catalogs again.
+- The worker is short-lived, uses a 256 KiB stack, has bounded 250 ms lock
+  waits with three short retries, and leaves no daemon or idle polling behind.
+
+### Verification
+
+- A committed synthetic HiBy-schema fixture covers music and audiobooks that
+  share album, artist, genre, and album-artist metadata.
+- Two captured device databases also passed: 135 audiobook rows were removed
+  while 114 Music rows remained unchanged; a 7,694-row database removed 298
+  audiobook rows while preserving all 7,396 Music rows.
+- Every fixture passed catalog-count checks, time/format index checks,
+  `PRAGMA integrity_check`, and an idempotent second cleanup.
+- The full local sanity suite and strict production package verifier passed.
+- The verifier confirms all 5,488 stock paths and modes, 482 symlinks, root
+  ownership, NativeApp integration, the catalog-cleanup marker, audio unlocks,
+  USB helpers, OTA metadata, and the absence of persistent boot ADB.
+
 ## v2.0.27 - 2026-08-06
 
 Firmware marker: `2.0.27` - About-screen label `HiBy R1 2.0.27`.

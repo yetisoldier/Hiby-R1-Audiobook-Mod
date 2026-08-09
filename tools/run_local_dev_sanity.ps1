@@ -65,6 +65,7 @@ $psFiles = @(
     "tools\publish_github_release.ps1",
     "tools\stage_r1_firmware_package.ps1",
     "tools\test_r1_db_maint_qemu_wsl.ps1",
+    "tools\test_music_catalog_cleanup.ps1",
     "tools\test_r1_resume_daemon_logic_wsl.ps1"
 )
 foreach ($file in $psFiles) {
@@ -80,7 +81,25 @@ foreach ($file in $psFiles) {
 }
 
 Invoke-Checked {
-    wsl -d $Distro --cd $repoRoot --exec sh -lc 'sh -n tools/r1_audiobook_resume_daemon.sh && sh -n tools/r1_audiobook_db_watch.sh && sh -n tools/r1_audiobook_refresh.sh && sh -n tools/test_r1_resume_daemon_logic.sh && sh -n tools/test_r1_db_watch_logic.sh && sh -n tools/test_r1_usb_adb_fallback.sh && sh -n firmware/scripts/r1_usb_gadget_common.sh && sh -n firmware/scripts/adbon && sh -n firmware/scripts/adboff && sh -n firmware/scripts/S90adb'
+    $shellFiles = @(
+        "tools\r1_audiobook_resume_daemon.sh",
+        "tools\r1_audiobook_db_watch.sh",
+        "tools\r1_audiobook_refresh.sh",
+        "tools\test_r1_resume_daemon_logic.sh",
+        "tools\test_r1_db_watch_logic.sh",
+        "tools\test_r1_usb_adb_fallback.sh",
+        "firmware\scripts\r1_usb_gadget_common.sh",
+        "firmware\scripts\adbon",
+        "firmware\scripts\adboff",
+        "firmware\scripts\S90adb"
+    )
+    foreach ($file in $shellFiles) {
+        $normalized = (Get-Content -Raw -LiteralPath $file).Replace("`r", "")
+        $normalized | wsl -d $Distro --exec sh -n
+        if ($LASTEXITCODE -ne 0) {
+            throw "Shell syntax failed: $file"
+        }
+    }
 } "Shell syntax"
 
 Invoke-Checked {
@@ -109,7 +128,8 @@ Invoke-Checked {
         tools\r1_hiby_player_ui_callsite_report.py `
         tools\r1_hiby_player_static_xrefs.py `
         tools\generate_audiobook_launcher_icons.py `
-        tools\test_mp3_chapters.py
+        tools\test_mp3_chapters.py `
+        tools\test_music_catalog_cleanup.py
 } "Python compile"
 
 Invoke-Checked {
@@ -129,6 +149,10 @@ Invoke-Checked {
     wsl -d $Distro --cd $repoRoot --exec python3 `
         tools/test_mp3_chapters.py --probe work/native-tests/tags_probe
 } "MP3 chapter parser fixtures"
+
+Invoke-Checked {
+    powershell -NoProfile -ExecutionPolicy Bypass -File tools\test_music_catalog_cleanup.ps1
+} "Native Music catalog cleanup fixtures"
 
 Invoke-Checked {
     powershell -NoProfile -ExecutionPolicy Bypass -File tools\test_r1_resume_daemon_logic_wsl.ps1 -Distro $Distro

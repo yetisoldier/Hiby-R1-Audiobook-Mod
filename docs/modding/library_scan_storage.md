@@ -7,9 +7,35 @@ Source:
 [`audiobook_app/scan.c`](../../audiobook_app/scan.c),
 [`audiobook_app/tags.c`](../../audiobook_app/tags.c),
 [`audiobook_app/library.c`](../../audiobook_app/library.c),
+[`audiobook_app/music_catalog.c`](../../audiobook_app/music_catalog.c),
 [`audiobook_app/player.c`](../../audiobook_app/player.c) +
 [`audiobook_app/posstore.h`](../../audiobook_app/posstore.h),
 [`audiobook_app/bookmark_sd.c`](../../audiobook_app/bookmark_sd.c).
+
+## Stock Music catalog isolation (v2.0.x)
+
+The native audiobook catalog and HiBy's stock Music catalog are independent.
+HiBy's Update Database scanner still walks the whole SD card, so a fresh stock
+database can contain both `/Music` and `/Audiobooks` even though the native app
+correctly scanned its own `library.db`. Older development devices could hide
+this because a pre-2.0 maintenance build had already cleaned their stock DB.
+
+`music_catalog.c` fixes that boundary on every Audiobooks app entry. A
+short-lived background worker opens each existing HiBy DB location
+(`/usr/data/usrlocal_media.db`, `/data/usrlocal_media.db`, and the SD-root
+copy), deduplicates aliases by device/inode, and removes only root
+`/Audiobooks` paths in a transaction. It then reconciles the stock Music
+search rows, named catalog counts, format counts, total counts, and time
+indexes. Missing copies are normal. A just-finished stock scan lock is retried
+three times. There is no resident watcher and therefore no idle polling,
+memory, or battery overhead.
+
+Host regression coverage is in `tools/test_music_catalog_cleanup.py` and
+`tools/test_music_catalog_cleanup.ps1`. It always runs a committed synthetic
+HiBy-schema fixture (including shared music/audiobook metadata) and also uses
+captured device DBs when available. It verifies zero audiobook leakage,
+preserves every legitimate Music row exactly, checks catalog counts and SQLite
+integrity, and verifies that a second cleanup is a no-op.
 
 ## moov mmap fix — scan hang on big-moov M4B (v2.0.4)
 
