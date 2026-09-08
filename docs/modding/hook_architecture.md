@@ -196,13 +196,26 @@ value, so brightness-only state tracking cannot tell that the panel is off.
 Audio and hardware controls continue working, but the framebuffer refuses
 `FBIOPAN_DISPLAY` with `EBUSY` and the screen may appear permanently black.
 
-The hook prevents that split state in three layers:
+The stock timeout is a two-step operation: after the framebuffer blank it calls
+`system("echo mem > /sys/power/state")`. Intercepting `FBIOBLANK` alone does not
+cancel that later suspend. This matters because the stock UI thread and the
+NativeApp event loop share the `hiby_player` process; the timeout can finish its
+sequence after the NativeApp has converted the first blank request. Reports
+that disabling the device backlight timer avoids the dead display are
+consistent with this race.
+
+The hook prevents that split state in four layers:
 
 1. While audiobook mode is active, stock hard-blank requests are intercepted
    and published to the UI event loop as lightweight blank requests.
-2. Every media or volume key performs an idempotent framebuffer unblank before
+2. The preload library interposes `system()` and suppresses only the exact stock
+   `echo mem > /sys/power/state` command while audiobook mode is active. It
+   reports success and requests the same lightweight blank. Every other system
+   command passes through to libc, and stock suspend behavior is unchanged
+   outside Audiobooks.
+3. Every media or volume key performs an idempotent framebuffer unblank before
    its normal action.
-3. An `EBUSY` pan is treated as a missed hard blank. The UI unblanks the
+4. An `EBUSY` pan is treated as a missed hard blank. The UI unblanks the
    framebuffer, turns only the backlight off, and records the screen as
    blanked. One power press or a double-tap can then wake it normally.
 

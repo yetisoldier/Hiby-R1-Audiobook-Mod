@@ -2,6 +2,39 @@
 
 All public releases are for the normal HiBy R1 on stock firmware 1.6. Do not install these packages on the R1 MIDI.
 
+## v2.0.29 - 2026-09-08
+
+Firmware marker: `2.0.29` - About-screen label `HiBy R1 2.0.29`.
+
+Display-wake hardening release built directly on v2.0.28. Playback, resume,
+catalog isolation, chapters, bookmarks, USB handling, and the audiobook UI are
+otherwise unchanged.
+
+### Fixed: dead screen after the automatic backlight timeout
+
+- Traced the remaining failure to HiBy's two-stage idle path. The stock player
+  first requests a hard framebuffer blank and then separately runs
+  `echo mem > /sys/power/state` through `system()`.
+- The earlier display protection converted the framebuffer blank but did not
+  cancel the later suspend request. This could leave audiobook audio and
+  hardware controls alive while the panel could not be woken. Reports that the
+  failure disappeared when the backlight timer was disabled matched this race.
+- The preload hook now suppresses only that exact stock suspend command while
+  Audiobooks owns the display and converts it into the existing lightweight
+  backlight-only blank. All other system commands pass through unchanged.
+- HiBy's normal backlight and suspend behavior remains unchanged outside the
+  Audiobooks app.
+
+### Verification
+
+- The MIPS/glibc 2.22 hook rebuilt successfully and exports both the `ioctl`
+  and `system` interposition symbols.
+- The strict package verifier confirms the suspend guard is present and all
+  5,488 stock paths/modes, 482 symlinks, root ownership, NativeApp integration,
+  catalog cleanup, USB hardening, audio unlocks, and OTA metadata are intact.
+- The full local regression suite passed. An extended real-device timeout/wake
+  soak remains useful because the original failure was intermittent.
+
 ## v2.0.28 - 2026-08-09
 
 Firmware marker: `2.0.28` - About-screen label `HiBy R1 2.0.28`.

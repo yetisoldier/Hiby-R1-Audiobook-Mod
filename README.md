@@ -3,19 +3,19 @@
 A self-contained audiobook app for the normal HiBy R1, based on stock HiBy R1
 firmware 1.6. **Not for the R1 MIDI.**
 
-> **v2.0.28 is the current release.** It prevents files under `/Audiobooks`
-> from remaining in HiBy's stock Music catalog after Update Database. It also
-> includes the v2.0.27 USB-storage fix and all earlier NativeApp stability,
-> display-wake, folder, chapter, Now Playing, and resume improvements.
+> **v2.0.29 is the current release.** It fixes a remaining dead-screen race
+> between the Audiobooks UI and HiBy's automatic backlight timer. It also
+> includes the v2.0.28 Music-catalog isolation fix, v2.0.27 USB-storage fix,
+> and all earlier NativeApp stability, chapter, and resume improvements.
 
 ## Current release
 
-- **Version marker:** `2.0.28`
-- **About-screen label:** `HiBy R1 2.0.28`
-- **Download:** <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v2.0.28>
-- **Package:** `r1-audiobooks-2.0.28.upt` (rename to `r1.upt` to install)
-- **UPT MD5:** `da13cf3a78823ce9e982bdc1a51f9cd3`
-- **UPT SHA256:** `fcce40b32fd1eddef5cd31412cae5565f434c13c2293dd3692648b8b39173431`
+- **Version marker:** `2.0.29`
+- **About-screen label:** `HiBy R1 2.0.29`
+- **Download:** <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v2.0.29>
+- **Package:** `r1-audiobooks-2.0.29.upt` (rename to `r1.upt` to install)
+- **UPT MD5:** `cb536fd0b3d2677a87369e9f57e9bdd3`
+- **UPT SHA256:** `c3eb881f853715cb4c464c56db6f39d02198dd07071a7e667dece47fea7537bb`
 - **Boot ADB:** disabled. The public package omits `/etc/init.d/S90adb`, so
  connecting the R1 in Device mode exposes the SD card as normal USB storage.
  ADB can still be enabled manually for development, but ADB and USB storage
@@ -28,7 +28,7 @@ firmware 1.6. **Not for the R1 MIDI.**
 
 **v2.0.20 compatibility note:** v2.0.20 was published from an experimental
 UTF-8/Cyrillic side branch. That text-rendering experiment is not included in
-v2.0.28 because this release follows the separately tested stability line. If
+v2.0.29 because this release follows the separately tested stability line. If
 you rely on Cyrillic audiobook names or tags, remain on v2.0.20 for now.
 
 Before flashing, keep a known-good stock 1.6 `r1.upt` for recovery. This is
@@ -51,8 +51,8 @@ the R1 MIDI or other HiBy players unless you are prepared to recover the device.
  <img src="docs/screenshots/08-launcher-after-exit.png" alt="HiBy launcher after exiting the app" width="200">
 </p>
 
-Captured directly from the test R1. The v2.0.28 catalog maintenance update does
-not change these screens. Full set in [`docs/screenshots/`](docs/screenshots/).
+Captured directly from the test R1. The v2.0.29 display-wake update does not
+change these screens. Full set in [`docs/screenshots/`](docs/screenshots/).
 
 ## How it works
 
@@ -139,8 +139,11 @@ browser, Bluetooth, USB, and system UI are otherwise untouched.
 
 **Hardware**
 - Power button toggles backlight (audio keeps playing dark; double-tap wakes).
-- Stock hard-screen blanks are converted to the app's lightweight screen-off
-  state. If the panel ever enters that state unexpectedly, the next power,
+- Stock automatic backlight timeouts are converted to the app's lightweight
+  screen-off state. While Audiobooks is open, the later stock system-suspend
+  request is also suppressed so the panel remains wakeable while audio plays.
+  Outside Audiobooks, HiBy's normal timeout and suspend behavior is unchanged.
+- If the panel ever enters a hard-blank state unexpectedly, the next power,
   media, or volume input explicitly restores the framebuffer before acting.
 - Play/pause, prev/next, volume keys in-app. Volume is fine-stepped (~2-2.5 dB)
   with hold-to-ramp and a temporary on-screen volume indicator.
@@ -226,7 +229,7 @@ browser, Bluetooth, USB, and system UI are otherwise untouched.
 
 ## Install
 
-1. Download `r1-audiobooks-2.0.28.upt` from the release page.
+1. Download `r1-audiobooks-2.0.29.upt` from the release page.
 2. Rename it to exactly `r1.upt` (the R1 will not recognize the update otherwise).
 3. Copy it to the root of the SD card.
 4. On the R1, run the normal firmware update
@@ -270,18 +273,18 @@ The production firmware command below recompiles the hook from current source
 before packaging it, so this separate command is useful for quick development
 checks but is not required for a release build.
 
-Build the public-release firmware (version 2.0.28):
+Build the public-release firmware (version 2.0.29):
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\build_r1_audiobook_firmware.ps1 `
- -OutDir work\audiobook-firmware-2.0.28 `
- -OutputUpt work\audiobook-firmware-2.0.28\r1-audiobooks-2.0.28.upt `
+ -OutDir work\audiobook-firmware-2.0.29 `
+ -OutputUpt work\audiobook-firmware-2.0.29\r1-audiobooks-2.0.29.upt `
  -IncludeAudiobookNativeApp `
  -UnlockNativeDsd `
  -EnableBluetoothSbcXq `
  -UnlockUsbDacMode `
- -CustomVersionId 2.0.28 `
- -CustomVersionLabel "HiBy R1 2.0.28"
+ -CustomVersionId 2.0.29 `
+ -CustomVersionLabel "HiBy R1 2.0.29"
 ```
 
 The public build intentionally omits `-EnableBootAdb`. For a development-only
@@ -319,7 +322,7 @@ alone.
 - `docs/screenshots/` - README screenshots.
 - `firmware/releases/v2.0.16/` - v2.0.16 release notes and checksums.
 - `firmware/releases/v2.0.17/` - v2.0.17 release notes and checksums.
-- `firmware/releases/v2.0.28/` - current release notes and checksums.
+- `firmware/releases/v2.0.29/` - current release notes and checksums.
 - `CHANGELOG.md` - release history.
 
 ## Attribution and sources

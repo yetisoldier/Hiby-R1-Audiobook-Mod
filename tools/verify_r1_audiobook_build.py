@@ -717,6 +717,12 @@ def verify(
                 "native hook includes on-entry Music catalog cleanup",
                 failures,
             )
+            require(
+                b"echo mem > /sys/power/state" in hook_data
+                and b"stock suspend blocked; using lightweight blank" in hook_data,
+                "native hook blocks stock suspend while Audiobooks owns the display",
+                failures,
+            )
 
         entries = squashfs_entries(rootfs, unsquashfs)
         stock_entries = squashfs_entries(stock_rootfs, unsquashfs)

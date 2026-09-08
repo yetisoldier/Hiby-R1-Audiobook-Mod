@@ -45,6 +45,7 @@
 #include <sys/select.h>
 #include <sys/time.h>
 #include <pthread.h>
+#include <dlfcn.h>
 
 #include "ui.h"
 #include "font.h"
@@ -68,6 +69,9 @@ static volatile int audiobook_mode = 0;  /* 1 = draw UI before pan, 0 = passthro
 static uint16_t *g_fb = NULL;            /* hiby_player's fb mmap base */
 static int hook_b_installed = 0;
 static uint32_t saved_insns_b[4];
+
+typedef int (*libc_system_fn)(const char *command);
+static libc_system_fn real_system;
 
 typedef struct {
     uint16_t *fb;
@@ -134,6 +138,32 @@ static void ui_log_raw(const char *buf, int len) {
         int fd = open(LOG_PATH, O_WRONLY | O_CREAT | O_APPEND, 0644);
         if (fd >= 0) { write(fd, buf, len); close(fd); }
     }
+}
+
+/* Stock auto-backlight handling ends by suspending the whole device through
+ * system("echo mem > /sys/power/state").  That is correct on stock screens,
+ * but while our UI owns the framebuffer it races the lightweight blank path:
+ * audio and keys can remain alive while the panel is left hard-suspended.
+ * Interpose only this exact stock command while Audiobooks is active.  Every
+ * other command, including our Bluetooth reconnect helper, is passed through
+ * to libc unchanged. */
+__attribute__((visibility("default")))
+int system(const char *command) {
+    static const char stock_suspend[] = "echo mem > /sys/power/state";
+
+    if (audiobook_mode && command && strcmp(command, stock_suspend) == 0) {
+        ui_notify_fb_blank(1);
+        logmsg("[hook] stock suspend blocked; using lightweight blank\n");
+        return 0;
+    }
+
+    if (!real_system)
+        real_system = (libc_system_fn)dlsym(RTLD_NEXT, "system");
+    if (!real_system) {
+        errno = ENOSYS;
+        return -1;
+    }
+    return real_system(command);
 }
 
 /* Expose the persistent log fd for ui.c to use directly. */
