@@ -197,7 +197,7 @@ if (Test-AdbDevice $adbPath) {
         -ExpectedVersion $ExpectedVersion `
         -ExpectedLabel $ExpectedLabel `
         -ExpectNativeApp:$ExpectNativeApp `
-        -RequireBootAdb:$ExpectNativeApp `
+        -RequireBootAdb:$false `
         -ExpectAudiobookLauncherIcon `
         -RequireDbMaintenance:(!$ExpectNativeApp) `
         -IUnderstandThisStagesFirmware `

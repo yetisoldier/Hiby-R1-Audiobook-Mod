@@ -36,6 +36,11 @@ if ($LASTEXITCODE -ne 0) {
     throw "Synthetic Music catalog cleanup fixture failed"
 }
 
+python tools\test_music_catalog_cleanup.py --helper $OutFile --large
+if ($LASTEXITCODE -ne 0) {
+    throw "Large synthetic Music catalog cleanup fixture failed"
+}
+
 $capturedFixtures = @(
     "work\db-audiobooks-all-20260609\usrlocal_media.with-audiobooks.db",
     "work\usrlocal_media.db"

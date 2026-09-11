@@ -60,7 +60,6 @@
 #include "posstore.h"      /* SD-primary position store (never lost to full /usr/data) */
 
 #define POSITION_SAVE_INTERVAL_MS 15000u
-#define DB_MIRROR_INTERVAL_MS     60000u
 
 /* ---- logging ----------------------------------------------------------- */
 static void plog(const char *fmt, ...) {
@@ -280,6 +279,40 @@ typedef struct {
     int64_t start_ms;
 } player_cmd_t;
 
+typedef struct {
+    audiobook_progress_t progress;
+    int mirror_db;
+    int persist_sd;
+    uint64_t book_signature;
+    unsigned int sequence;
+} progress_job_t;
+
+#define PCM_BUF_SAMPLES 16384
+#define PCM_WRITER_QUEUE_SAMPLES 32768
+#define PCM_WRITER_PERIOD_SAMPLES 32768
+
+typedef struct {
+    int fd;
+    int *io_error;
+} mp3_io_ctx_t;
+
+typedef struct {
+    pthread_t thread;
+    int thread_alive;
+    int track_idx;
+    int fd;
+    int io_error;
+    int ready;
+    int open_result;
+    long rate;
+    int channels;
+    size_t first_samples;
+    int16_t first_pcm[PCM_BUF_SAMPLES];
+    mp3dec_ex_t dec;
+    mp3dec_io_t io;
+    mp3_io_ctx_t io_ctx;
+} mp3_preload_t;
+
 /* Audio output sink. WIRED = the CS43131 wired DAC (plughw:0,0/hw:0,0); BT =
  * BlueALSA A2DP (the predefined `pcm.bluealsa` plug device, auto rate/format
  * conversion). Auto-detect per track-open: BT when an A2DP sink is connected,
@@ -295,6 +328,22 @@ static struct {
     pthread_mutex_t mu;
     int thread_alive;
     int running;
+
+    /* Progress persistence runs independently of decode/ALSA. exFAT metadata
+     * and SQLite journal writes can occasionally take longer than the PCM
+     * buffer; doing them on the decode thread underruns the R1 AIC driver and
+     * can leave its DMA descriptor at address zero. The queue is latest-wins:
+     * at most one tiny snapshot waits while the worker is writing. */
+    pthread_t progress_thread;
+    pthread_mutex_t progress_mu;
+    pthread_cond_t progress_cv;
+    int progress_thread_alive;
+    int progress_running;
+    int progress_pending;
+    int progress_busy;
+    unsigned int progress_requested_seq;
+    unsigned int progress_completed_seq;
+    progress_job_t progress_job;
 
     player_cmd_t cmd_queue[CMD_QUEUE_CAP];
     int cmd_head;
@@ -318,13 +367,41 @@ static struct {
 
     mp3dec_ex_t dec;        /* minimp3_ex streaming decoder (open while a track is loaded) */
     mp3dec_io_t io;         /* read/seek callbacks wired to track_fd */
+    mp3_io_ctx_t io_ctx;
+    mp3_preload_t preload;
     int dec_open;           /* dec is open for the current track (MP3 path) */
     int track_fd;           /* fd we opened for the current track (we own it; MP3 path) */
     int media_io_error;     /* read/seek failed; never treat this as book EOF */
     int media_missing;      /* current SD media disappeared during playback */
     void *pcm;
+    unsigned long pcm_period_frames;
+    unsigned long pcm_pending_frames;
+    int pcm_pending_channels;
+    int16_t pcm_pending[32768];
+    /* Wired output is fed by a small bounded queue. The decoder can keep ALSA
+     * supplied across multipart bookkeeping without relying on the driver's
+     * one-period margin. Bluetooth retains the direct write path because its
+     * plug/encoder already buffers and has separate reopen semantics. */
+    pthread_t pcm_writer_thread;
+    pthread_mutex_t pcm_writer_mu;
+    pthread_cond_t pcm_writer_data_cv;
+    pthread_cond_t pcm_writer_space_cv;
+    pthread_cond_t pcm_writer_idle_cv;
+    int pcm_writer_thread_alive;
+    int pcm_writer_running;
+    int pcm_writer_active;
+    int pcm_writer_busy;
+    int pcm_writer_error;
+    int pcm_writer_channels;
+    unsigned long pcm_writer_period_frames;
+    size_t pcm_writer_head;
+    size_t pcm_writer_tail;
+    size_t pcm_writer_samples;
+    int16_t pcm_writer_queue[PCM_WRITER_QUEUE_SAMPLES];
+    int16_t pcm_writer_period[PCM_WRITER_PERIOD_SAMPLES];
     long rate;
-    int channels;
+    int channels;       /* decoded/source channels */
+    int pcm_channels;   /* ALSA channels; wired mono is duplicated to stereo */
 
     /* Format dispatch: DEC_MP3 uses the minimp3 fields above; DEC_AAC uses the
      * mp4/fdk-aac fields below. track_open is the format-agnostic "a track is
@@ -404,30 +481,36 @@ static struct {
     int bt_native_hold_released; /* stock BlueALSA socket was displaced */
 } g_pl;
 
-/* Set by save_progress (player thread) to tell the UI event loop that the
- * current book's progress changed, so it can refresh the cached progress + home
- * counts WITHOUT the render thread touching the DB. Polled + cleared on the
- * event thread. Plain volatile int — a stale/lost transition just means the UI
- * refreshes one tick later. Defined in ui.c. */
+/* Set by the progress writer after a DB mirror so the UI event loop can refresh
+ * cached progress + home counts without the render thread touching the DB. */
 extern volatile int g_progress_dirty;
 
-/* ---- minimp3_ex I/O callbacks (wired to g_pl.track_fd) ------------------ */
-/* minimp3_ex reads the file through these; we own the fd. Defined after g_pl
- * so it's in scope. Signature:
+/* ---- minimp3_ex I/O callbacks ------------------------------------------ */
+/* Each decoder supplies an fd/error context through read_data/seek_data. This
+ * permits the next physical file to be prepared on a background thread while
+ * the current decoder and ALSA stream continue running. Signature:
  *   size_t read(void *buf, size_t size, void *user_data);
  *   int     seek(uint64_t position, void *user_data);  (absolute SEEK_SET) */
 static size_t mp3_io_read(void *buf, size_t size, void *user_data) {
-    (void)user_data;
-    ssize_t n = read(g_pl.track_fd, buf, size);
-    if (n < 0) { g_pl.media_io_error = 1; return 0; }
+    mp3_io_ctx_t *ctx = (mp3_io_ctx_t *)user_data;
+    if (!ctx || ctx->fd < 0) return 0;
+    ssize_t n = read(ctx->fd, buf, size);
+    if (n < 0) {
+        if (ctx->io_error) *ctx->io_error = 1;
+        return 0;
+    }
     return (size_t)n;
 }
 static int mp3_io_seek(uint64_t position, void *user_data) {
-    (void)user_data;
-    off_t r = lseek(g_pl.track_fd, (off_t)position, SEEK_SET);
-    if (r < 0) g_pl.media_io_error = 1;
+    mp3_io_ctx_t *ctx = (mp3_io_ctx_t *)user_data;
+    if (!ctx || ctx->fd < 0) return -1;
+    off_t r = lseek(ctx->fd, (off_t)position, SEEK_SET);
+    if (r < 0 && ctx->io_error) *ctx->io_error = 1;
     return (r < 0) ? -1 : 0;
 }
+
+static void mp3_preload_discard(void);
+static long pcm_write_or_fallback(const void *buf, unsigned long frames);
 
 /* ---- ALSA mixer (hardware volume) -------------------------------------- */
 
@@ -785,26 +868,115 @@ static void pos_dir_ensure(void) {
     (void)mkdir(POS_DIR, 0777);
 }
 
-void pos_save_sd(int book_id, int track_ordinal, int64_t track_pos_ms,
-                 int64_t book_elapsed_ms, int completed) {
+typedef struct {
+    int track_ordinal;
+    int64_t track_pos_ms;
+    int64_t book_elapsed_ms;
+    int completed;
+    long saved_at;
+    uint64_t book_signature;
+} pos_record_t;
+
+static uint64_t path_signature(const char *path) {
+    uint64_t hash = UINT64_C(1469598103934665603);
+    if (!path) return hash;
+    while (*path) {
+        hash ^= (unsigned char)*path++;
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
+static uint64_t current_book_signature(void) {
+    return g_pl.track_count > 0 ? path_signature(g_pl.tracks[0].path) : 0;
+}
+
+/* Build a per-card internal checkpoint path. The SD CID comes from the kernel,
+ * contains only hex digits, and remains stable when the card is remounted. */
+static int pos_cache_paths(int book_id, char *path, size_t path_n,
+                           char *tmp, size_t tmp_n) {
+    if (book_id <= 0 || !path || !tmp) return 0;
+    FILE *f = fopen("/sys/block/mmcblk0/device/cid", "r");
+    if (!f) return 0;
+    char cid[65];
+    if (!fgets(cid, sizeof cid, f)) { fclose(f); return 0; }
+    fclose(f);
+    size_t n = strcspn(cid, "\r\n");
+    cid[n] = '\0';
+    if (n == 0) return 0;
+    for (size_t i = 0; i < n; i++) {
+        if (!((cid[i] >= '0' && cid[i] <= '9') ||
+              (cid[i] >= 'a' && cid[i] <= 'f') ||
+              (cid[i] >= 'A' && cid[i] <= 'F'))) return 0;
+    }
+    (void)mkdir(AUDIOBOOK_DATA_DIR, 0777);
+    (void)mkdir(POS_CACHE_DIR, 0777);
+    snprintf(path, path_n, "%s/%s-%d.pos", POS_CACHE_DIR, cid, book_id);
+    snprintf(tmp, tmp_n, "%s/%s-%d.pos.tmp", POS_CACHE_DIR, cid, book_id);
+    return 1;
+}
+
+static int pos_write_file(const char *path, const char *tmp,
+                          int track_ordinal, int64_t track_pos_ms,
+                          int64_t book_elapsed_ms, int completed,
+                          uint64_t book_signature) {
+    FILE *f = fopen(tmp, "w");
+    if (!f) return 0;
+    fprintf(f, "%d\n%lld\n%lld\n%d\n%ld\n%llu\n", track_ordinal,
+            (long long)track_pos_ms, (long long)book_elapsed_ms,
+            completed ? 1 : 0, (long)time(NULL),
+            (unsigned long long)book_signature);
+    if (fclose(f) != 0) { unlink(tmp); return 0; }
+    if (rename(tmp, path) != 0) { unlink(tmp); return 0; }
+    return 1;
+}
+
+static int pos_read_file(const char *path, pos_record_t *out) {
+    if (!path || !out) return 0;
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    pos_record_t p;
+    memset(&p, 0, sizeof p);
+    long long tp = 0, be = 0;
+    unsigned long long sig = 0;
+    int n = fscanf(f, "%d %lld %lld %d %ld %llu", &p.track_ordinal,
+                   &tp, &be, &p.completed, &p.saved_at, &sig);
+    fclose(f);
+    if (n < 3) return 0;
+    p.track_pos_ms = (int64_t)tp;
+    p.book_elapsed_ms = (int64_t)be;
+    p.book_signature = n >= 6 ? (uint64_t)sig : 0;
+    *out = p;
+    return 1;
+}
+
+static int pos_save_cache(int book_id, int track_ordinal,
+                          int64_t track_pos_ms, int64_t book_elapsed_ms,
+                          int completed, uint64_t book_signature) {
+    char path[192], tmp[192];
+    if (!pos_cache_paths(book_id, path, sizeof path, tmp, sizeof tmp)) return 0;
+    return pos_write_file(path, tmp, track_ordinal, track_pos_ms,
+                          book_elapsed_ms, completed, book_signature);
+}
+
+static void pos_save_sd_signed(int book_id, int track_ordinal,
+                               int64_t track_pos_ms,
+                               int64_t book_elapsed_ms, int completed,
+                               uint64_t book_signature) {
     if (book_id <= 0) return;
     pos_dir_ensure();
     char path[160], tmp[160];
     snprintf(path, sizeof path, "%s/%d.pos", POS_DIR, book_id);
     snprintf(tmp,  sizeof tmp,  "%s/%d.pos.tmp", POS_DIR, book_id);
-    FILE *f = fopen(tmp, "w");
-    if (!f) return;
-    /* track_ordinal (1-based) + within-track pos + book-elapsed + completed +
-     * timestamp. fscanf on load skips whitespace (incl newlines) between
-     * fields, so the separator choice doesn't matter. */
-    fprintf(f, "%d\n%lld\n%lld\n%d\n%ld\n", track_ordinal,
-            (long long)track_pos_ms, (long long)book_elapsed_ms,
-            completed ? 1 : 0, (long)time(NULL));
-    fclose(f);
-    /* Rename within one directory is a single exFAT metadata op, so the .pos
-     * is never seen half-written. On rename failure (SD pulled mid-write)
-     * drop the tmp and leave the previous .pos intact. */
-    if (rename(tmp, path) != 0) unlink(tmp);
+    (void)pos_write_file(path, tmp, track_ordinal, track_pos_ms,
+                         book_elapsed_ms, completed, book_signature);
+}
+
+void pos_save_sd(int book_id, int track_ordinal, int64_t track_pos_ms,
+                 int64_t book_elapsed_ms, int completed) {
+    pos_save_sd_signed(book_id, track_ordinal, track_pos_ms,
+                       book_elapsed_ms, completed,
+                       current_book_signature());
 }
 
 int pos_load_sd(int book_id, int *track_ordinal, int64_t *track_pos_ms,
@@ -812,16 +984,38 @@ int pos_load_sd(int book_id, int *track_ordinal, int64_t *track_pos_ms,
     if (book_id <= 0) return 0;
     char path[160];
     snprintf(path, sizeof path, "%s/%d.pos", POS_DIR, book_id);
-    FILE *f = fopen(path, "r");
-    if (!f) return 0;
-    int ord = 0, done = 0; long long tp = 0, be = 0; long ts = 0;
-    int n = fscanf(f, "%d %lld %lld %d %ld", &ord, &tp, &be, &done, &ts);
-    fclose(f);
-    if (n < 3) return 0;   /* corrupt/truncated: ignore, fall back to library.db */
-    if (track_ordinal)   *track_ordinal   = ord;
-    if (track_pos_ms)    *track_pos_ms    = (int64_t)tp;
-    if (book_elapsed_ms) *book_elapsed_ms = (int64_t)be;
-    if (completed)       *completed       = done;
+    pos_record_t p;
+    if (!pos_read_file(path, &p)) return 0;
+    if (track_ordinal)   *track_ordinal   = p.track_ordinal;
+    if (track_pos_ms)    *track_pos_ms    = p.track_pos_ms;
+    if (book_elapsed_ms) *book_elapsed_ms = p.book_elapsed_ms;
+    if (completed)       *completed       = p.completed;
+    return 1;
+}
+
+static int pos_load_best(int book_id, int *track_ordinal,
+                         int64_t *track_pos_ms, int64_t *book_elapsed_ms,
+                         int *completed) {
+    char sd_path[160], cache_path[192], cache_tmp[192];
+    snprintf(sd_path, sizeof sd_path, "%s/%d.pos", POS_DIR, book_id);
+    pos_record_t sd, cache;
+    int have_sd = pos_read_file(sd_path, &sd);
+    int have_cache = 0;
+    if (pos_cache_paths(book_id, cache_path, sizeof cache_path,
+                        cache_tmp, sizeof cache_tmp) &&
+        pos_read_file(cache_path, &cache)) {
+        uint64_t expected = current_book_signature();
+        have_cache = cache.book_signature != 0 &&
+                     cache.book_signature == expected;
+    }
+    const pos_record_t *p = NULL;
+    if (have_cache && (!have_sd || cache.saved_at >= sd.saved_at)) p = &cache;
+    else if (have_sd) p = &sd;
+    if (!p) return 0;
+    if (track_ordinal)   *track_ordinal = p->track_ordinal;
+    if (track_pos_ms)    *track_pos_ms = p->track_pos_ms;
+    if (book_elapsed_ms) *book_elapsed_ms = p->book_elapsed_ms;
+    if (completed)       *completed = p->completed;
     return 1;
 }
 
@@ -832,54 +1026,61 @@ void pos_remove_sd(int book_id) {
     unlink(path);
     snprintf(path, sizeof path, "%s/%d.pos.tmp", POS_DIR, book_id);
     unlink(path);
+    char cache[192], cache_tmp[192];
+    if (pos_cache_paths(book_id, cache, sizeof cache,
+                        cache_tmp, sizeof cache_tmp)) {
+        unlink(cache);
+        unlink(cache_tmp);
+    }
 }
 
 /* ---- progress persistence ---------------------------------------------- */
 
-static void save_progress(int completed, int mirror_db) {
-    if (!g_pl.db || g_pl.book_id <= 0 || g_pl.track_count == 0) return;
-    int idx = g_pl.track_idx;
-    if (idx < 0 || idx >= g_pl.track_count) idx = 0;
-    audiobook_progress_t p;
-    memset(&p, 0, sizeof(p));
-    p.book_id = g_pl.book_id;
-    p.track_id = g_pl.tracks[idx].track_id;
-    p.track_ordinal = g_pl.tracks[idx].ordinal;
-    p.position_ms = g_pl.track_pos_ms;
-    p.total_book_elapsed_ms = g_pl.position_ms;
-    p.playback_speed = 1.0;
-    p.last_played_at = (int)time(NULL);
-    p.completed = completed;
-    p.completed_at = completed ? (int)time(NULL) : 0;
-    p.last_saved_at = (int)time(NULL);
+static void write_progress_job(sqlite3 *db, const progress_job_t *job) {
+    const audiobook_progress_t *p = &job->progress;
     int position_changed =
-        g_pl.saved_book_id != p.book_id
-        || g_pl.saved_track_ordinal != p.track_ordinal
-        || g_pl.saved_track_pos_ms != p.position_ms
-        || g_pl.saved_book_elapsed_ms != p.total_book_elapsed_ms
-        || g_pl.saved_completed != p.completed;
+        g_pl.saved_book_id != p->book_id
+        || g_pl.saved_track_ordinal != p->track_ordinal
+        || g_pl.saved_track_pos_ms != p->position_ms
+        || g_pl.saved_book_elapsed_ms != p->total_book_elapsed_ms
+        || g_pl.saved_completed != p->completed;
     int db_changed =
-        g_pl.db_saved_book_id != p.book_id
-        || g_pl.db_saved_track_ordinal != p.track_ordinal
-        || g_pl.db_saved_track_pos_ms != p.position_ms
-        || g_pl.db_saved_book_elapsed_ms != p.total_book_elapsed_ms
-        || g_pl.db_saved_completed != p.completed;
+        g_pl.db_saved_book_id != p->book_id
+        || g_pl.db_saved_track_ordinal != p->track_ordinal
+        || g_pl.db_saved_track_pos_ms != p->position_ms
+        || g_pl.db_saved_book_elapsed_ms != p->total_book_elapsed_ms
+        || g_pl.db_saved_completed != p->completed;
 
     /* The small SD sidecar is authoritative. Avoid rewriting identical exFAT
      * metadata when pause, quit, and stop arrive back-to-back. */
     if (position_changed) {
-        pos_save_sd(g_pl.book_id, p.track_ordinal, p.position_ms,
-                    p.total_book_elapsed_ms, completed);
-        g_pl.saved_book_id = p.book_id;
-        g_pl.saved_track_ordinal = p.track_ordinal;
-        g_pl.saved_track_pos_ms = p.position_ms;
-        g_pl.saved_book_elapsed_ms = p.total_book_elapsed_ms;
-        g_pl.saved_completed = p.completed;
+        int cached = pos_save_cache(p->book_id, p->track_ordinal,
+                                    p->position_ms,
+                                    p->total_book_elapsed_ms, p->completed,
+                                    job->book_signature);
+        g_pl.saved_book_id = p->book_id;
+        g_pl.saved_track_ordinal = p->track_ordinal;
+        g_pl.saved_track_pos_ms = p->position_ms;
+        g_pl.saved_book_elapsed_ms = p->total_book_elapsed_ms;
+        g_pl.saved_completed = p->completed;
+        /* If internal flash is unavailable, retain the legacy SD fallback so
+         * progress is never silently discarded. */
+        if (!cached)
+            pos_save_sd_signed(p->book_id, p->track_ordinal, p->position_ms,
+                               p->total_book_elapsed_ms, p->completed,
+                               job->book_signature);
     }
+
+    /* Durable calls follow drop/close on pause/stop/quit. Always flush them to
+     * SD even when the position equals the latest internal checkpoint. */
+    if (job->persist_sd)
+        pos_save_sd_signed(p->book_id, p->track_ordinal, p->position_ms,
+                           p->total_book_elapsed_ms, p->completed,
+                           job->book_signature);
 
     /* SQLite only mirrors list percentages and provides legacy fallback.
      * Keep it off the frequent checkpoint path to avoid journal churn. */
-    if (!mirror_db || !db_changed) return;
+    if (!job->mirror_db || !db_changed || !db) return;
     /* Free-space guard on the library.db (now on SD). The SD has gigabytes
      * free, but a nearly-full card could still fail a write. Skip the DB
      * mirror when free space is critically low — the SD .pos store is
@@ -900,7 +1101,7 @@ static void save_progress(int completed, int mirror_db) {
         plog("save deferred while library refresh is writing");
         return;
     }
-    int rc = audiobook_save_progress(g_pl.db, &p);
+    int rc = audiobook_save_progress(db, p);
     audiobook_db_write_unlock();
     if (rc < 0) {
         /* SQLITE_BUSY (a scan holds the writer lock) or SQLITE_FULL
@@ -909,27 +1110,136 @@ static void save_progress(int completed, int mirror_db) {
          * successful save. Don't fail playback over a best-effort mirror. */
         plog("save skipped (db busy/full) — SD .pos authoritative");
     } else {
-        g_pl.db_saved_book_id = p.book_id;
-        g_pl.db_saved_track_ordinal = p.track_ordinal;
-        g_pl.db_saved_track_pos_ms = p.position_ms;
-        g_pl.db_saved_book_elapsed_ms = p.total_book_elapsed_ms;
-        g_pl.db_saved_completed = p.completed;
-        g_pl.last_db_save_ms = mono_ms();
+        g_pl.db_saved_book_id = p->book_id;
+        g_pl.db_saved_track_ordinal = p->track_ordinal;
+        g_pl.db_saved_track_pos_ms = p->position_ms;
+        g_pl.db_saved_book_elapsed_ms = p->total_book_elapsed_ms;
+        g_pl.db_saved_completed = p->completed;
         g_progress_dirty = 1;
     }
+}
+
+static void *progress_writer_thread(void *arg) {
+    (void)arg;
+    sqlite3 *db = NULL;
+    /* Keep storage work behind audio decode and the UI on this single-core
+     * player. nice() is per-thread on Linux. */
+    (void)nice(10);
+    if (audiobook_db_open(AUDIOBOOK_DB_PATH, &db) == 0)
+        sqlite3_busy_timeout(db, 300);
+    else
+        plog("progress writer: DB unavailable; SD sidecars remain active");
+
+    for (;;) {
+        progress_job_t job;
+        pthread_mutex_lock(&g_pl.progress_mu);
+        while (g_pl.progress_running && !g_pl.progress_pending)
+            pthread_cond_wait(&g_pl.progress_cv, &g_pl.progress_mu);
+        if (!g_pl.progress_running && !g_pl.progress_pending) {
+            pthread_mutex_unlock(&g_pl.progress_mu);
+            break;
+        }
+        job = g_pl.progress_job;
+        g_pl.progress_pending = 0;
+        g_pl.progress_busy = 1;
+        pthread_mutex_unlock(&g_pl.progress_mu);
+
+        uint64_t started = mono_ms();
+        write_progress_job(db, &job);
+        uint64_t elapsed = mono_ms() - started;
+        if (elapsed >= 50)
+            plog("progress writer seq=%u took %llums", job.sequence,
+                 (unsigned long long)elapsed);
+
+        pthread_mutex_lock(&g_pl.progress_mu);
+        g_pl.progress_busy = 0;
+        g_pl.progress_completed_seq = job.sequence;
+        pthread_cond_broadcast(&g_pl.progress_cv);
+        pthread_mutex_unlock(&g_pl.progress_mu);
+    }
+
+    if (db) audiobook_db_close(db);
+    return NULL;
+}
+
+static int progress_writer_start(void) {
+    pthread_mutex_init(&g_pl.progress_mu, NULL);
+    pthread_cond_init(&g_pl.progress_cv, NULL);
+    g_pl.progress_running = 1;
+    if (pthread_create(&g_pl.progress_thread, NULL,
+                       progress_writer_thread, NULL) != 0) {
+        g_pl.progress_running = 0;
+        pthread_cond_destroy(&g_pl.progress_cv);
+        pthread_mutex_destroy(&g_pl.progress_mu);
+        plog("progress writer: pthread_create failed");
+        return -1;
+    }
+    g_pl.progress_thread_alive = 1;
+    return 0;
+}
+
+static void queue_progress(int completed, int mirror_db, int persist_sd) {
+    if (!g_pl.progress_thread_alive || g_pl.book_id <= 0 ||
+        g_pl.track_count == 0) return;
+    int idx = g_pl.track_idx;
+    if (idx < 0 || idx >= g_pl.track_count) idx = 0;
+
+    progress_job_t job;
+    memset(&job, 0, sizeof(job));
+    job.progress.book_id = g_pl.book_id;
+    job.progress.track_id = g_pl.tracks[idx].track_id;
+    job.progress.track_ordinal = g_pl.tracks[idx].ordinal;
+    job.progress.position_ms = g_pl.track_pos_ms;
+    job.progress.total_book_elapsed_ms = g_pl.position_ms;
+    job.progress.playback_speed = 1.0;
+    job.progress.last_played_at = (int)time(NULL);
+    job.progress.completed = completed;
+    job.progress.completed_at = completed ? (int)time(NULL) : 0;
+    job.progress.last_saved_at = (int)time(NULL);
+    job.book_signature = current_book_signature();
+
+    pthread_mutex_lock(&g_pl.progress_mu);
+    /* If a pending snapshot requested a DB mirror, carry that request onto the
+     * newer position instead of losing it when the latest-wins slot updates. */
+    if (g_pl.progress_pending && g_pl.progress_job.mirror_db)
+        mirror_db = 1;
+    if (g_pl.progress_pending && g_pl.progress_job.persist_sd)
+        persist_sd = 1;
+    job.mirror_db = mirror_db;
+    job.persist_sd = persist_sd;
+    job.sequence = ++g_pl.progress_requested_seq;
+    g_pl.progress_job = job;
+    g_pl.progress_pending = 1;
+    pthread_cond_signal(&g_pl.progress_cv);
+    pthread_mutex_unlock(&g_pl.progress_mu);
+}
+
+static void progress_writer_stop(void) {
+    if (!g_pl.progress_thread_alive) return;
+    pthread_mutex_lock(&g_pl.progress_mu);
+    unsigned int target = g_pl.progress_requested_seq;
+    while (g_pl.progress_completed_seq < target)
+        pthread_cond_wait(&g_pl.progress_cv, &g_pl.progress_mu);
+    g_pl.progress_running = 0;
+    pthread_cond_signal(&g_pl.progress_cv);
+    pthread_mutex_unlock(&g_pl.progress_mu);
+    pthread_join(g_pl.progress_thread, NULL);
+    g_pl.progress_thread_alive = 0;
+    pthread_cond_destroy(&g_pl.progress_cv);
+    pthread_mutex_destroy(&g_pl.progress_mu);
 }
 
 static void periodic_progress_checkpoint(void) {
     uint64_t now = mono_ms();
     if (now - g_pl.last_save_ms < POSITION_SAVE_INTERVAL_MS) return;
-    int mirror_db =
-        now - g_pl.last_db_save_ms >= DB_MIRROR_INTERVAL_MS;
-    save_progress(0, mirror_db);
+    /* The live checkpoint is internal. Durable SD + DB mirrors are flushed by
+     * pause/stop/quit, when PCM is no longer depending on uninterrupted I/O. */
+    queue_progress(0, 0, 0);
     g_pl.last_save_ms = now;
 }
 
 /* Add a bookmark at the current playback position. Uses the same track + book
- * math as save_progress. Called from the Now Playing "Mark" button (event
+ * math as queue_progress. Called from the Now Playing "Mark" button (event
  * thread). `db` is the caller's connection — the UI passes ui->db so the write
  * happens on the event thread and never touches the player thread's g_pl.db. */
 int player_add_bookmark(sqlite3 *db, const char *label) {
@@ -950,6 +1260,7 @@ int player_add_bookmark(sqlite3 *db, const char *label) {
 /* ---- minimp3_ex / ALSA helpers ----------------------------------------- */
 
 static void close_mh(void) {
+    mp3_preload_discard();
     if (g_pl.dec_fmt == DEC_AAC) {
         if (g_pl.aac) { x_aac_Close(g_pl.aac); g_pl.aac = NULL; }
         mp4_audio_close(&g_pl.mp4);
@@ -959,8 +1270,373 @@ static void close_mh(void) {
     }
     g_pl.track_open = 0;
 }
+
+static void pcm_writer_reset_locked(void) {
+    g_pl.pcm_writer_head = 0;
+    g_pl.pcm_writer_tail = 0;
+    g_pl.pcm_writer_samples = 0;
+}
+
+static void *pcm_writer_main(void *arg) {
+    (void)arg;
+    for (;;) {
+        size_t period_samples;
+        unsigned long period_frames;
+
+        pthread_mutex_lock(&g_pl.pcm_writer_mu);
+        while (g_pl.pcm_writer_running &&
+               (!g_pl.pcm_writer_active ||
+                g_pl.pcm_writer_samples <
+                    g_pl.pcm_writer_period_frames *
+                    (unsigned long)g_pl.pcm_writer_channels)) {
+            pthread_cond_wait(&g_pl.pcm_writer_data_cv,
+                              &g_pl.pcm_writer_mu);
+        }
+        if (!g_pl.pcm_writer_running) {
+            pthread_mutex_unlock(&g_pl.pcm_writer_mu);
+            break;
+        }
+
+        period_frames = g_pl.pcm_writer_period_frames;
+        period_samples = (size_t)period_frames *
+                         (size_t)g_pl.pcm_writer_channels;
+        size_t first = PCM_WRITER_QUEUE_SAMPLES - g_pl.pcm_writer_head;
+        if (first > period_samples) first = period_samples;
+        memcpy(g_pl.pcm_writer_period,
+               g_pl.pcm_writer_queue + g_pl.pcm_writer_head,
+               first * sizeof(int16_t));
+        if (first < period_samples) {
+            memcpy(g_pl.pcm_writer_period + first, g_pl.pcm_writer_queue,
+                   (period_samples - first) * sizeof(int16_t));
+        }
+        g_pl.pcm_writer_head =
+            (g_pl.pcm_writer_head + period_samples) %
+            PCM_WRITER_QUEUE_SAMPLES;
+        g_pl.pcm_writer_samples -= period_samples;
+        g_pl.pcm_writer_busy = 1;
+        pthread_cond_broadcast(&g_pl.pcm_writer_space_cv);
+        pthread_mutex_unlock(&g_pl.pcm_writer_mu);
+
+        long wr = x_snd_pcm_writei(g_pl.pcm, g_pl.pcm_writer_period,
+                                   period_frames);
+        if (wr < 0) {
+            pthread_mutex_lock(&g_pl.pcm_writer_mu);
+            int retry = g_pl.pcm_writer_running &&
+                        g_pl.pcm_writer_active;
+            pthread_mutex_unlock(&g_pl.pcm_writer_mu);
+            if (retry) {
+                if (x_snd_pcm_recover)
+                    x_snd_pcm_recover(g_pl.pcm, (int)wr, 1);
+                else
+                    x_snd_pcm_prepare(g_pl.pcm);
+                wr = x_snd_pcm_writei(g_pl.pcm, g_pl.pcm_writer_period,
+                                      period_frames);
+            }
+        }
+
+        pthread_mutex_lock(&g_pl.pcm_writer_mu);
+        g_pl.pcm_writer_busy = 0;
+        if (wr != (long)period_frames && g_pl.pcm_writer_active) {
+            g_pl.pcm_writer_error = wr < 0 ? (int)wr : -5;
+            g_pl.pcm_writer_active = 0;
+            pcm_writer_reset_locked();
+            pthread_cond_broadcast(&g_pl.pcm_writer_space_cv);
+        }
+        pthread_cond_broadcast(&g_pl.pcm_writer_idle_cv);
+        pthread_mutex_unlock(&g_pl.pcm_writer_mu);
+    }
+    return NULL;
+}
+
+static int pcm_writer_start(void) {
+    pthread_mutex_init(&g_pl.pcm_writer_mu, NULL);
+    pthread_cond_init(&g_pl.pcm_writer_data_cv, NULL);
+    pthread_cond_init(&g_pl.pcm_writer_space_cv, NULL);
+    pthread_cond_init(&g_pl.pcm_writer_idle_cv, NULL);
+    g_pl.pcm_writer_running = 1;
+    if (pthread_create(&g_pl.pcm_writer_thread, NULL,
+                       pcm_writer_main, NULL) != 0) {
+        g_pl.pcm_writer_running = 0;
+        pthread_cond_destroy(&g_pl.pcm_writer_idle_cv);
+        pthread_cond_destroy(&g_pl.pcm_writer_space_cv);
+        pthread_cond_destroy(&g_pl.pcm_writer_data_cv);
+        pthread_mutex_destroy(&g_pl.pcm_writer_mu);
+        plog("pcm writer: pthread_create failed");
+        return -1;
+    }
+    g_pl.pcm_writer_thread_alive = 1;
+    return 0;
+}
+
+static int pcm_writer_activate(unsigned long period_frames, int channels) {
+    if (!g_pl.pcm_writer_thread_alive || period_frames == 0 || channels <= 0)
+        return -1;
+    size_t period_samples = (size_t)period_frames * (size_t)channels;
+    if (period_samples > PCM_WRITER_PERIOD_SAMPLES ||
+        period_samples > PCM_WRITER_QUEUE_SAMPLES) {
+        plog("pcm writer: period too large frames=%lu ch=%d",
+             period_frames, channels);
+        return -1;
+    }
+    pthread_mutex_lock(&g_pl.pcm_writer_mu);
+    pcm_writer_reset_locked();
+    g_pl.pcm_writer_period_frames = period_frames;
+    g_pl.pcm_writer_channels = channels;
+    g_pl.pcm_writer_error = 0;
+    g_pl.pcm_writer_active = 1;
+    pthread_cond_broadcast(&g_pl.pcm_writer_data_cv);
+    pthread_mutex_unlock(&g_pl.pcm_writer_mu);
+    return 0;
+}
+
+/* Stop queued wired writes before drop/prepare/close. snd_pcm_drop wakes a
+ * writer blocked in writei; the idle wait then makes handle ownership explicit
+ * before the player thread reconfigures or closes it. */
+static void pcm_writer_quiesce(void) {
+    if (!g_pl.pcm_writer_thread_alive) return;
+    pthread_mutex_lock(&g_pl.pcm_writer_mu);
+    g_pl.pcm_writer_active = 0;
+    pcm_writer_reset_locked();
+    pthread_cond_broadcast(&g_pl.pcm_writer_space_cv);
+    pthread_mutex_unlock(&g_pl.pcm_writer_mu);
+
+    if (g_pl.pcm && g_pl.output == OUT_WIRED)
+        x_snd_pcm_drop(g_pl.pcm);
+
+    pthread_mutex_lock(&g_pl.pcm_writer_mu);
+    while (g_pl.pcm_writer_busy)
+        pthread_cond_wait(&g_pl.pcm_writer_idle_cv,
+                          &g_pl.pcm_writer_mu);
+    g_pl.pcm_writer_error = 0;
+    pthread_mutex_unlock(&g_pl.pcm_writer_mu);
+}
+
+static void pcm_writer_stop(void) {
+    if (!g_pl.pcm_writer_thread_alive) return;
+    pcm_writer_quiesce();
+    pthread_mutex_lock(&g_pl.pcm_writer_mu);
+    g_pl.pcm_writer_running = 0;
+    pthread_cond_broadcast(&g_pl.pcm_writer_data_cv);
+    pthread_cond_broadcast(&g_pl.pcm_writer_space_cv);
+    pthread_mutex_unlock(&g_pl.pcm_writer_mu);
+    pthread_join(g_pl.pcm_writer_thread, NULL);
+    g_pl.pcm_writer_thread_alive = 0;
+    pthread_cond_destroy(&g_pl.pcm_writer_idle_cv);
+    pthread_cond_destroy(&g_pl.pcm_writer_space_cv);
+    pthread_cond_destroy(&g_pl.pcm_writer_data_cv);
+    pthread_mutex_destroy(&g_pl.pcm_writer_mu);
+}
+
+static long pcm_writer_submit(const void *buf, unsigned long frames) {
+    if (!buf || frames == 0) return 0;
+    size_t samples = (size_t)frames * (size_t)g_pl.pcm_channels;
+    if (samples > PCM_WRITER_QUEUE_SAMPLES) return -1;
+
+    pthread_mutex_lock(&g_pl.pcm_writer_mu);
+    while (g_pl.pcm_writer_running && g_pl.pcm_writer_active &&
+           g_pl.pcm_writer_error == 0 &&
+           PCM_WRITER_QUEUE_SAMPLES - g_pl.pcm_writer_samples < samples) {
+        pthread_cond_wait(&g_pl.pcm_writer_space_cv,
+                          &g_pl.pcm_writer_mu);
+    }
+    if (!g_pl.pcm_writer_running || !g_pl.pcm_writer_active ||
+        g_pl.pcm_writer_error != 0 ||
+        g_pl.pcm_writer_channels != g_pl.pcm_channels) {
+        int err = g_pl.pcm_writer_error ? g_pl.pcm_writer_error : -5;
+        pthread_mutex_unlock(&g_pl.pcm_writer_mu);
+        return err;
+    }
+
+    const int16_t *src = (const int16_t *)buf;
+    size_t first = PCM_WRITER_QUEUE_SAMPLES - g_pl.pcm_writer_tail;
+    if (first > samples) first = samples;
+    memcpy(g_pl.pcm_writer_queue + g_pl.pcm_writer_tail, src,
+           first * sizeof(int16_t));
+    if (first < samples) {
+        memcpy(g_pl.pcm_writer_queue, src + first,
+               (samples - first) * sizeof(int16_t));
+    }
+    g_pl.pcm_writer_tail =
+        (g_pl.pcm_writer_tail + samples) % PCM_WRITER_QUEUE_SAMPLES;
+    g_pl.pcm_writer_samples += samples;
+    pthread_cond_signal(&g_pl.pcm_writer_data_cv);
+    pthread_mutex_unlock(&g_pl.pcm_writer_mu);
+    return (long)frames;
+}
+
+static unsigned long pcm_writer_queued_frames(void) {
+    if (!g_pl.pcm_writer_thread_alive) return 0;
+    pthread_mutex_lock(&g_pl.pcm_writer_mu);
+    int channels = g_pl.pcm_writer_channels;
+    unsigned long frames = channels > 0
+        ? (unsigned long)(g_pl.pcm_writer_samples / (size_t)channels) : 0;
+    pthread_mutex_unlock(&g_pl.pcm_writer_mu);
+    return frames;
+}
+
 static void close_pcm(void) {
-    if (g_pl.pcm) { x_snd_pcm_drop(g_pl.pcm); x_snd_pcm_close(g_pl.pcm); g_pl.pcm = NULL; }
+    pcm_writer_quiesce();
+    if (g_pl.pcm) {
+        if (g_pl.output != OUT_WIRED) x_snd_pcm_drop(g_pl.pcm);
+        x_snd_pcm_close(g_pl.pcm);
+        g_pl.pcm = NULL;
+    }
+    g_pl.pcm_period_frames = 0;
+    g_pl.pcm_pending_frames = 0;
+    g_pl.pcm_pending_channels = 0;
+}
+
+static void reset_pcm_pending(void) {
+    g_pl.pcm_pending_frames = 0;
+    g_pl.pcm_pending_channels = 0;
+}
+
+static void *mp3_preload_worker(void *arg) {
+    mp3_preload_t *p = (mp3_preload_t *)arg;
+    p->fd = open(g_pl.tracks[p->track_idx].path, O_RDONLY);
+    if (p->fd < 0) {
+        p->open_result = -1;
+        return NULL;
+    }
+    p->io_ctx.fd = p->fd;
+    p->io_ctx.io_error = &p->io_error;
+    p->io.read = mp3_io_read;
+    p->io.read_data = &p->io_ctx;
+    p->io.seek = mp3_io_seek;
+    p->io.seek_data = &p->io_ctx;
+    int flags = MP3D_SEEK_TO_BYTE | MP3D_DO_NOT_SCAN;
+    p->open_result = mp3dec_ex_open_cb(&p->dec, &p->io, flags);
+    if (p->open_result == 0) {
+        p->rate = (long)p->dec.info.hz;
+        p->channels = p->dec.info.channels;
+        if (p->rate > 0 && p->channels > 0) {
+            p->first_samples = mp3dec_ex_read(
+                &p->dec, p->first_pcm, PCM_BUF_SAMPLES);
+        }
+        p->ready = p->rate > 0 && p->channels > 0 &&
+                   p->first_samples > 0;
+    }
+    return NULL;
+}
+
+static void mp3_preload_discard(void) {
+    mp3_preload_t *p = &g_pl.preload;
+    if (p->thread_alive) {
+        pthread_join(p->thread, NULL);
+        p->thread_alive = 0;
+    }
+    if (p->dec.file.buffer || p->dec.io || p->dec.index.frames)
+        mp3dec_ex_close(&p->dec);
+    if (p->fd >= 0) close(p->fd);
+    memset(p, 0, sizeof(*p));
+    p->fd = -1;
+}
+
+static void mp3_preload_start(int idx) {
+    mp3_preload_discard();
+    if (idx < 0 || idx >= g_pl.track_count ||
+        audio_file_type(g_pl.tracks[idx].path) != AUDIO_EXT_MP3)
+        return;
+
+    mp3_preload_t *p = &g_pl.preload;
+    p->track_idx = idx;
+    p->fd = -1;
+    if (pthread_create(&p->thread, NULL, mp3_preload_worker, p) != 0) {
+        plog("mp3 preload thread failed for track %d", idx);
+        mp3_preload_discard();
+        return;
+    }
+    p->thread_alive = 1;
+}
+
+/* Move a prepared decoder into the current slot without touching ALSA. The
+ * transfer is used only when the next part has the same PCM format, so pending
+ * tail samples and the live DMA stream remain valid. */
+static int mp3_preload_take(int idx) {
+    mp3_preload_t *p = &g_pl.preload;
+    if (p->track_idx != idx) return 0;
+    if (p->thread_alive) {
+        pthread_join(p->thread, NULL);
+        p->thread_alive = 0;
+    }
+    if (!p->ready || p->open_result != 0 || !g_pl.pcm ||
+        p->rate != g_pl.rate || p->channels != g_pl.channels)
+        return 0;
+
+    if (g_pl.dec_open) {
+        mp3dec_ex_close(&g_pl.dec);
+        g_pl.dec_open = 0;
+    }
+    if (g_pl.track_fd >= 0) {
+        close(g_pl.track_fd);
+        g_pl.track_fd = -1;
+    }
+
+    g_pl.dec = p->dec;
+    memset(&p->dec, 0, sizeof(p->dec));
+    g_pl.io = p->io;
+    g_pl.track_fd = p->fd;
+    g_pl.io_ctx.fd = g_pl.track_fd;
+    g_pl.io_ctx.io_error = &g_pl.media_io_error;
+    g_pl.io.read_data = &g_pl.io_ctx;
+    g_pl.io.seek_data = &g_pl.io_ctx;
+    g_pl.dec.io = &g_pl.io;
+    g_pl.media_io_error = 0;
+    g_pl.media_missing = 0;
+    g_pl.dec_open = 1;
+    g_pl.track_open = 1;
+
+    g_pl.track_idx = idx;
+    g_pl.track_pos_ms = 0;
+    int64_t base = 0;
+    for (int i = 0; i < idx; i++) base += g_pl.tracks[i].duration_ms;
+    g_pl.track_base_ms = base;
+    g_pl.position_ms = base;
+    strncpy(g_pl.cur_title, g_pl.tracks[idx].title,
+            sizeof(g_pl.cur_title) - 1);
+    g_pl.cur_title[sizeof(g_pl.cur_title) - 1] = '\0';
+    wsola_init(&g_pl.wsola, g_pl.rate, g_pl.channels,
+               g_pl.speed_permille);
+    unsigned long first_frames =
+        (unsigned long)(p->first_samples / (size_t)g_pl.channels);
+    long accepted = pcm_write_or_fallback(p->first_pcm, first_frames);
+    if (accepted > 0) {
+        int64_t advanced = (int64_t)accepted * 1000 / g_pl.rate;
+        g_pl.track_pos_ms += advanced;
+        g_pl.position_ms = g_pl.track_base_ms + g_pl.track_pos_ms;
+    }
+    plog("preloaded track %d activated rate=%ld ch=%d first=%lu "
+         "accepted=%ld pending=%lu queued=%lu",
+         idx, g_pl.rate, g_pl.channels, first_frames, accepted,
+         g_pl.pcm_pending_frames, pcm_writer_queued_frames());
+
+    memset(p, 0, sizeof(*p));
+    p->fd = -1;
+    mp3_preload_start(idx + 1);
+    return 1;
+}
+
+/* The X1600 AIC trigger-stop path is queued on a kernel workqueue. ALSA close
+ * can return while the final hardware/FIFO cleanup is still settling, and a
+ * new playback trigger can race that cleanup. Keep a short settle delay local
+ * to genuine wired stop/start transitions. */
+#define AIC_RESTART_SETTLE_US 250000
+
+static void settle_wired_pcm_restart(int previous_output) {
+    if (previous_output != OUT_WIRED) return;
+    usleep(AIC_RESTART_SETTLE_US);
+    plog("alsa wired restart settled %dms", AIC_RESTART_SETTLE_US / 1000);
+}
+
+/* Finish the final physical file with a full PCM reset. Adjacent files do not
+ * use this helper: open_track() keeps a compatible live PCM stream running and
+ * swaps only the decoder, avoiding the X1600 driver's unsafe stop/start path. */
+static void finish_track_pcm(void) {
+    if (!g_pl.pcm) return;
+    int previous_output = g_pl.output;
+    close_pcm();
+    settle_wired_pcm_restart(previous_output);
+    plog("alsa track drop+close complete");
 }
 
 /* ---- Bluetooth (BlueALSA A2DP) ----------------------------------------- */
@@ -1185,16 +1861,32 @@ static int open_pcm_retry(const char *dev) {
  * PCM otherwise. force_wired (set by the mid-playback fallback) forces wired.
  * On BT open or hw_params failure, falls back to wired. Returns 0 on success. */
 static int setup_alsa(long rate, int channels) {
+    /* Adjacent parts commonly have the same PCM format. Keep that already-
+     * running stream intact so the R1 AIC driver never has to tear down and
+     * recreate its DMA descriptors at the chapter boundary. Make this decision
+     * before bt_detect(): spawning bluealsa-cli can outlast the small hardware
+     * buffer and turn an otherwise seamless handoff into an underrun.
+     *
+     * A disconnected BT stream is handled by the write fallback. A newly
+     * connected BT device is picked up on the next fresh playback open. */
+    int reuse_pcm_channels =
+        (g_pl.output == OUT_WIRED && channels == 1) ? 2 : channels;
+    if (g_pl.pcm && g_pl.rate == rate && g_pl.channels == channels &&
+        g_pl.pcm_channels == reuse_pcm_channels) {
+        plog("alsa stream reused rate=%ld src_ch=%d pcm_ch=%d output=%s",
+             rate, channels, g_pl.pcm_channels,
+             g_pl.output == OUT_BT ? "bluealsa" : "wired");
+        return 0;
+    }
+
     int want_bt = g_pl.force_wired ? 0 : bt_detect();
     int want_out = want_bt ? OUT_BT : OUT_WIRED;
 
-    /* Per-track re-evaluation: if a PCM is open on the *other* output (e.g. BT
-     * connected/disconnected between tracks), drop it and reopen on the new
-     * one. Leaving the BT mixer open across a switch to wired is wasteful and
-     * holds the BT control, so close it too. */
-    if (g_pl.pcm && g_pl.output != want_out) {
+    if (g_pl.pcm) {
+        int previous_output = g_pl.output;
         close_pcm();
-        if (g_pl.output == OUT_BT) bt_mixer_close();
+        settle_wired_pcm_restart(previous_output);
+        if (previous_output == OUT_BT && want_out != OUT_BT) bt_mixer_close();
     }
 
     if (!g_pl.pcm) {
@@ -1218,10 +1910,15 @@ static int setup_alsa(long rate, int channels) {
             if (!opened) { plog("snd_pcm_open failed (all devices)"); return -1; }
             plog("alsa pcm opened (wired)");
         }
-    } else {
-        x_snd_pcm_drop(g_pl.pcm);
     }
     g_pl.output = want_out;
+    /* The analog AIC path accepts a mono hw_params request but later feeds a
+     * zero DMA address to the X1600 engine. Stock playback drives the I2S/DAC
+     * as stereo. Preserve mono decoding and position accounting, but duplicate
+     * mono samples at the final wired sink boundary. BlueALSA keeps the source
+     * channel count and performs its own transport conversion. */
+    int pcm_channels =
+        (want_out == OUT_WIRED && channels == 1) ? 2 : channels;
     if (want_out == OUT_BT) {
         if (!g_pl.bt_mixer) bt_mixer_open();
         else if (g_pl.bt_volume_valid) g_pl.volume_pct = g_pl.bt_volume_pct;
@@ -1259,7 +1956,8 @@ static int setup_alsa(long rate, int channels) {
         int e_a = x_snd_pcm_hw_params_any(g_pl.pcm, hw);
         int e_ac = x_snd_pcm_hw_params_set_access(g_pl.pcm, hw, A_ACCESS_RW_INT);
         int e_f = x_snd_pcm_hw_params_set_format(g_pl.pcm, hw, A_FMT_S16_LE);
-        int e_ch = x_snd_pcm_hw_params_set_channels(g_pl.pcm, hw, (unsigned int)channels);
+        int e_ch = x_snd_pcm_hw_params_set_channels(
+            g_pl.pcm, hw, (unsigned int)pcm_channels);
         want_rate = (unsigned int)rate; int dir = 0;
         int e_r = x_snd_pcm_hw_params_set_rate_near(g_pl.pcm, hw, &want_rate, &dir);
         unsigned int btime = 500000, bdir = 0;   /* 500ms buffer */
@@ -1280,7 +1978,34 @@ static int setup_alsa(long rate, int channels) {
          * the already-committed buffer_size on some slaves). */
         plog("hw_params diag: malloc=%d any=%d acc=%d fmt=%d ch=%d(rate=%ld->%u) rate=%d buf=%d(%u) per=%d(%u) -> hw=%d",
              e_m, e_a, e_ac, e_f, e_ch, rate, want_rate, e_r, e_b, btime, e_p, ptime, r);
+        /* The R1 analog PCM intermittently rejects the optional 500/100ms
+         * timing constraints with EINVAL while accepting the same core
+         * format through aplay. Reset the constraint set and retry with the
+         * driver's defaults. Buffer sizing is latency tuning, not a playback
+         * requirement, so it must never make a decodable book fail to start. */
+        if (e_b < 0 || e_p < 0 || r == -22) {
+            int f_a = x_snd_pcm_hw_params_any(g_pl.pcm, hw);
+            int f_ac = x_snd_pcm_hw_params_set_access(
+                g_pl.pcm, hw, A_ACCESS_RW_INT);
+            int f_f = x_snd_pcm_hw_params_set_format(
+                g_pl.pcm, hw, A_FMT_S16_LE);
+            int f_ch = x_snd_pcm_hw_params_set_channels(
+                g_pl.pcm, hw, (unsigned int)pcm_channels);
+            want_rate = (unsigned int)rate;
+            dir = 0;
+            int f_r = x_snd_pcm_hw_params_set_rate_near(
+                g_pl.pcm, hw, &want_rate, &dir);
+            r = x_snd_pcm_hw_params(g_pl.pcm, hw);
+            plog("hw_params default retry: any=%d acc=%d fmt=%d ch=%d "
+                 "rate=%d(%u) -> hw=%d",
+                 f_a, f_ac, f_f, f_ch, f_r, want_rate, r);
+            if (r == 0) {
+                int gpdir = 0;
+                x_snd_pcm_hw_params_get_period_size(hw, &period, &gpdir);
+            }
+        }
         x_snd_pcm_hw_params_free(hw);
+        if (r == 0) break;
         if (want_out != OUT_BT) break;          /* wired: no retry, no fallback */
         if (r != -16 && r != -11) break;         /* only retry EBUSY/EAGAIN */
         /* First EBUSY: the stock music engine is holding bluealsa — release its
@@ -1304,6 +2029,7 @@ static int setup_alsa(long rate, int channels) {
         }
         return -1;
     }
+    if (period == 0) period = 1024;
 
     void *sw = NULL;
     int sw_alloc = x_snd_pcm_sw_params_malloc(&sw);
@@ -1319,21 +2045,35 @@ static int setup_alsa(long rate, int channels) {
     }
 
     x_snd_pcm_prepare(g_pl.pcm);
+    plog("alsa configured rate=%u src_ch=%d pcm_ch=%d period=%lu start=1",
+         want_rate, channels, pcm_channels, period);
+    g_pl.pcm_period_frames = period;
     g_pl.rate = want_rate;
     g_pl.channels = channels;
+    g_pl.pcm_channels = pcm_channels;
+    if (g_pl.output == OUT_WIRED &&
+        pcm_writer_activate(period, pcm_channels) < 0) {
+        plog("pcm writer activation failed");
+        close_pcm();
+        return -1;
+    }
+    if (g_pl.output == OUT_WIRED)
+        plog("pcm writer active capacity=%lu frames",
+             (unsigned long)(PCM_WRITER_QUEUE_SAMPLES /
+                             (size_t)pcm_channels));
     return 0;
 }
 
-/* Write `frames` to the PCM, retrying once on -EPIPE/-EIO. If the retry also
- * fails AND we're on BT (and haven't already fallen back this track), the A2DP
- * transport dropped: close the BT PCM, force wired, reopen, and re-issue the
- * write so playback continues from the next chunk (position is unchanged — we
- * keep track_pos_ms, so this is a brief glitch, not a jump). Used by all three
- * decode write sites (AAC, MP3 wsola, MP3 direct). Returns frames written (>0)
- * or a negative snd_pcm error. */
-static long pcm_write_or_fallback(const void *buf, unsigned long frames) {
-    long wr = x_snd_pcm_writei(g_pl.pcm, buf, frames);
-    if (wr < 0) {
+/* Write one period-sized chunk, retrying once through ALSA recovery. A persistent
+ * BT failure falls back to wired; a persistent wired failure gets one clean
+ * close/reopen because the R1 AIC driver cannot always recover stale DMA state
+ * in place. If both attempts fail, pause and checkpoint instead of silently
+ * decoding the rest of the book without advancing the displayed position. */
+static long pcm_write_chunk(const void *buf, unsigned long frames) {
+    long wr = g_pl.output == OUT_WIRED
+        ? pcm_writer_submit(buf, frames)
+        : x_snd_pcm_writei(g_pl.pcm, buf, frames);
+    if (wr < 0 && g_pl.output == OUT_BT) {
         if (x_snd_pcm_recover) x_snd_pcm_recover(g_pl.pcm, (int)wr, 1);
         else x_snd_pcm_prepare(g_pl.pcm);
         plog("alsa writei %ld -> recover", wr);
@@ -1345,10 +2085,99 @@ static long pcm_write_or_fallback(const void *buf, unsigned long frames) {
         g_pl.force_wired = 1; g_pl.bt_fell_back = 1; g_pl.output = OUT_WIRED;
         if (setup_alsa(g_pl.rate, g_pl.channels) == 0) {
             mix_apply();   /* re-apply volume on the wired DAC */
-            wr = x_snd_pcm_writei(g_pl.pcm, buf, frames);
+            wr = pcm_writer_submit(buf, frames);
         }
     }
+    if (wr < 0 && g_pl.output == OUT_WIRED) {
+        plog("wired writer failed (%ld) -> fresh PCM retry", wr);
+        int previous_output = g_pl.output;
+        close_pcm();
+        settle_wired_pcm_restart(previous_output);
+        g_pl.force_wired = 1;
+        if (setup_alsa(g_pl.rate, g_pl.channels) == 0) {
+            mix_apply();
+            wr = pcm_writer_submit(buf, frames);
+        }
+    }
+    if (wr < 0) {
+        plog("audio write failed permanently (%ld) -> paused", wr);
+        close_pcm();
+        g_pl.state = PLAYER_PAUSED;
+        queue_progress(0, 1, 1);
+    }
     return wr;
+}
+
+/* Feed ALSA exactly one negotiated period per write. The R1 AIC driver accepts
+ * a short final write but later submits a zero DMA address when that partial
+ * descriptor reaches the head of the queue. Carry incomplete decoded tails
+ * across calls (and compatible multipart boundaries) until a complete period
+ * is available. Return source frames accepted into this staging queue. */
+static long pcm_write_or_fallback(const void *buf, unsigned long frames) {
+    if (!buf || frames == 0) return 0;
+    const int16_t *samples = (const int16_t *)buf;
+    int source_channels = g_pl.channels > 0 ? g_pl.channels : 1;
+    int output_channels = g_pl.pcm_channels > 0
+        ? g_pl.pcm_channels : source_channels;
+    unsigned long period = g_pl.pcm_period_frames;
+    if (period == 0) period = 2048;
+    unsigned long capacity =
+        (unsigned long)(sizeof(g_pl.pcm_pending) /
+                        sizeof(g_pl.pcm_pending[0])) /
+        (unsigned long)output_channels;
+    if (period > capacity) {
+        plog("alsa period %lu exceeds staging capacity %lu", period, capacity);
+        g_pl.state = PLAYER_PAUSED;
+        queue_progress(0, 1, 1);
+        return -1;
+    }
+    if (g_pl.pcm_pending_frames > 0 &&
+        g_pl.pcm_pending_channels != output_channels) {
+        plog("alsa pending format changed ch=%d->%d; dropping %lu frames",
+             g_pl.pcm_pending_channels, output_channels,
+             g_pl.pcm_pending_frames);
+        reset_pcm_pending();
+    }
+    g_pl.pcm_pending_channels = output_channels;
+
+    unsigned long accepted = 0;
+    while (accepted < frames) {
+        unsigned long need = period - g_pl.pcm_pending_frames;
+        unsigned long take = frames - accepted;
+        if (take > need) take = need;
+        int16_t *dst = g_pl.pcm_pending +
+            g_pl.pcm_pending_frames * (unsigned long)output_channels;
+        const int16_t *src = samples +
+            accepted * (unsigned long)source_channels;
+        if (source_channels == output_channels) {
+            memcpy(dst, src,
+                   take * (unsigned long)output_channels * sizeof(int16_t));
+        } else if (source_channels == 1 && output_channels == 2) {
+            for (unsigned long i = 0; i < take; i++) {
+                dst[i * 2] = src[i];
+                dst[i * 2 + 1] = src[i];
+            }
+        } else {
+            plog("unsupported PCM channel conversion %d->%d",
+                 source_channels, output_channels);
+            g_pl.state = PLAYER_PAUSED;
+            queue_progress(0, 1, 1);
+            return -1;
+        }
+        g_pl.pcm_pending_frames += take;
+        accepted += take;
+
+        if (g_pl.pcm_pending_frames == period) {
+            long wr = pcm_write_chunk(g_pl.pcm_pending, period);
+            if (wr != (long)period) {
+                plog("alsa full-period write short %ld/%lu", wr, period);
+                reset_pcm_pending();
+                return accepted > 0 ? (long)accepted : wr;
+            }
+            g_pl.pcm_pending_frames = 0;
+        }
+    }
+    return (long)accepted;
 }
 
 /* Compute a byte offset for a resume position (used with MP3D_SEEK_TO_BYTE).
@@ -1357,28 +2186,43 @@ static long pcm_write_or_fallback(const void *buf, unsigned long frames) {
  *
  * For VBR files with a VBR (Xing/Info) tag, minimp3 sets dec.samples to the
  * TRUE total even with MP3D_DO_NOT_SCAN, so byte = seek_ms * file_size /
- * real_duration_ms is accurate — it uses the file's true average bitrate. The
+ * real_duration_ms is accurate — it uses the audio payload's true average
+ * bitrate. The byte range begins at start_offset so early seeks cannot land
+ * inside a large ID3 tag or embedded cover image. The
  * first frame's bitrate_kbps undershoots VBR (this file: 56 kbps first-frame
- * vs ~128 kbps avg) and resumed ~47s early; the file-size/duration estimate
+ * vs ~128 kbps avg) and resumed ~47s early; the payload-size/duration estimate
  * fixes that. For CBR / no VBR tag (dec.samples==0), fall back to the first
  * frame's bitrate (byte = seek_ms * bitrate_kbps/8), which is exact for CBR.
  * mp3dec_ex_seek(SEEK_TO_BYTE) then syncs to the next frame after the byte
  * (~26ms accurate) — fine for audiobook resume. */
 static uint64_t seek_byte_target(int64_t seek_ms) {
-    if (seek_ms <= 0) return 0;
+    uint64_t audio_start = g_pl.dec.start_offset;
+    uint64_t audio_end = 0;
+    struct stat st;
+    /* In callback mode minimp3's end_offset describes its current streaming
+     * window, not the physical file end. fstat is the authoritative boundary. */
+    if (fstat(g_pl.track_fd, &st) == 0 && st.st_size > 0) {
+        audio_end = (uint64_t)st.st_size;
+    }
+    if (seek_ms <= 0) return audio_start;
     if (g_pl.dec.samples > 0 && g_pl.channels > 0 && g_pl.rate > 0) {
-        struct stat st;
-        if (fstat(g_pl.track_fd, &st) == 0 && st.st_size > 0) {
+        if (audio_end > audio_start) {
             double real_dur_ms = (double)g_pl.dec.samples
                                  / (double)g_pl.channels
                                  / (double)g_pl.rate * 1000.0;
             if (real_dur_ms > 0)
-                return (uint64_t)((double)seek_ms
-                                  * (double)st.st_size / real_dur_ms);
+                return audio_start +
+                       (uint64_t)((double)seek_ms
+                                  * (double)(audio_end - audio_start)
+                                  / real_dur_ms);
         }
     }
     /* CBR / no VBR tag: first-frame bitrate (bytes/ms = bitrate_kbps / 8). */
-    return (uint64_t)((double)seek_ms * g_pl.dec.info.bitrate_kbps / 8.0);
+    uint64_t target = audio_start +
+                      (uint64_t)((double)seek_ms
+                                 * g_pl.dec.info.bitrate_kbps / 8.0);
+    if (audio_end > audio_start && target > audio_end) target = audio_end;
+    return target;
 }
 
 /* Open an M4B/AAC track: mp4 demux + fdk-aac. Priming-decodes frame 0 to read
@@ -1401,7 +2245,18 @@ static int open_track_aac(int idx, int64_t seek_ms) {
         x_aac_ConfigRaw(g_pl.aac, asc, ascLen);
         g_pl.aac_sample = (seek_ms > 0) ? mp4_audio_seek_sample(&g_pl.mp4, seek_ms) : 0;
         g_pl.aac_need_intr = 1;  /* fresh decoder: first decode signals restart */
-        if (g_pl.pcm) { x_snd_pcm_drop(g_pl.pcm); x_snd_pcm_prepare(g_pl.pcm); }
+        if (g_pl.pcm) {
+            reset_pcm_pending();
+            if (g_pl.output == OUT_WIRED) pcm_writer_quiesce();
+            else x_snd_pcm_drop(g_pl.pcm);
+            x_snd_pcm_prepare(g_pl.pcm);
+            if (g_pl.output == OUT_WIRED &&
+                pcm_writer_activate(g_pl.pcm_period_frames,
+                                    g_pl.pcm_channels) < 0) {
+                plog("aac re-seek: pcm writer restart failed");
+                return -1;
+            }
+        }
         int64_t base = 0;
         for (int i = 0; i < idx; i++) base += g_pl.tracks[i].duration_ms;
         g_pl.track_base_ms = base;
@@ -1448,7 +2303,9 @@ static int open_track_aac(int idx, int64_t seek_ms) {
     }
     if (rate <= 0 || ch <= 0) { plog("aac streaminfo invalid (rate/ch)"); close_mh(); return -1; }
     if (frameSize <= 0) frameSize = 1024;
-    g_pl.rate = rate; g_pl.channels = ch; g_pl.aac_frame_size = frameSize;
+    /* setup_alsa owns g_pl.rate/channels so it can compare a new track's
+     * format with the PCM stream that is already running. */
+    g_pl.aac_frame_size = frameSize;
 
     if (setup_alsa(rate, ch) < 0) { plog("setup_alsa failed (aac)"); close_mh(); close_pcm(); return -1; }
 
@@ -1516,7 +2373,14 @@ static int open_track(int idx, int64_t seek_ms) {
             }
             mix_apply();
         } else if (g_pl.pcm) {
-            x_snd_pcm_drop(g_pl.pcm); x_snd_pcm_prepare(g_pl.pcm);
+            reset_pcm_pending();
+            pcm_writer_quiesce();
+            x_snd_pcm_prepare(g_pl.pcm);
+            if (pcm_writer_activate(g_pl.pcm_period_frames,
+                                    g_pl.pcm_channels) < 0) {
+                plog("re-seek: pcm writer restart failed");
+                close_mh(); g_pl.state = PLAYER_STOPPED; return -1;
+            }
         }
         int64_t base = 0;
         for (int i = 0; i < idx; i++) base += g_pl.tracks[i].duration_ms;
@@ -1535,8 +2399,12 @@ static int open_track(int idx, int64_t seek_ms) {
     if (g_pl.track_fd < 0) { plog("open failed: %s", g_pl.tracks[idx].path); return -1; }
     memset(&g_pl.dec, 0, sizeof(g_pl.dec));
     memset(&g_pl.io, 0, sizeof(g_pl.io));
+    g_pl.io_ctx.fd = g_pl.track_fd;
+    g_pl.io_ctx.io_error = &g_pl.media_io_error;
     g_pl.io.read = mp3_io_read;
+    g_pl.io.read_data = &g_pl.io_ctx;
     g_pl.io.seek = mp3_io_seek;
+    g_pl.io.seek_data = &g_pl.io_ctx;
     /* SEEK_TO_BYTE: byte-level seek (NO frame index). SEEK_TO_SAMPLE would
      * build the FULL frame index on the first non-zero seek — ~14.5MB for a
      * 6.6h file (910K frames × 16B) plus a full 193MB scan — which OOMs this
@@ -1550,7 +2418,9 @@ static int open_track(int idx, int64_t seek_ms) {
     long rate = (long)g_pl.dec.info.hz;
     int ch = g_pl.dec.info.channels;
     if (rate <= 0 || ch <= 0) { plog("minimp3 bad format hz=%ld ch=%d", rate, ch); close_mh(); return -1; }
-    g_pl.rate = rate; g_pl.channels = ch; g_pl.dec_open = 1; g_pl.track_open = 1;
+    /* Leave g_pl.rate/channels describing the live PCM until setup_alsa has
+     * decided whether this track can reuse it. */
+    g_pl.dec_open = 1; g_pl.track_open = 1;
 
     if (setup_alsa(rate, ch) < 0) { plog("setup_alsa failed"); close_mh(); close_pcm(); return -1; }
 
@@ -1561,8 +2431,10 @@ static int open_track(int idx, int64_t seek_ms) {
     if (seek_ms > 0) {
         uint64_t target = seek_byte_target(seek_ms);
         int sr = mp3dec_ex_seek(&g_pl.dec, target);
-        plog("seek track %d @%lldms -> byte %llu (dur_via=%s) -> %d",
+        plog("seek track %d @%lldms -> byte %llu (audio_start=%llu "
+             "dur_via=%s) -> %d",
              idx, (long long)seek_ms, (unsigned long long)target,
+             (unsigned long long)g_pl.dec.start_offset,
              (g_pl.dec.samples > 0 ? "vbr-tag" : "bitrate"), sr);
     }
     g_pl.track_idx = idx;
@@ -1575,6 +2447,7 @@ static int open_track(int idx, int64_t seek_ms) {
     g_pl.cur_title[sizeof(g_pl.cur_title)-1] = '\0';
     plog("opened track %d (%s) hz=%ld ch=%d seek=%lld",
          idx, g_pl.tracks[idx].title, rate, ch, (long long)seek_ms);
+    mp3_preload_start(idx + 1);
     return 0;
 }
 
@@ -1620,6 +2493,15 @@ static void cmd_play(int book_id, int64_t start_ms) {
         plog("PLAY book %d @%lld dropped (already playing this book, resume)", book_id, (long long)start_ms);
         return;
     }
+    /* A deliberate switch to another book/position must not hand a live PCM
+     * stream to the new decoder. Unlike an automatic EOF transition we drop
+     * queued audio here because the listener explicitly requested the jump. */
+    if (g_pl.track_open || g_pl.pcm) {
+        close_mh();
+        int previous_output = g_pl.output;
+        close_pcm();
+        settle_wired_pcm_restart(previous_output);
+    }
     g_pl.book_id = book_id;
     g_pl.last_book = book_id;
     g_pl.fmt_unsupported = 0;
@@ -1636,13 +2518,11 @@ static void cmd_play(int book_id, int64_t start_ms) {
     int start_idx = 0;
     int64_t into = 0;
     if (start_ms < 0) {
-        /* resume from saved progress. The SD .pos is authoritative (a full
-         * /usr/data can never lose it); fall back to library.db only for
-         * positions saved by older builds (pre-2.0.9) that wrote library.db
-         * alone, so existing listeners keep their place across the upgrade. */
+        /* Resume from the newest validated internal/SD checkpoint, then fall
+         * back to library.db for older builds that wrote the DB alone. */
         int sd_ord = 0, sd_done = 0;
         int64_t sd_pos = 0, sd_book = 0;
-        if (pos_load_sd(book_id, &sd_ord, &sd_pos, &sd_book, &sd_done) > 0) {
+        if (pos_load_best(book_id, &sd_ord, &sd_pos, &sd_book, &sd_done) > 0) {
             start_idx = sd_ord - 1;
             if (start_idx < 0) start_idx = 0;
             if (start_idx >= g_pl.track_count) start_idx = g_pl.track_count - 1;
@@ -1706,6 +2586,13 @@ static void cmd_resume(void) {
              g_pl.output == OUT_BT ? "bluealsa" : "wired");
     } else {
         x_snd_pcm_prepare(g_pl.pcm);
+        if (g_pl.output == OUT_WIRED &&
+            pcm_writer_activate(g_pl.pcm_period_frames,
+                                g_pl.pcm_channels) < 0) {
+            plog("RESUME pcm writer restart failed @%lldms",
+                 (long long)g_pl.position_ms);
+            return;
+        }
     }
     g_pl.state = PLAYER_PLAYING;
     g_pl.last_save_ms = mono_ms();
@@ -1722,18 +2609,19 @@ static void cmd_pause(void) {
             bt_mixer_close();
             plog("PAUSE closed bluealsa PCM for clean resume");
         } else {
-            x_snd_pcm_drop(g_pl.pcm);
+            reset_pcm_pending();
+            pcm_writer_quiesce();
         }
     }
     g_pl.state = PLAYER_PAUSED;
-    save_progress(0, 1);
+    queue_progress(0, 1, 1);
     plog("PAUSE @%lldms", (long long)g_pl.position_ms);
 }
 
 static void cmd_stop(void) {
-    if ((g_pl.track_open || g_pl.pcm) && g_pl.book_id > 0)
-        save_progress(0, 1);
+    int save = (g_pl.track_open || g_pl.pcm) && g_pl.book_id > 0;
     close_mh(); close_pcm();
+    if (save) queue_progress(0, 1, 1);
     g_pl.state = PLAYER_STOPPED;
     plog("STOP");
 }
@@ -1745,6 +2633,35 @@ static void cmd_seek(int64_t ms) {
         int64_t d = g_pl.tracks[i].duration_ms;
         if (ms < acc + d || i == g_pl.track_count - 1) { idx = i; into = ms - acc; if (into < 0) into = 0; break; }
         acc += d;
+    }
+    if (idx == g_pl.track_idx && g_pl.dec_fmt == DEC_MP3 &&
+        g_pl.dec_open && g_pl.track_fd >= 0) {
+        /* Repeated byte seeks on minimp3_ex's callback decoder can leave a
+         * freshly opened multipart track reporting EOF on its next read. Keep
+         * the compatible PCM stream, but rebuild the small streaming decoder
+         * and fd below. This remains O(1) memory because open_track uses
+         * MP3D_SEEK_TO_BYTE | MP3D_DO_NOT_SCAN. */
+        if (g_pl.output == OUT_BT) {
+            close_pcm();
+            bt_mixer_close();
+        } else if (g_pl.pcm) {
+            reset_pcm_pending();
+            pcm_writer_quiesce();
+            x_snd_pcm_prepare(g_pl.pcm);
+            if (pcm_writer_activate(g_pl.pcm_period_frames,
+                                    g_pl.pcm_channels) < 0) {
+                plog("seek: pcm writer restart failed");
+                close_mh();
+                g_pl.state = PLAYER_STOPPED;
+                return;
+            }
+        }
+        close_mh();
+        plog("SEEK reopening MP3 decoder for track %d", idx);
+    } else if (idx != g_pl.track_idx) {
+        int previous_output = g_pl.output;
+        close_pcm();
+        settle_wired_pcm_restart(previous_output);
     }
     if (open_track(idx, into) < 0) { g_pl.state = PLAYER_STOPPED; return; }
     g_pl.state = PLAYER_PLAYING;
@@ -1773,7 +2690,8 @@ static void cmd_skip(int dir) {
      * the decode loop hits natural EOF -> book finishes. */
     if (g_pl.total_ms > 0 && target > g_pl.total_ms) target = g_pl.total_ms;
     plog("SKIP %s%lldms -> %lld (pos=%lld total=%lld)",
-         dir > 0 ? "+" : "-", (long long)delta, (long long)target,
+         dir > 0 ? "+" : "-", (long long)(dir > 0 ? delta : -delta),
+         (long long)target,
          (long long)g_pl.position_ms, (long long)g_pl.total_ms);
     cmd_seek(target);   /* sets state = PLAYER_PLAYING; re-opens track */
 }
@@ -1782,8 +2700,6 @@ static void cmd_skip(int dir) {
 
 /* mp3d_sample_t is int16_t (S16). Buffer holds PCM samples (interleaved
  * across channels); ALSA writei takes frames = samples / channels. */
-#define PCM_BUF_SAMPLES 16384
-
 /* NO SOFTWARE GAIN — clean passthrough (PROVEN 2026-07-18).
  *
  * History: audiobooks are mastered ~10-14 dB quieter than music, and this
@@ -1855,12 +2771,16 @@ static void decode_step_aac(void) {
         int idx = g_pl.track_idx + 1;
         if (idx >= g_pl.track_count) {
             plog("book finished (aac)");
-            save_progress(1, 1);
-            close_mh(); close_pcm();
+            finish_track_pcm(); close_mh();
+            queue_progress(1, 1, 1);
             g_pl.state = PLAYER_STOPPED;
             return;
         }
+        /* The period accumulator carries the tail into this decoder. */
+        uint64_t handoff_started = mono_ms();
         if (open_track(idx, 0) < 0) g_pl.state = PLAYER_STOPPED;
+        else plog("aac track handoff took %llums",
+                  (unsigned long long)(mono_ms() - handoff_started));
         return;
     }
     int fsz = mp4_audio_read_sample(&g_pl.mp4, g_pl.aac_sample,
@@ -1871,10 +2791,14 @@ static void decode_step_aac(void) {
         plog("aac read_sample(%u) -> %d", g_pl.aac_sample, fsz);
         int idx = g_pl.track_idx + 1;
         if (idx >= g_pl.track_count) {
-            save_progress(1, 1); close_mh(); close_pcm();
+            finish_track_pcm(); close_mh();
+            queue_progress(1, 1, 1);
             g_pl.state = PLAYER_STOPPED; return;
         }
+        uint64_t handoff_started = mono_ms();
         if (open_track(idx, 0) < 0) g_pl.state = PLAYER_STOPPED;
+        else plog("aac track handoff took %llums",
+                  (unsigned long long)(mono_ms() - handoff_started));
         return;
     }
     uint8_t *pBuf[1] = { g_pl.aac_frame };
@@ -1936,12 +2860,20 @@ static void decode_step(void) {
         int idx = g_pl.track_idx + 1;
         if (idx >= g_pl.track_count) {
             plog("book finished");
-            save_progress(1, 1);
-            close_mh(); close_pcm();
+            finish_track_pcm(); close_mh();
+            queue_progress(1, 1, 1);
             g_pl.state = PLAYER_STOPPED;
             return;
         }
-        if (open_track(idx, 0) < 0) { g_pl.state = PLAYER_STOPPED; }
+        uint64_t handoff_started = mono_ms();
+        int preloaded = mp3_preload_take(idx);
+        if (!preloaded && open_track(idx, 0) < 0) {
+            g_pl.state = PLAYER_STOPPED;
+        } else {
+            plog("mp3 track handoff took %llums preloaded=%d",
+                 (unsigned long long)(mono_ms() - handoff_started),
+                 preloaded);
+        }
         return;
     }
 
@@ -2094,17 +3026,9 @@ static void *player_thread(void *arg) {
                 else if (g_pl.last_book > 0) cmd_play(g_pl.last_book, -1);
                 break;
             case CMD_QUIT:
-                /* Persist the exact final position before the thread exits.
-                 * Without this, the last place is only as fresh as the most
-                 * recent periodic save (throttled to every 15s in decode_step),
-                 * so up to 15s is silently lost on every exit — and if the saved
-                 * .pos was already missing/stale, the next session resumes ~5s
-                 * in and the periodic save then overwrites it with ~0, which
-                 * looks like "the resume reset to the beginning". Saving here
-                 * makes exit authoritative. Safe: save_progress no-ops when no
-                 * book is loaded, and g_pl.db is still open (audiobook_db_close
-                 * runs in player_shutdown AFTER this thread exits). */
-                save_progress(0, 1);
+                /* cmd_stop() below closes PCM first and then queues the exact
+                 * final position. Keeping the durable write after close avoids
+                 * competing with the R1's fragile audio DMA. */
                 g_pl.running = 0;
                 break;
         }
@@ -2180,28 +3104,19 @@ int player_init(void) {
     if (g_pl.thread_alive) return 0;
     memset(&g_pl, 0, sizeof(g_pl));
     g_pl.track_fd = -1;
+    g_pl.preload.fd = -1;
     g_pl.speed_permille = 1000;
     g_pl.requested_speed_permille = 1000;
     /* Volume debounce init: vol_last_saved=-1 means "first save always writes" */
     g_pl.vol_last_saved = -1;
-    /* Open the player's OWN library DB connection. The build is
-     * -DSQLITE_THREADSAFE=2, so this connection is touched ONLY by the player
-     * thread (the UI/event thread has its own, ui->db). This kills the data
-     * race that sharing one sqlite3* across the render/player/event threads
-     * caused under THREADSAFE=0. The DB is journaled on SD, so the player's
-     * writes never block the UI's reads; the only contention is scan
-     * (event-thread write) vs save (player-thread write), handled by a short
-     * busy_timeout + skip in save_progress. */
+    /* Open the player's read connection. The progress writer opens its own
+     * connection on its worker thread; the UI/event thread also has its own. */
     if (audiobook_db_open(AUDIOBOOK_DB_PATH, &g_pl.db) < 0) {
         plog("player_init: library DB open failed — playback unavailable");
         g_pl.db = NULL;
         return -1;
     }
-    /* Short busy_timeout: a scan holds the writer lock for its whole
-     * transaction, so a save during a scan would otherwise block the decode
-     * loop (audio glitch) for the full 5s default. 300ms gives a genuine
-     * contender a fair shot, then save_progress skips (SD .pos is
-     * authoritative) — bounded glitch, no data loss. */
+    /* Keep reads bounded if a library refresh currently owns the writer lock. */
     sqlite3_busy_timeout(g_pl.db, 300);
     /* Restore last-used playback speed (persisted by player_set_speed). */
     {
@@ -2224,9 +3139,28 @@ int player_init(void) {
     pthread_mutex_init(&g_pl.mu, NULL);
     g_pl.pending_volume_set = -1;
     g_pl.volume_preview_pct = g_pl.volume_pct;
+    if (progress_writer_start() < 0) {
+        if (g_pl.mixer) { x_snd_mixer_close(g_pl.mixer); g_pl.mixer = NULL; }
+        if (g_fdkaac_lib) { dlclose(g_fdkaac_lib); g_fdkaac_lib = NULL; }
+        if (g_alsa_lib) { dlclose(g_alsa_lib); g_alsa_lib = NULL; }
+        audiobook_db_close(g_pl.db); g_pl.db = NULL;
+        pthread_mutex_destroy(&g_pl.mu);
+        return -1;
+    }
+    if (pcm_writer_start() < 0) {
+        progress_writer_stop();
+        if (g_pl.mixer) { x_snd_mixer_close(g_pl.mixer); g_pl.mixer = NULL; }
+        if (g_fdkaac_lib) { dlclose(g_fdkaac_lib); g_fdkaac_lib = NULL; }
+        if (g_alsa_lib) { dlclose(g_alsa_lib); g_alsa_lib = NULL; }
+        audiobook_db_close(g_pl.db); g_pl.db = NULL;
+        pthread_mutex_destroy(&g_pl.mu);
+        return -1;
+    }
     g_pl.running = 1;
     if (pthread_create(&g_pl.thread, NULL, player_thread, NULL) != 0) {
         plog("pthread_create failed");
+        pcm_writer_stop();
+        progress_writer_stop();
         if (g_pl.mixer) { x_snd_mixer_close(g_pl.mixer); g_pl.mixer = NULL; }
         if (g_fdkaac_lib) { dlclose(g_fdkaac_lib); g_fdkaac_lib = NULL; }
         if (g_alsa_lib) { dlclose(g_alsa_lib); g_alsa_lib = NULL; }
@@ -2243,6 +3177,9 @@ void player_shutdown(void) {
     submit(CMD_QUIT, 0, 0);
     pthread_join(g_pl.thread, NULL);
     g_pl.thread_alive = 0;
+    /* CMD_QUIT/cmd_stop enqueue the authoritative final position. Drain that
+     * latest snapshot before the SD guard and DB connections are released. */
+    progress_writer_stop();
     /* Release the current track + ALSA PCM. CRITICAL: CMD_QUIT just sets
      * running=0 and the thread exits with g_pl.pcm still open — if we don't
      * close it here, we LEAK the output device (the wired DAC, or the bluealsa
@@ -2252,6 +3189,7 @@ void player_shutdown(void) {
      * the fdk-aac dlsym (AAC path). */
     close_mh();
     close_pcm();
+    pcm_writer_stop();
     vol_save_sd();
     if (g_pl.mixer) { x_snd_mixer_close(g_pl.mixer); g_pl.mixer = NULL; }
     bt_mixer_close();

@@ -102,6 +102,44 @@ hard-to-spot hang because everything else looks correct.
   "substream active." Playback verification = the decode loop running at
   real-time (`frames_written ≈ wall_seconds × rate`) with no deadlock.
 
+### R1 AIC mono DMA failure and the wired writer (v2.0.30)
+
+The analog driver accepts a one-channel `hw_params` configuration, but this is
+not proof that the path is usable. On the test R1, sustained mono playback later
+produced repeated kernel faults with a zero DMA address and could leave progress
+stalled, the UI unresponsive, or the device rebooting. The same files were
+stable with a two-channel hardware stream.
+
+Keep decoding mono sources as mono. At the final wired sink only, duplicate each
+sample to left and right and configure ALSA for stereo. Bluetooth keeps the
+source channel count because its plug/encoder path does not use the analog AIC
+DMA engine.
+
+Wired PCM is submitted through one bounded writer queue. The decoder accumulates
+partial tails until a complete ALSA period is available, then the writer owns
+the blocking `snd_pcm_writei`. Before `drop`, `prepare`, or `close`, deactivate
+the queue and wait until its in-flight write is finished. Never let the decode
+thread and transition code operate on the same PCM handle concurrently.
+
+Optional buffer/period timing constraints are advisory on this vendor driver.
+If the requested latency values are rejected, retry `hw_params` using the
+driver defaults instead of rejecting an otherwise playable file. After a
+persistent write failure, pause and checkpoint; continuing to decode would make
+the progress display lie while producing no audio.
+
+### Compatible multipart MP3 handoff (v2.0.30)
+
+When adjacent MP3 parts have the same source rate and channel count, keep the
+wired PCM stream alive. A small background worker opens the next minimp3 decoder
+and decodes its first block while the current part is playing. At EOF the player
+takes that prepared decoder and submits the buffered block without reopening
+the AIC device. If preloading fails, the normal synchronous open remains the
+fallback.
+
+A real wired stop/start receives a bounded 250 ms settle delay before ALSA is
+reopened. Do not add that delay to compatible automatic part changes: those
+reuse the live stream precisely to avoid the fragile restart path.
+
 ## CS43131 DAC volume
 
 `amixer -c 0 contents` shows "Left Playback Volume" (numid 1, INTEGER 0..255)
@@ -238,15 +276,22 @@ DecoderSpecificInfo(0x05, varlen) → ASC bytes. Varlen descriptor size = up to
 
 ## VBR resume byte math (MP3)
 
-`seek_byte_target()`: if minimp3 set `dec.samples` (VBR/Xing tag — populated
-even with `MP3D_DO_NOT_SCAN`; probe confirmed total_samples matched the true
-6.6 h), compute `byte = seek_ms * file_size / real_duration_ms` where
+`seek_byte_target()`: first locate `dec.start_offset`, the first MPEG frame
+after ID3 metadata and embedded APIC cover art. If minimp3 set `dec.samples`
+(VBR/Xing tag — populated even with `MP3D_DO_NOT_SCAN`; probe confirmed
+total_samples matched the true 6.6 h), compute
+`byte = audio_start + seek_ms * (file_size - audio_start) / real_duration_ms` where
 `real_duration_ms = dec.samples / channels / rate * 1000` (true avg bitrate).
-Falls back to `seek_ms * bitrate_kbps / 8` when `dec.samples == 0` (CBR —
-exact for CBR). `fstat(g_pl.track_fd)` for file size. The first-frame bitrate
-is a slight underestimate for VBR (56 kbps first vs ~65 avg) → byte-seek lands
-a few seconds early; minimp3 still syncs forward to voice, negligible for
-resume.
+Falls back to `audio_start + seek_ms * bitrate_kbps / 8` when
+`dec.samples == 0` (CBR — exact for CBR). Clamp within the audio payload, not
+the whole file. This prevents early seeks from landing inside a multi-megabyte
+cover image. `fstat(g_pl.track_fd)` supplies the real file size.
+
+For a seek within the current MP3 part, quiesce the writer and reopen only the
+lightweight `MP3D_SEEK_TO_BYTE | MP3D_DO_NOT_SCAN` decoder. Reusing a decoder
+after its streaming callbacks had already reached EOF caused minimp3 to report
+a false EOF and skip to the next part. The reopen is O(1), creates no frame
+index, and retains compatible PCM.
 
 ## De-risk FIRST
 

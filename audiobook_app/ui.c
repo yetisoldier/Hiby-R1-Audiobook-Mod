@@ -124,6 +124,13 @@ static catalog_worker_t g_catalog;
 
 static void *catalog_worker_main(void *arg) {
     (void)arg;
+    /* Catalog isolation is maintenance work on a single-core, low-memory
+     * player. Keep touch, rendering, and audio threads ahead of it while a
+     * newly scanned large library is being cleaned. On Linux, nice is tracked
+     * per thread, so this does not lower hiby_player's UI/audio priority. */
+    if (nice(10) < 0 && errno != 0)
+        ui_log("[catalog] unable to lower worker priority: %s\n",
+               strerror(errno));
     music_catalog_cleanup_result_t cleanup = {0};
     int rc = -1;
     /* A just-finished stock scan can hold the DB briefly after its progress
@@ -1125,11 +1132,11 @@ int ui_run(uint16_t *fb, int fb_fd) {
                             case KEY_PLAYPAUSE:  /* 164 */
                                 player_toggle();
                                 break;
-                            case KEY_NEXT:       /* 163 */
+                            case KEY_NEXTSONG:   /* 163 */
                             case KEY_FASTFORWARD: /* 208 */
                                 player_ff();
                                 break;
-                            case KEY_PREVIOUS:    /* 165 */
+                            case KEY_PREVIOUSSONG: /* 165 */
                             case KEY_REWIND:       /* 207 */
                                 player_rw();
                                 break;

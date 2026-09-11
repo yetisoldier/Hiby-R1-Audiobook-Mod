@@ -3,19 +3,19 @@
 A self-contained audiobook app for the normal HiBy R1, based on stock HiBy R1
 firmware 1.6. **Not for the R1 MIDI.**
 
-> **v2.0.29 is the current release.** It fixes a remaining dead-screen race
-> between the Audiobooks UI and HiBy's automatic backlight timer. It also
-> includes the v2.0.28 Music-catalog isolation fix, v2.0.27 USB-storage fix,
-> and all earlier NativeApp stability, chapter, and resume improvements.
+> **v2.0.30 is the current release.** It hardens wired mono playback and
+> multipart transitions, fixes physical Next/Previous handling, moves resume
+> persistence away from the real-time decode path, and makes Music-catalog
+> isolation substantially faster on large libraries.
 
 ## Current release
 
-- **Version marker:** `2.0.29`
-- **About-screen label:** `HiBy R1 2.0.29`
-- **Download:** <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v2.0.29>
-- **Package:** `r1-audiobooks-2.0.29.upt` (rename to `r1.upt` to install)
-- **UPT MD5:** `cb536fd0b3d2677a87369e9f57e9bdd3`
-- **UPT SHA256:** `c3eb881f853715cb4c464c56db6f39d02198dd07071a7e667dece47fea7537bb`
+- **Version marker:** `2.0.30`
+- **About-screen label:** `HiBy R1 2.0.30`
+- **Download:** <https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v2.0.30>
+- **Package:** `r1-audiobooks-2.0.30.upt` (rename to `r1.upt` to install)
+- **UPT MD5:** `db30162a2caf961f24c79618706d8b6d`
+- **UPT SHA256:** `d7814c39f149592584e34b91b1681767fc30f02d25eaa984544691a2c11a89b8`
 - **Boot ADB:** disabled. The public package omits `/etc/init.d/S90adb`, so
  connecting the R1 in Device mode exposes the SD card as normal USB storage.
  ADB can still be enabled manually for development, but ADB and USB storage
@@ -28,7 +28,7 @@ firmware 1.6. **Not for the R1 MIDI.**
 
 **v2.0.20 compatibility note:** v2.0.20 was published from an experimental
 UTF-8/Cyrillic side branch. That text-rendering experiment is not included in
-v2.0.29 because this release follows the separately tested stability line. If
+v2.0.30 because this release follows the separately tested stability line. If
 you rely on Cyrillic audiobook names or tags, remain on v2.0.20 for now.
 
 Before flashing, keep a known-good stock 1.6 `r1.upt` for recovery. This is
@@ -51,8 +51,9 @@ the R1 MIDI or other HiBy players unless you are prepared to recover the device.
  <img src="docs/screenshots/08-launcher-after-exit.png" alt="HiBy launcher after exiting the app" width="200">
 </p>
 
-Captured directly from the test R1. The v2.0.29 display-wake update does not
-change these screens. Full set in [`docs/screenshots/`](docs/screenshots/).
+Captured directly from the test R1. v2.0.30 changes playback and background
+maintenance rather than these screens. Full set in
+[`docs/screenshots/`](docs/screenshots/).
 
 ## How it works
 
@@ -102,12 +103,22 @@ browser, Bluetooth, USB, and system UI are otherwise untouched.
 **Playback**
 - **MP3** and **M4B/AAC** (AAC via the device's `libfdk-aac`, `dlopen`'d).
 - **Per-book + multipart resume** across reboots and book switching, with a
- 5-second smart rewind on resume. Positions are **SD-primary** (one tiny file
- per book on the SD card) so they survive even a full internal data partition;
- the SQLite DB is a best-effort mirror. Playing positions checkpoint every 15
- seconds, the DB mirror is limited to once per minute, and the exact position is
- saved immediately on pause, stop, completion, and app exit. A book must play
- for at least 15 seconds before its first periodic checkpoint.
+ 5-second smart rewind on resume. A low-priority persistence worker checkpoints
+ the active position every 15 seconds to a tiny internal cache keyed to the SD
+ card, then flushes the authoritative SD sidecar and best-effort SQLite mirror
+ on pause, stop, completion, and app exit. This keeps exFAT and SQLite writes
+ out of the real-time audio path while preserving positions across reboots and
+ card swaps. A book must play for at least 15 seconds before its first automatic
+ checkpoint; pausing or leaving the app saves immediately.
+- Wired mono MP3s are converted to stereo only at the final ALSA sink, matching
+ the stock player's stable CS43131/AIC path while preserving mono decode and
+ position accounting. Bluetooth keeps the source channel count.
+- Compatible multipart MP3s preload the next decoder and reuse the live PCM
+ stream, reducing gaps and avoiding fragile audio-device restarts at part
+ boundaries. Early seeks account for large embedded ID3 cover art instead of
+ mistaking metadata for audio.
+- Physical Play/Pause, Next (+60 seconds), Previous (-30 seconds), and
+ press-and-hold volume controls work inside Audiobooks.
 - **Now Playing**: a larger 270-pixel cover, title/author/duration, and a
   **draggable progress handle** in a compact lower information area (scrub
   seek; tapping the bar elsewhere does not jump).
@@ -214,10 +225,10 @@ browser, Bluetooth, USB, and system UI are otherwise untouched.
 - **SD-card interruption guard:** a read failure or unavailable audiobook path
   stops playback without marking the book complete or overwriting its saved
   position.
-- **Resume persistence:** periodic position files are written every 15 seconds.
-  Pause, stop, completion, and app exit save immediately. The less-frequent
-  SQLite mirror is only for list progress and does not control the authoritative
-  resume position.
+- **Resume persistence:** the active position is checkpointed every 15 seconds
+  without blocking audio. Pause, stop, completion, and app exit save immediately
+  to the SD sidecar. The SQLite mirror is only for list progress and does not
+  control the authoritative resume position.
 - **Leaving the app:** when you swipe or back out of the Audiobooks app to the
  HiBy launcher, **audiobook playback stops**. Audio is tied to the app being
  open. Exiting while playing returns cleanly to the launcher (no black screen,
@@ -229,7 +240,7 @@ browser, Bluetooth, USB, and system UI are otherwise untouched.
 
 ## Install
 
-1. Download `r1-audiobooks-2.0.29.upt` from the release page.
+1. Download `r1-audiobooks-2.0.30.upt` from the release page.
 2. Rename it to exactly `r1.upt` (the R1 will not recognize the update otherwise).
 3. Copy it to the root of the SD card.
 4. On the R1, run the normal firmware update
@@ -237,8 +248,12 @@ browser, Bluetooth, USB, and system UI are otherwise untouched.
 5. Wait for success and the reboot.
 6. After boot, delete or rename `r1.upt` on the SD card so the updater stops
  offering it.
-7. Open the Audiobooks tile and tap **Refresh Library** to scan `/Audiobooks`.
-   Run this once after upgrading so existing books gain description metadata.
+7. For a new or changed SD card, open **Music** and run **Update Database**.
+   This builds HiBy's normal Music catalog; Audiobooks removes `/Audiobooks`
+   entries from it in the background.
+8. Open the **Audiobooks** tile and tap **Refresh Library** to scan
+   `/Audiobooks`. Run this once after upgrading so existing books gain any new
+   chapter or description metadata.
 
 Recommended SD-card layout:
 
@@ -273,18 +288,19 @@ The production firmware command below recompiles the hook from current source
 before packaging it, so this separate command is useful for quick development
 checks but is not required for a release build.
 
-Build the public-release firmware (version 2.0.29):
+Build the public-release firmware (version 2.0.30):
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\build_r1_audiobook_firmware.ps1 `
- -OutDir work\audiobook-firmware-2.0.29 `
- -OutputUpt work\audiobook-firmware-2.0.29\r1-audiobooks-2.0.29.upt `
+ -OutDir work\audiobook-firmware-2.0.30 `
+ -OutputUpt work\audiobook-firmware-2.0.30\r1-audiobooks-2.0.30.upt `
  -IncludeAudiobookNativeApp `
+ -IncludeAudiobookLauncherIcon `
  -UnlockNativeDsd `
  -EnableBluetoothSbcXq `
  -UnlockUsbDacMode `
- -CustomVersionId 2.0.29 `
- -CustomVersionLabel "HiBy R1 2.0.29"
+ -CustomVersionId 2.0.30 `
+ -CustomVersionLabel "HiBy R1 2.0.30"
 ```
 
 The public build intentionally omits `-EnableBootAdb`. For a development-only
@@ -322,7 +338,7 @@ alone.
 - `docs/screenshots/` - README screenshots.
 - `firmware/releases/v2.0.16/` - v2.0.16 release notes and checksums.
 - `firmware/releases/v2.0.17/` - v2.0.17 release notes and checksums.
-- `firmware/releases/v2.0.29/` - current release notes and checksums.
+- `firmware/releases/v2.0.30/` - current release notes and checksums.
 - `CHANGELOG.md` - release history.
 
 ## Attribution and sources

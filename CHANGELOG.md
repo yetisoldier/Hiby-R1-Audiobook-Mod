@@ -2,6 +2,89 @@
 
 All public releases are for the normal HiBy R1 on stock firmware 1.6. Do not install these packages on the R1 MIDI.
 
+## v2.0.30 - 2026-09-10
+
+Firmware marker: `2.0.30` - About-screen label `HiBy R1 2.0.30`.
+
+Playback and performance hardening release built directly on v2.0.29. It
+consolidates the complete tested development line; intermediate RC numbers are
+not public releases.
+
+### Fixed: wired mono playback instability
+
+- Traced intermittent playback failures, frozen progress, reboots, and 185
+  repeated `AIC: DMA address[0x00000000] ... illegal` messages to the R1 analog
+  driver accepting a mono ALSA configuration but failing later in one-channel
+  DMA. Stereo control files did not reproduce the fault.
+- Mono sources remain mono while decoding and for position accounting, but the
+  final wired sink now duplicates each sample to left and right and configures
+  the DAC as stereo, matching the stable stock playback path. Bluetooth retains
+  the source channel count.
+- Wired output now uses a bounded full-period PCM writer queue. Partial decoder
+  tails are accumulated until one complete ALSA period is ready, and output
+  ownership is quiesced before drop, prepare, or close operations.
+- ALSA setup retries with the driver's default buffer constraints when optional
+  latency constraints are rejected. A persistent output failure pauses and
+  checkpoints instead of silently decoding without audible progress.
+
+### Multipart transitions and seek correctness
+
+- Compatible MP3 parts reuse the live PCM stream instead of repeatedly closing
+  and reopening the fragile AIC device. The next decoder and first block are
+  prepared in the background for a short, buffered handoff.
+- Genuine wired stop/start transitions receive a bounded 250 ms driver-settle
+  delay; automatic compatible-part transitions do not restart the device.
+- MP3 byte seeks now begin after the file's ID3 metadata and embedded cover art.
+  Early resume and skip targets therefore land in audio even when a part has a
+  large APIC image.
+- Same-part MP3 seeks reopen only the lightweight streaming decoder while
+  retaining compatible PCM. This prevents a repeated callback seek from
+  reporting a false end-of-file and skipping to the following part.
+
+### Resume persistence no longer blocks playback
+
+- Periodic progress persistence moved from the decode loop to a low-priority,
+  latest-wins worker. Slow exFAT metadata or SQLite journal writes can no longer
+  starve the real-time ALSA feed.
+- A tiny internal checkpoint is written every 15 seconds and keyed by the
+  physical SD-card CID. Resume chooses the newest valid matching-card checkpoint
+  or SD sidecar, so replacing the SD card cannot apply another card's position.
+- Pause, stop, completion, and app exit flush the exact position to the
+  authoritative SD sidecar and best-effort library DB mirror. The SD fallback
+  remains available if internal storage cannot accept a checkpoint.
+
+### Hardware controls
+
+- Corrected the Linux input constants for the R1's physical Next and Previous
+  buttons (`KEY_NEXTSONG` 163 and `KEY_PREVIOUSSONG` 165). Inside Audiobooks
+  they reliably perform +60-second and -30-second skips.
+- Physical Play/Pause and volume controls were revalidated with the new output
+  path, including the in-app volume indicator and hold-to-ramp behavior.
+
+### Faster Music-catalog isolation
+
+- Music cleanup now captures and aggregates only metadata groups affected by
+  removed `/Audiobooks` rows. It preserves unrelated HiBy catalog rows, flags,
+  ordering tables, and Music data instead of rebuilding whole side tables.
+- The cleanup worker runs at lower scheduling priority so touch, rendering, and
+  playback stay ahead of maintenance on the single-core R1.
+- The captured 7,694-row device database cleanup fell from more than six minutes
+  to about 1.3 seconds on-device while removing 298 audiobook rows and
+  preserving all 7,396 Music rows.
+
+### Verification
+
+- The complete local regression suite passed, including a synthetic fixture
+  with 6,002 Music rows and both captured R1 databases.
+- The strict production verifier passed all stock paths, modes, symlinks,
+  ownership, launcher integration, catalog, USB, audio-unlock, and OTA checks.
+- On the test R1, a mono multipart MP3 resumed near a file boundary, crossed it,
+  rewound across it, and performed same-part forward/back seeks without false
+  EOF or track skipping. Physical transport and volume controls passed.
+- The final soak recorded zero AIC DMA-address faults. `hiby_player` used about
+  18.7 MB RSS with about 14.6 MB still available, then exited cleanly to the
+  launcher. The listener's original progress was restored after testing.
+
 ## v2.0.29 - 2026-09-08
 
 Firmware marker: `2.0.29` - About-screen label `HiBy R1 2.0.29`.

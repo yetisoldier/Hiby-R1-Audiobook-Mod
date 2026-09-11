@@ -6,9 +6,9 @@ firmware, not for normal end users.
 
 ## Current Release Reference
 
-- Public release: `v2.0.29`
-- About-screen label: `HiBy R1 2.0.29`
-- Package: `r1-audiobooks-2.0.29.upt`
+- Public release: `v2.0.30`
+- About-screen label: `HiBy R1 2.0.30`
+- Package: `r1-audiobooks-2.0.30.upt`
 - Base firmware: stock HiBy R1 1.6 for the normal R1
 - Target device: normal HiBy R1 only, not R1 MIDI
 - Source branch: `main`. The complete NativeApp source and release history are
@@ -89,14 +89,15 @@ pre-2.0 line carried and v2.0.17 restores. Public builds omit persistent ADB:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File tools\build_r1_audiobook_firmware.ps1 `
-  -OutDir work\audiobook-firmware-2.0.29 `
-  -OutputUpt work\audiobook-firmware-2.0.29\r1-audiobooks-2.0.29.upt `
+  -OutDir work\audiobook-firmware-2.0.30 `
+  -OutputUpt work\audiobook-firmware-2.0.30\r1-audiobooks-2.0.30.upt `
   -IncludeAudiobookNativeApp `
+  -IncludeAudiobookLauncherIcon `
   -UnlockNativeDsd `
   -EnableBluetoothSbcXq `
   -UnlockUsbDacMode `
-  -CustomVersionId 2.0.29 `
-  -CustomVersionLabel "HiBy R1 2.0.29"
+  -CustomVersionId 2.0.30 `
+  -CustomVersionLabel "HiBy R1 2.0.30"
 ```
 
 The NativeApp pivot is mutually exclusive with the legacy resume-daemon switches
@@ -133,11 +134,12 @@ Run the release package verifier against the NativeApp build:
 
 ```powershell
 py -3 tools\verify_r1_audiobook_build.py `
-  --out-dir work\audiobook-firmware-2.0.29 `
-  --upt-name r1-audiobooks-2.0.29.upt `
-  --expected-version 2.0.29 `
-  --expected-label "HiBy R1 2.0.29" `
+  --out-dir work\audiobook-firmware-2.0.30 `
+  --upt-name r1-audiobooks-2.0.30.upt `
+  --expected-version 2.0.30 `
+  --expected-label "HiBy R1 2.0.30" `
   --expect-native-app `
+  --expect-audiobook-launcher-icon `
   --expect-native-dsd `
   --expect-sbc-xq `
   --expect-usb-dac-mode
@@ -162,11 +164,12 @@ verifies remote byte count + hashes:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File tools\adb_stage_verified_firmware.ps1 `
-  -Package work\audiobook-firmware-2.0.29\r1-audiobooks-2.0.29.upt `
-  -BuildOutDir work\audiobook-firmware-2.0.29 `
-  -ExpectedVersion 2.0.29 `
-  -ExpectedLabel "HiBy R1 2.0.29" `
+  -Package work\audiobook-firmware-2.0.30\r1-audiobooks-2.0.30.upt `
+  -BuildOutDir work\audiobook-firmware-2.0.30 `
+  -ExpectedVersion 2.0.30 `
+  -ExpectedLabel "HiBy R1 2.0.30" `
   -ExpectNativeApp `
+  -ExpectAudiobookLauncherIcon `
   -ExpectNativeDsd `
   -ExpectBluetoothSbcXq `
   -ExpectUsbDacMode `
@@ -180,7 +183,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 >
 > ```bash
 > adb shell cp /usr/data/mnt/sd_0/r1.upt /usr/data/mnt/sd_0/r1.upt.prev.bak
-> MSYS_NO_PATHCONV=1 adb -s <serial> push work\audiobook-firmware-2.0.29\r1-audiobooks-2.0.29.upt /usr/data/mnt/sd_0/r1.upt
+> MSYS_NO_PATHCONV=1 adb -s <serial> push work\audiobook-firmware-2.0.30\r1-audiobooks-2.0.30.upt /usr/data/mnt/sd_0/r1.upt
 > adb shell md5sum /usr/data/mnt/sd_0/r1.upt
 > ```
 >
@@ -237,7 +240,7 @@ do not start it automatically:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File tools\adb_verify_installed_audiobook_release.ps1 `
-  -ExpectedVersion 2.0.29 `
+  -ExpectedVersion 2.0.30 `
   -ExpectNativeApp `
   -ExpectNativeDsd `
   -ExpectBluetoothSbcXq `

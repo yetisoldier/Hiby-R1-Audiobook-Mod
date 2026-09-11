@@ -1,9 +1,10 @@
-/* posstore.h — SD-primary playback-position store.
+/* posstore.h — durable playback-position stores.
  *
- * The listener's place is saved to the SD card, NOT to library.db on
- * /usr/data, so a full /usr/data (chronic on this device — UBIFS overhead +
- * the stock music DB that the scanner keeps recreating on /usr/data) can
- * NEVER lose the position. One tiny file per book at POS_DIR/<book_id>.pos.
+ * The listener's place is saved to the SD card and mirrored in a tiny active
+ * checkpoint under /usr/data. The internal checkpoint avoids exFAT metadata
+ * writes while PCM is running; pause/stop/exit then flush the same snapshot to
+ * the SD card. Internal files are keyed by the physical SD card CID so changing
+ * cards cannot apply another card's book position.
  *
  * library.db progress is still written (best-effort, by save_progress) as a
  * mirror for the list view's "%" display; its failure is harmless because
@@ -19,6 +20,7 @@
 /* Directory on the SD card holding one <book_id>.pos per book. The SD is at
  * /usr/data/mnt/sd_0 (exFAT, rw) on this device. */
 #define POS_DIR "/usr/data/mnt/sd_0/.audiobook_pos"
+#define POS_CACHE_DIR "/usr/data/audiobooks/position-cache"
 
 /* Save position (authoritative). completed: 0 = mid-listen, 1 = finished.
  * Writes to a temp file then renames (atomic-ish on exFAT within one dir) so

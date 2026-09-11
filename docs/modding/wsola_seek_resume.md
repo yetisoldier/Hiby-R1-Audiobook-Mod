@@ -96,20 +96,23 @@ position was only as fresh as the periodic checkpoint. The fix calls
 `save_progress(0, 1)` before `running=0`; `g_pl.db` is still open then
 (`db_close` is in `ui_run` after `player_shutdown`).
 
-Since v2.0.23, authoritative SD checkpoints run every 15 seconds and the SQLite
-list-progress mirror runs at most every 60 seconds. Pause, stop, completion, and
-quit still save both stores immediately. Identical consecutive state is
-coalesced to avoid redundant exFAT metadata writes.
+Since v2.0.30, periodic persistence no longer runs on the decode thread. A
+low-priority latest-wins worker writes a tiny internal checkpoint every 15
+seconds. Pause, stop, completion, and quit flush the exact position to the SD
+sidecar and best-effort SQLite list-progress mirror. Identical consecutive
+state is coalesced, and shutdown waits for the final queued job before closing
+the worker.
 
 ## SD-primary position store (v2.0.9+)
 
-`pos_save_sd` writes `<book_id>.pos`
-(`track_ordinal/track_pos_ms/book_elapsed_ms/completed/ts`) to
+The durable `<book_id>.pos` file is written to
 `/usr/data/mnt/sd_0/.audiobook_pos/` via tmp+rename (atomic-ish on exFAT).
-`save_progress` calls `pos_save_sd` (authoritative) and periodically calls
-`audiobook_save_progress` (best-effort library.db mirror for the list "%"
-display). `cmd_play` resume reads `pos_load_sd` first, falling back to
-`audiobook_get_progress` only for pre-2.0.9 positions during migration.
+Its fields are `track_ordinal/track_pos_ms/book_elapsed_ms/completed/ts` plus a
+book-path signature. The periodic internal cache lives at
+`/usr/data/audiobooks/position-cache/<sd-cid>-<book_id>.pos`. The card CID and
+book signature prevent stale progress from another SD card or a reused DB ID.
+`cmd_play` chooses the newest valid internal or SD record, then falls back to
+`audiobook_get_progress` only for pre-sidecar migration.
 
 `audiobook_cleanup_orphans` calls `pos_remove_sd` for pruned books (no stale
 `.pos`). See [library_scan_storage.md](./library_scan_storage.md) for why

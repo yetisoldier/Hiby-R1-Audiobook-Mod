@@ -25,10 +25,20 @@ short-lived background worker opens each existing HiBy DB location
 (`/usr/data/usrlocal_media.db`, `/data/usrlocal_media.db`, and the SD-root
 copy), deduplicates aliases by device/inode, and removes only root
 `/Audiobooks` paths in a transaction. It then reconciles the stock Music
-search rows, named catalog counts, format counts, total counts, and time
-indexes. Missing copies are normal. A just-finished stock scan lock is retried
+search rows, named catalogs, format representatives, total counts, and time
+indexes. Since v2.0.30, it captures the metadata groups touched by removed rows
+and aggregates only those groups. Unrelated HiBy rows, counters/flags, and time
+ordering stay in stock order instead of being rebuilt. The worker runs at
+`nice(10)` so audio, touch, and drawing remain ahead of it on the single-core
+R1. Missing DB copies are normal. A just-finished stock scan lock is retried
 three times. There is no resident watcher and therefore no idle polling,
 memory, or battery overhead.
+
+The captured 7,694-row database previously took more than six minutes to
+rebuild its catalog side tables. The targeted v2.0.30 cleanup removed 298
+audiobook rows in about 1.3 seconds while preserving all 7,396 Music rows. The
+host tests also include a synthetic fixture with 6,002 Music rows and a
+five-second performance ceiling.
 
 Host regression coverage is in `tools/test_music_catalog_cleanup.py` and
 `tools/test_music_catalog_cleanup.ps1`. It always runs a committed synthetic
@@ -298,15 +308,22 @@ swaps.
 
 ## SD-primary position + bookmark store
 
-`pos_save_sd` writes `<book_id>.pos`
-(`track_ordinal/track_pos_ms/book_elapsed_ms/completed/ts`) to
-`/usr/data/mnt/sd_0/.audiobook_pos/` via tmp+rename. Since v2.0.23, the
-authoritative sidecar checkpoints every 15 seconds and the best-effort
-`library.db` progress mirror runs at most every 60 seconds. Pause, stop,
-completion, and app exit still mirror immediately. If the refresh worker owns
-the DB writer lock, the mirror is skipped instead of blocking playback.
-`cmd_play` reads `pos_load_sd` first and falls back to `library.db` only for
-pre-2.0.9 positions during migration.
+The durable `<book_id>.pos` sidecar
+(`track_ordinal/track_pos_ms/book_elapsed_ms/completed/ts/signature`) lives in
+`/usr/data/mnt/sd_0/.audiobook_pos/` and uses tmp+rename. Since v2.0.30, a
+low-priority latest-wins worker writes the 15-second live checkpoint to
+`/usr/data/audiobooks/position-cache/` rather than blocking the decoder on
+exFAT or SQLite. Internal filenames include the physical SD CID and records
+include a signature of the book's first track, so a replacement card cannot
+inherit another card's progress. Resume selects the newest valid matching-card
+cache or SD record.
+
+Pause, stop, completion, and app exit flush the exact position to the SD
+sidecar and best-effort `library.db` mirror. If the internal cache cannot be
+written, the worker falls back to the SD sidecar. If Refresh owns the DB writer
+lock, the percentage mirror is skipped instead of blocking playback. The SD
+sidecar remains the durable, portable record; the internal cache protects live
+playback from slow media writes and narrows the loss window after a hard reset.
 Bookmarks (v2.0.16) are likewise SD-primary —
 `/usr/data/mnt/sd_0/.audiobook_pos/<book_id>.bm`, atomic temp+rename; the
 `bookmarks` DB table is INERT; a one-time per-book DB→SD migration runs on

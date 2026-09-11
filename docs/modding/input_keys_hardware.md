@@ -38,12 +38,18 @@ Empirically confirmed via injection (2026-07-17):
 ```text
 /dev/input/event0  md-gpio-keys    KEY_POWER = 116 (short press TOGGLES backlight
                                    50<->0, NO system suspend; adb stays alive)
-                                   KEY_NEXT = 163
+                                   KEY_NEXTSONG = 163
 /dev/input/event1  hyn_ts          touchscreen (the hook EVIOCGRABs this itself)
-/dev/input/event2  jz adc keyboard KEY_PLAYPAUSE = 164, KEY_PREVIOUS = 165
+/dev/input/event2  jz adc keyboard KEY_PLAYPAUSE = 164, KEY_PREVIOUSSONG = 165
 /dev/input/event3  earpods_adc     KEY_VOLUMEUP = 115, KEY_VOLUMEDOWN = 114
                                    (also 33/35/36 = F/H/J earpod remote)
 ```
+
+Linux's input header also defines `KEY_NEXT` and `KEY_PREVIOUS`, but those are
+different navigation key codes. Use `KEY_NEXTSONG` (163) and
+`KEY_PREVIOUSSONG` (165) for the R1 transport buttons. The incorrect symbolic
+constants compiled cleanly and made the hardware buttons appear intermittent;
+v2.0.30 maps the confirmed codes to +60-second and -30-second audiobook skips.
 
 ### Gotcha — KEY_POWER is not in any static capabilities bitmask
 `KEY_POWER` (116) is NOT in any device's advertised capabilities/key bitmask

@@ -12,20 +12,20 @@ Use the checked-in publisher instead of retyping REST calls by hand:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\publish_github_release.ps1 `
-  -Tag v2.0.29 `
-  -Name "HiBy R1 Audiobook Mod v2.0.29" `
+  -Tag v2.0.30 `
+  -Name "HiBy R1 Audiobook Mod v2.0.30" `
   -TargetCommitish main `
-  -BodyFile firmware\releases\v2.0.29\RELEASE_NOTES.md `
-  -Assets "work\audiobook-firmware-2.0.29\r1-audiobooks-2.0.29.upt,firmware\releases\v2.0.29\MD5SUMS.txt,firmware\releases\v2.0.29\SHA256SUMS.txt,firmware\releases\v2.0.29\RELEASE_NOTES.md"
+  -BodyFile firmware\releases\v2.0.30\RELEASE_NOTES.md `
+  -Assets "work\audiobook-firmware-2.0.30\r1-audiobooks-2.0.30.upt,firmware\releases\v2.0.30\MD5SUMS.txt,firmware\releases\v2.0.30\SHA256SUMS.txt,firmware\releases\v2.0.30\RELEASE_NOTES.md"
 ```
 
 Then verify the public release object and assets:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\publish_github_release.ps1 `
-  -Tag v2.0.29 `
+  -Tag v2.0.30 `
   -VerifyOnly `
-  -Assets "work\audiobook-firmware-2.0.29\r1-audiobooks-2.0.29.upt,firmware\releases\v2.0.29\MD5SUMS.txt,firmware\releases\v2.0.29\SHA256SUMS.txt,firmware\releases\v2.0.29\RELEASE_NOTES.md"
+  -Assets "work\audiobook-firmware-2.0.30\r1-audiobooks-2.0.30.upt,firmware\releases\v2.0.30\MD5SUMS.txt,firmware\releases\v2.0.30\SHA256SUMS.txt,firmware\releases\v2.0.30\RELEASE_NOTES.md"
 ```
 
 If an asset was uploaded incorrectly, re-run with `-ReplaceAssets` after
@@ -76,7 +76,7 @@ page:
 ```powershell
 Invoke-RestMethod `
   -Method Get `
-  -Uri "https://api.github.com/repos/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tags/v2.0.29" `
+  -Uri "https://api.github.com/repos/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tags/v2.0.30" `
   -Headers @{ "User-Agent" = "hiby-r1-audiobook-release-check"; Accept = "application/vnd.github+json" }
 ```
 

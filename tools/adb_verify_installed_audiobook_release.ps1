@@ -119,7 +119,26 @@ function Assert-RemoteMd5Matches([string]$RemotePath, [string]$LocalPath) {
     }
     $remoteMd5 = $match.Groups[1].Value.ToLowerInvariant()
     if ($remoteMd5 -ne $localMd5) {
-        throw "$RemotePath MD5 mismatch: remote $remoteMd5, expected $localMd5"
+        # Firmware packaging normalizes shell scripts to LF even when Git's
+        # Windows checkout materialized the source as CRLF. Accept that exact
+        # text normalization, but no other content difference.
+        $sourceBytes = [System.IO.File]::ReadAllBytes($resolvedLocal)
+        $sourceText = [System.Text.Encoding]::UTF8.GetString($sourceBytes)
+        $lfBytes = [System.Text.Encoding]::UTF8.GetBytes(
+            $sourceText.Replace("`r`n", "`n"))
+        $md5 = [System.Security.Cryptography.MD5]::Create()
+        try {
+            $lfMd5 = ([System.BitConverter]::ToString(
+                $md5.ComputeHash($lfBytes))).Replace("-", "").ToLowerInvariant()
+        }
+        finally {
+            $md5.Dispose()
+        }
+        if ($remoteMd5 -ne $lfMd5) {
+            throw "$RemotePath MD5 mismatch: remote $remoteMd5, expected $localMd5 (or LF-normalized $lfMd5)"
+        }
+        Write-Host "OK   $RemotePath matches LF-normalized $LocalPath ($lfMd5)"
+        return
     }
     Write-Host "OK   $RemotePath matches $LocalPath ($localMd5)"
 }

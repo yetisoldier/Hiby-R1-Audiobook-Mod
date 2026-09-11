@@ -3,8 +3,8 @@
 This page is for people who want to understand or extend the HiBy R1 audiobook
 firmware work, not just install the finished package.
 
-The current public firmware is **v2.0.29** (about-screen label "HiBy R1
-2.0.29"). It targets the normal HiBy R1 on stock firmware 1.6. It is not
+The current public firmware is **v2.0.30** (about-screen label "HiBy R1
+2.0.30"). It targets the normal HiBy R1 on stock firmware 1.6. It is not
 tested on the R1 MIDI or other HiBy players.
 
 > The v2.0.x line is the "NativeApp" pivot: the audiobook app is an in-process

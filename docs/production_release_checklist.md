@@ -7,60 +7,72 @@ evidence. For the full procedure, see
 
 ## Current Release
 
-- GitHub release: `v2.0.29`
-- About-screen label: `HiBy R1 2.0.29`
+- GitHub release: `v2.0.30`
+- About-screen label: `HiBy R1 2.0.30`
 - Base firmware: stock HiBy R1 1.6 for the normal R1, not R1 MIDI.
 - Source branch: `main`
-- Source release commit: the commit tagged `v2.0.29`
-- Package: `r1-audiobooks-2.0.29.upt` (42,250,240 bytes)
-- Package MD5: `cb536fd0b3d2677a87369e9f57e9bdd3`
+- Source release commit: the commit tagged `v2.0.30`
+- Package: `r1-audiobooks-2.0.30.upt` (42,237,952 bytes)
+- Package MD5: `db30162a2caf961f24c79618706d8b6d`
 - Package SHA256:
-  `c3eb881f853715cb4c464c56db6f39d02198dd07071a7e667dece47fea7537bb`
-- Build flags: `-IncludeAudiobookNativeApp -UnlockNativeDsd
-  -EnableBluetoothSbcXq -UnlockUsbDacMode -CustomVersionId 2.0.29
-  -CustomVersionLabel "HiBy R1 2.0.29"`
+  `d7814c39f149592584e34b91b1681767fc30f02d25eaa984544691a2c11a89b8`
+- Build flags: `-IncludeAudiobookNativeApp -IncludeAudiobookLauncherIcon
+  -UnlockNativeDsd -EnableBluetoothSbcXq -UnlockUsbDacMode
+  -CustomVersionId 2.0.30 -CustomVersionLabel "HiBy R1 2.0.30"`
+- Boot ADB: disabled in the public image.
 
-## Changes Since v2.0.28
+## Changes Since v2.0.29
 
-- Interposes the stock player's exact `echo mem > /sys/power/state` suspend
-  command while Audiobooks owns the display.
-- Converts the automatic timeout into the existing lightweight backlight-only
-  blank so playback continues and the display remains wakeable.
-- Leaves every other `system()` command untouched and preserves normal HiBy
-  timeout/suspend behavior outside Audiobooks.
-- Playback, resume, catalog isolation, chapters, bookmarks, UI, USB handling,
-  and audio unlocks are unchanged from v2.0.28.
+- Avoids the R1 AIC driver's unstable one-channel DMA path by duplicating mono
+  PCM to stereo only at the wired sink. Bluetooth retains source channels.
+- Adds a bounded full-period wired PCM queue and quiesces its owner before any
+  drop, prepare, or close operation.
+- Reuses wired PCM across compatible MP3 parts, preloads the next decoder and
+  first block, and applies a 250 ms settle only when a real DAC restart occurs.
+- Makes MP3 byte seeks start after ID3/APIC metadata and reopens only the
+  lightweight decoder for same-part seeks.
+- Moves periodic progress writes to a low-priority latest-wins worker. The
+  15-second checkpoint is an internal, SD-CID-keyed cache; pause, stop,
+  completion, and exit flush the SD sidecar and DB mirror.
+- Corrects physical Next and Previous to Linux codes 163 and 165, providing
+  reliable +60-second and -30-second skips.
+- Reconciles only Music catalog groups affected by removed `/Audiobooks` rows
+  and runs cleanup at lower priority, preserving unrelated stock metadata and
+  ordering.
+- Hardens release staging and installed-file verification for public images
+  without boot ADB and packaged LF-normalized shell scripts.
 
 ## Build And Verify
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File tools\build_r1_audiobook_firmware.ps1 `
-  -OutDir work\audiobook-firmware-2.0.29 `
-  -OutputUpt work\audiobook-firmware-2.0.29\r1-audiobooks-2.0.29.upt `
+  -OutDir work\audiobook-firmware-2.0.30 `
+  -OutputUpt work\audiobook-firmware-2.0.30\r1-audiobooks-2.0.30.upt `
   -IncludeAudiobookNativeApp `
+  -IncludeAudiobookLauncherIcon `
   -UnlockNativeDsd `
   -EnableBluetoothSbcXq `
   -UnlockUsbDacMode `
-  -CustomVersionId 2.0.29 `
-  -CustomVersionLabel "HiBy R1 2.0.29"
+  -CustomVersionId 2.0.30 `
+  -CustomVersionLabel "HiBy R1 2.0.30"
 
 py -3 tools\verify_r1_audiobook_build.py `
-  --out-dir work\audiobook-firmware-2.0.29 `
-  --upt-name r1-audiobooks-2.0.29.upt `
-  --expected-version 2.0.29 `
-  --expected-label "HiBy R1 2.0.29" `
+  --out-dir work\audiobook-firmware-2.0.30 `
+  --upt-name r1-audiobooks-2.0.30.upt `
+  --expected-version 2.0.30 `
+  --expected-label "HiBy R1 2.0.30" `
   --expect-native-app `
+  --expect-audiobook-launcher-icon `
   --expect-native-dsd `
   --expect-sbc-xq `
   --expect-usb-dac-mode
 ```
 
-The builder recompiles the preload hook from current source before packaging.
-The strict verifier passed all 5,488 stock rootfs paths and modes, 482 symlink
-targets, root ownership, launcher integration, wrapper and hook modes, the
-catalog-cleanup and suspend-block markers, hardened USB scripts, absence of `S90adb`, firmware
-markers, audio unlocks, OTA hash, and known-bad package rejection.
+The strict package verifier passed all 5,488 stock rootfs paths and modes, 482
+symlink targets, root ownership, launcher integration, native-app files,
+catalog behavior, hardened USB scripts, absence of `S90adb`, firmware markers,
+audio unlocks, OTA hashes, and known-bad-package rejection.
 
 ## Regression Verification
 
@@ -72,46 +84,66 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -File tools\run_local_dev_sanity.ps1 -SkipDbFixtures
 ```
 
-- Synthetic fixture: two audiobook rows removed, two Music rows unchanged.
-- Captured fixture: 135 audiobook rows removed, 114 Music rows unchanged.
-- Large captured fixture: 298 audiobook rows removed, 7,396 Music rows
-  unchanged.
-- Each run verified stock side-table counts, format/time indexes, SQLite
-  integrity, shared music/audiobook metadata, and idempotence.
-- The full local sanity suite passed.
-- The built MIPS hook exports the `system` interposer and contains the exact
-  stock suspend command plus the lightweight-blank diagnostic marker.
+- Small and 6,002-Music-row synthetic fixtures passed.
+- Both captured R1 databases passed, including the 7,694-row database.
+- On-device cleanup removed 298 audiobook rows in about 1.3 seconds and left
+  all 7,396 Music rows unchanged. The old whole-table rebuild took more than
+  six minutes on the same data.
+- Tests verify stock Music rows, flags, ordering, counts, SQLite integrity,
+  shared metadata, affected-group reconciliation, and idempotence.
+- The complete local sanity suite and strict package verifier passed.
 
 ## Device Verification
 
-The screen-timeout fix was validated statically and through the full local
-suite. An R1 was not connected during final packaging, so installed-device
-timeout testing remains a useful post-release follow-up:
+RC21 was installed and passed the strict installed-release verifier before the
+identical production source was packaged as v2.0.30.
 
-1. Flash v2.0.29 and leave the normal backlight timer enabled.
-2. Start an audiobook and let the timer turn the screen off.
-3. Confirm playback continues and one power press or a double-tap wakes it.
-4. Repeat after pause/resume and over wired and Bluetooth output.
-5. With ADB enabled, confirm `/tmp/.audiobook_hook.log` contains
-   `stock suspend blocked; using lightweight blank`.
+- A mono multipart MP3 resumed near the end of part 1 and directly sought to
+  the expected byte after ID3/APIC metadata.
+- Natural playback crossed into part 2 through the preloaded decoder.
+- Physical Next moved +60 seconds into part 2; Previous moved -30 seconds.
+- Additional same-part Next/Previous actions reopened only the MP3 decoder and
+  did not report false EOF or skip a part.
+- Physical Play/Pause and volume up/down passed. The original volume was
+  restored to 83 percent after testing.
+- The final playback logs recorded zero AIC DMA-address faults.
+- `hiby_player` was about 18.7 MB RSS with about 14.6 MB available, then exited
+  cleanly to the launcher.
+- The listener's original progress sidecar and library database were restored
+  byte-for-byte after destructive boundary testing.
+
+After the production package is installed, run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File tools\adb_verify_installed_audiobook_release.ps1 `
+  -ExpectedVersion 2.0.30 `
+  -ExpectNativeApp `
+  -ExpectNativeDsd `
+  -ExpectBluetoothSbcXq `
+  -ExpectUsbDacMode `
+  -ExpectHardenedUsbGadgetScripts `
+  -ExpectBootAdbDisabled `
+  -AllowStagedFirmware
+```
 
 ## Publish
 
 Release assets:
 
-- `work\audiobook-firmware-2.0.29\r1-audiobooks-2.0.29.upt`
-- `firmware\releases\v2.0.29\MD5SUMS.txt`
-- `firmware\releases\v2.0.29\SHA256SUMS.txt`
-- `firmware\releases\v2.0.29\RELEASE_NOTES.md`
+- `work\audiobook-firmware-2.0.30\r1-audiobooks-2.0.30.upt`
+- `firmware\releases\v2.0.30\MD5SUMS.txt`
+- `firmware\releases\v2.0.30\SHA256SUMS.txt`
+- `firmware\releases\v2.0.30\RELEASE_NOTES.md`
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File tools\publish_github_release.ps1 `
-  -Tag v2.0.29 `
-  -Name "HiBy R1 Audiobook Mod v2.0.29" `
+  -Tag v2.0.30 `
+  -Name "HiBy R1 Audiobook Mod v2.0.30" `
   -TargetCommitish main `
-  -BodyFile firmware\releases\v2.0.29\RELEASE_NOTES.md `
-  -Assets "work\audiobook-firmware-2.0.29\r1-audiobooks-2.0.29.upt,firmware\releases\v2.0.29\MD5SUMS.txt,firmware\releases\v2.0.29\SHA256SUMS.txt,firmware\releases\v2.0.29\RELEASE_NOTES.md"
+  -BodyFile firmware\releases\v2.0.30\RELEASE_NOTES.md `
+  -Assets "work\audiobook-firmware-2.0.30\r1-audiobooks-2.0.30.upt,firmware\releases\v2.0.30\MD5SUMS.txt,firmware\releases\v2.0.30\SHA256SUMS.txt,firmware\releases\v2.0.30\RELEASE_NOTES.md"
 ```
 
 Run the same command with `-VerifyOnly` after publication and confirm all four

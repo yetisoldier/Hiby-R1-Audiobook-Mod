@@ -58,75 +58,146 @@ static int delete_path_rows(sqlite3 *db, const char *table) {
     return exec_sql(db, sql);
 }
 
-static int reconcile_named_catalog(
-    sqlite3 *db, const char *table, const char *column) {
-    if (!table_exists(db, table)) return SQLITE_OK;
+static int capture_affected_catalog(sqlite3 *db, const char *column) {
     char sql[1536];
     snprintf(
         sql, sizeof(sql),
-        "DELETE FROM %s WHERE NOT EXISTS ("
-        "SELECT 1 FROM MEDIA_TABLE m WHERE "
-        "CASE WHEN m.%s IS NULL OR m.%s='' THEN 'Unknown' ELSE m.%s END "
-        "= %s.%s COLLATE NOCASE);"
+        "DROP TABLE IF EXISTS temp.r1_affected_%s;"
+        "CREATE TEMP TABLE r1_affected_%s("
+        "name TEXT COLLATE NOCASE PRIMARY KEY,removed_cn INT) WITHOUT ROWID;"
+        "INSERT INTO r1_affected_%s(name,removed_cn) "
+        "SELECT CASE WHEN %s IS NULL OR %s='' THEN 'Unknown' ELSE %s END,"
+        "COUNT(*) FROM MEDIA_TABLE "
+        "WHERE id IN (SELECT id FROM r1_removed_media_ids) GROUP BY "
+        "CASE WHEN %s IS NULL OR %s='' THEN 'Unknown' ELSE %s END "
+        "COLLATE NOCASE",
+        column, column, column, column, column, column,
+        column, column, column);
+    return exec_sql(db, sql);
+}
+
+static int build_catalog_aggregate(sqlite3 *db, const char *column) {
+    char sql[2048];
+    snprintf(
+        sql, sizeof(sql),
+        "DROP TABLE IF EXISTS temp.r1_catalog_agg_%s;"
+        "CREATE TEMP TABLE r1_catalog_agg_%s("
+        "name TEXT COLLATE NOCASE PRIMARY KEY,id INT,cn INT,"
+        "ctime INT,mtime INT) WITHOUT ROWID;"
+        "INSERT INTO r1_catalog_agg_%s(name,id,cn,ctime,mtime) "
+        "SELECT CASE WHEN %s IS NULL OR %s='' THEN 'Unknown' ELSE %s END,"
+        "MIN(id),COUNT(*),MIN(COALESCE(ctime,0)),MAX(COALESCE(mtime,0)) "
+        "FROM MEDIA_TABLE WHERE "
+        "CASE WHEN %s IS NULL OR %s='' THEN 'Unknown' ELSE %s END "
+        "IN (SELECT name FROM r1_affected_%s) GROUP BY "
+        "CASE WHEN %s IS NULL OR %s='' THEN 'Unknown' ELSE %s END "
+        "COLLATE NOCASE",
+        column, column, column,
+        column, column, column,
+        column, column, column, column,
+        column, column, column);
+    return exec_sql(db, sql);
+}
+
+static int reconcile_named_catalog(
+    sqlite3 *db, const char *table, const char *column) {
+    if (!table_exists(db, table)) return SQLITE_OK;
+    /* Aggregate each affected metadata column once and reuse it for both of
+     * HiBy's catalog variants. Preserve unrelated rows exactly as the stock
+     * scanner wrote them; some cn fields are flags rather than track counts. */
+    char sql[3072];
+    snprintf(
+        sql, sizeof(sql),
+        "DELETE FROM %s WHERE %s IN (SELECT name FROM r1_affected_%s) "
+        "AND NOT EXISTS (SELECT 1 FROM r1_catalog_agg_%s a WHERE "
+        "a.name=%s.%s COLLATE NOCASE);"
         "UPDATE %s SET "
-        "id=(SELECT MIN(m.id) FROM MEDIA_TABLE m WHERE "
-        "CASE WHEN m.%s IS NULL OR m.%s='' THEN 'Unknown' ELSE m.%s END "
-        "= %s.%s COLLATE NOCASE),"
-        "cn=(SELECT COUNT(*) FROM MEDIA_TABLE m WHERE "
-        "CASE WHEN m.%s IS NULL OR m.%s='' THEN 'Unknown' ELSE m.%s END "
-        "= %s.%s COLLATE NOCASE),"
-        "ctime=(SELECT MIN(COALESCE(m.ctime,0)) FROM MEDIA_TABLE m WHERE "
-        "CASE WHEN m.%s IS NULL OR m.%s='' THEN 'Unknown' ELSE m.%s END "
-        "= %s.%s COLLATE NOCASE),"
-        "mtime=(SELECT MAX(COALESCE(m.mtime,0)) FROM MEDIA_TABLE m WHERE "
-        "CASE WHEN m.%s IS NULL OR m.%s='' THEN 'Unknown' ELSE m.%s END "
-        "= %s.%s COLLATE NOCASE)",
+        "id=(SELECT a.id FROM r1_catalog_agg_%s a WHERE "
+        "a.name=%s.%s COLLATE NOCASE),"
+        "cn=MAX(0,COALESCE(cn,0)-(SELECT x.removed_cn "
+        "FROM r1_affected_%s x WHERE x.name=%s.%s COLLATE NOCASE)),"
+        "ctime=(SELECT a.ctime FROM r1_catalog_agg_%s a WHERE "
+        "a.name=%s.%s COLLATE NOCASE),"
+        "mtime=(SELECT a.mtime FROM r1_catalog_agg_%s a WHERE "
+        "a.name=%s.%s COLLATE NOCASE) "
+        "WHERE %s IN (SELECT name FROM r1_affected_%s) "
+        "AND EXISTS (SELECT 1 FROM r1_catalog_agg_%s a WHERE "
+        "a.name=%s.%s COLLATE NOCASE)",
         table, column, column, column, table, column,
         table,
-        column, column, column, table, column,
-        column, column, column, table, column,
-        column, column, column, table, column,
+        column, table, column,
+        column, table, column,
+        column, table, column,
+        column, table, column,
         column, column, column, table, column);
     return exec_sql(db, sql);
 }
 
+static int capture_affected_formats(sqlite3 *db) {
+    if (exec_sql(db,
+                 "DROP TABLE IF EXISTS temp.r1_affected_format;"
+                 "CREATE TEMP TABLE r1_affected_format("
+                 "format TEXT COLLATE NOCASE PRIMARY KEY) WITHOUT ROWID")
+        != SQLITE_OK)
+        return SQLITE_ERROR;
+    static const char *tables[] = {"FORMAT_TABLE", "FORMAT2_TABLE"};
+    for (size_t i = 0; i < sizeof(tables) / sizeof(tables[0]); i++) {
+        if (!table_exists(db, tables[i])) continue;
+        char sql[768];
+        snprintf(sql, sizeof(sql),
+                 "INSERT OR IGNORE INTO r1_affected_format(format) "
+                 "SELECT f.format FROM %s f WHERE EXISTS ("
+                 "SELECT 1 FROM MEDIA_TABLE m "
+                 "WHERE m.id IN (SELECT id FROM r1_removed_media_ids) "
+                 "AND LOWER(m.path) LIKE '%%.' || LOWER(f.format))",
+                 tables[i]);
+        if (exec_sql(db, sql) != SQLITE_OK) return SQLITE_ERROR;
+    }
+    return SQLITE_OK;
+}
+
 static int reconcile_format_catalog(sqlite3 *db, const char *table) {
     if (!table_exists(db, table)) return SQLITE_OK;
-    char sql[1024];
+    char sql[1536];
     snprintf(
         sql, sizeof(sql),
+        "DELETE FROM %s WHERE format IN (SELECT format FROM r1_affected_format) "
+        "AND NOT EXISTS (SELECT 1 FROM MEDIA_TABLE m "
+        "WHERE LOWER(m.path) LIKE '%%.' || LOWER(%s.format));"
         "UPDATE %s SET "
         "id=(SELECT MIN(id) FROM MEDIA_TABLE "
-        "WHERE LOWER(path) LIKE '%%.' || LOWER(%s.format)),"
-        "cn=(SELECT COUNT(*) FROM MEDIA_TABLE "
-        "WHERE LOWER(path) LIKE '%%.' || LOWER(%s.format));"
-        "DELETE FROM %s WHERE cn<=0",
+        "WHERE LOWER(path) LIKE '%%.' || LOWER(%s.format)) "
+        "WHERE format IN (SELECT format FROM r1_affected_format) "
+        "AND id IN (SELECT id FROM r1_removed_media_ids)",
         table, table, table, table);
     return exec_sql(db, sql);
 }
 
-static int rebuild_count_table(sqlite3 *db) {
+static int decrement_count_table(sqlite3 *db, int removed_media) {
     if (!table_exists(db, "COUNT_TABLE")) return SQLITE_OK;
-    return exec_sql(
-        db,
-        "DELETE FROM COUNT_TABLE;"
-        "INSERT INTO COUNT_TABLE(cn) SELECT COUNT(*) FROM MEDIA_TABLE;"
-        "INSERT INTO COUNT_TABLE(cn) SELECT COUNT(DISTINCT album) FROM MEDIA_TABLE;"
-        "INSERT INTO COUNT_TABLE(cn) SELECT COUNT(DISTINCT artist) FROM MEDIA_TABLE;"
-        "INSERT INTO COUNT_TABLE(cn) SELECT COUNT(DISTINCT genre) FROM MEDIA_TABLE;"
-        "INSERT INTO COUNT_TABLE(cn) SELECT COUNT(DISTINCT album_artist) FROM MEDIA_TABLE");
-}
-
-static int rebuild_time_table(
-    sqlite3 *db, const char *table, const char *order_column,
-    const char *direction) {
-    if (!table_exists(db, table)) return SQLITE_OK;
-    char sql[512];
-    snprintf(sql, sizeof(sql),
-             "DELETE FROM %s;"
-             "INSERT INTO %s(media_id) SELECT id FROM MEDIA_TABLE "
-             "ORDER BY COALESCE(%s,0) %s, id ASC",
-             table, table, order_column, direction);
+    char sql[3072];
+    snprintf(
+        sql, sizeof(sql),
+        "UPDATE COUNT_TABLE SET cn=MAX(0,cn-%d) WHERE rowid=("
+        "SELECT rowid FROM COUNT_TABLE ORDER BY rowid LIMIT 1 OFFSET 0);"
+        "UPDATE COUNT_TABLE SET cn=MAX(0,cn-(SELECT COUNT(*) "
+        "FROM r1_affected_album x WHERE NOT EXISTS (SELECT 1 "
+        "FROM r1_catalog_agg_album a WHERE a.name=x.name COLLATE NOCASE))) "
+        "WHERE rowid=(SELECT rowid FROM COUNT_TABLE ORDER BY rowid LIMIT 1 OFFSET 1);"
+        "UPDATE COUNT_TABLE SET cn=MAX(0,cn-(SELECT COUNT(*) "
+        "FROM r1_affected_artist x WHERE NOT EXISTS (SELECT 1 "
+        "FROM r1_catalog_agg_artist a WHERE a.name=x.name COLLATE NOCASE))) "
+        "WHERE rowid=(SELECT rowid FROM COUNT_TABLE ORDER BY rowid LIMIT 1 OFFSET 2);"
+        "UPDATE COUNT_TABLE SET cn=MAX(0,cn-(SELECT COUNT(*) "
+        "FROM r1_affected_genre x WHERE NOT EXISTS (SELECT 1 "
+        "FROM r1_catalog_agg_genre a WHERE a.name=x.name COLLATE NOCASE))) "
+        "WHERE rowid=(SELECT rowid FROM COUNT_TABLE ORDER BY rowid LIMIT 1 OFFSET 3);"
+        "UPDATE COUNT_TABLE SET cn=MAX(0,cn-(SELECT COUNT(*) "
+        "FROM r1_affected_album_artist x WHERE NOT EXISTS (SELECT 1 "
+        "FROM r1_catalog_agg_album_artist a "
+        "WHERE a.name=x.name COLLATE NOCASE))) WHERE rowid=("
+        "SELECT rowid FROM COUNT_TABLE ORDER BY rowid LIMIT 1 OFFSET 4)",
+        removed_media);
     return exec_sql(db, sql);
 }
 
@@ -168,6 +239,15 @@ static int cleanup_one_database(
                  "SELECT id FROM MEDIA_TABLE WHERE " AUDIOBOOK_PATH_SQL) != SQLITE_OK)
         goto rollback;
 
+    static const char *affected_columns[] = {
+        "artist", "album", "genre", "album_artist"
+    };
+    for (size_t i = 0;
+         i < sizeof(affected_columns) / sizeof(affected_columns[0]); i++)
+        if (capture_affected_catalog(db, affected_columns[i]) != SQLITE_OK)
+            goto rollback;
+    if (capture_affected_formats(db) != SQLITE_OK) goto rollback;
+
     static const char *path_tables[] = {
         "MEDIA_TABLE", "MEDIA2_TABLE", "MEDIA3_TABLE", "SEARCH_TABLE",
         "RECENT_TABLE", "HISTORY_TABLE", "COLLECT_TABLE",
@@ -197,18 +277,30 @@ static int cleanup_one_database(
         {"ALBUM_ARTIST_TABLE", "album_artist"},
         {"ALBUM_ARTIST2_TABLE", "album_artist"}
     };
+    for (size_t i = 0;
+         i < sizeof(affected_columns) / sizeof(affected_columns[0]); i++)
+        if (build_catalog_aggregate(db, affected_columns[i]) != SQLITE_OK)
+            goto rollback;
     for (size_t i = 0; i < sizeof(catalogs) / sizeof(catalogs[0]); i++)
         if (reconcile_named_catalog(db, catalogs[i].table,
                                     catalogs[i].column) != SQLITE_OK)
             goto rollback;
     if (reconcile_format_catalog(db, "FORMAT_TABLE") != SQLITE_OK ||
         reconcile_format_catalog(db, "FORMAT2_TABLE") != SQLITE_OK ||
-        rebuild_count_table(db) != SQLITE_OK ||
-        rebuild_time_table(db, "CTIME_TABLE", "ctime", "ASC") != SQLITE_OK ||
-        rebuild_time_table(db, "MTIME_TABLE", "mtime", "DESC") != SQLITE_OK)
+        decrement_count_table(db, before) != SQLITE_OK)
         goto rollback;
 
-    if (exec_sql(db, "DROP TABLE r1_removed_media_ids;COMMIT;") != SQLITE_OK)
+    if (exec_sql(db,
+                 "DROP TABLE r1_affected_artist;"
+                 "DROP TABLE r1_affected_album;"
+                 "DROP TABLE r1_affected_genre;"
+                 "DROP TABLE r1_affected_album_artist;"
+                 "DROP TABLE r1_affected_format;"
+                 "DROP TABLE r1_catalog_agg_artist;"
+                 "DROP TABLE r1_catalog_agg_album;"
+                 "DROP TABLE r1_catalog_agg_genre;"
+                 "DROP TABLE r1_catalog_agg_album_artist;"
+                 "DROP TABLE r1_removed_media_ids;COMMIT;") != SQLITE_OK)
         goto fail;
     sqlite3_close(db);
     *rows_removed = before;

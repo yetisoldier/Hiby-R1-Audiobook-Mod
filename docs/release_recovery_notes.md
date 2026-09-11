@@ -2,10 +2,10 @@
 
 These notes are for the normal HiBy R1 on stock firmware 1.6, not the R1 MIDI.
 
-> **Current release:** v2.0.29, firmware marker `2.0.29`, package
-> `r1-audiobooks-2.0.29.upt`. The early v1.6.x sections below are retained as
+> **Current release:** v2.0.30, firmware marker `2.0.30`, package
+> `r1-audiobooks-2.0.30.upt`. The early v1.6.x sections below are retained as
 > historical recovery records; current release details are in
-> [`firmware/releases/v2.0.29/RELEASE_NOTES.md`](../firmware/releases/v2.0.29/RELEASE_NOTES.md).
+> [`firmware/releases/v2.0.30/RELEASE_NOTES.md`](../firmware/releases/v2.0.30/RELEASE_NOTES.md).
 
 ## Current Release
 
