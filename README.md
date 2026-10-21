@@ -36,6 +36,17 @@ unofficial firmware tested on one personal normal HiBy R1. Reinstalling stock
 firmware should reverse it, but use it at your own risk. Do not install it on
 the R1 MIDI or other HiBy players unless you are prepared to recover the device.
 
+## Quick Start (Installation)
+
+1. **Download** `r1-audiobooks-2.0.30.upt` from the [release page](https://github.com/yetisoldier/Hiby-R1-Audiobook-Mod/releases/tag/v2.0.30).
+2. **Rename** it to exactly `r1.upt` (the R1 will not recognize the update otherwise).
+3. **Copy** it to the root of the SD card.
+4. **Update**: On the R1, run **System** → **Firmware update** → **Via SD-card**.
+5. **Cleanup**: After reboot, delete or rename `r1.upt` on the SD card so the updater stops offering it.
+6. **Library Scan**: Open **Music** and run **Update Database** (to clear standard music logs), then open the **Audiobooks** tile and tap **Refresh Library**.
+
+**Warning:** Keep a known-good stock 1.6 `r1.upt` for recovery. This is unofficial firmware. Do not install on R1 MIDI.
+
 ## Screenshots
 
 <p>
